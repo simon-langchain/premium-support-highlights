@@ -18,16 +18,10 @@ Caching strategy (all in-memory, 5-minute TTL):
 """
 
 import os
-import sys
 import time
 import asyncio
 import json
 from typing import Any
-
-# Ensure the backend directory is on sys.path so flat sibling modules
-# (pylon_client, metrics, etc.) are importable regardless of how the app
-# is loaded (uvicorn, LSD import machinery, etc.).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 
