@@ -193,20 +193,10 @@ def _format_key_metrics(
     return "\n".join(lines) if lines else "No metrics available."
 
 
-# summary_graph is registered with LSD via langgraph.json. It is initialised
-# lazily (PEP 562) so that importing this module does not trigger a slow
-# create_deep_agent() call at app startup — LSD accesses the attribute later,
-# after the app is already running.
-_summary_graph = None
-
-
-def __getattr__(name: str):
-    global _summary_graph
-    if name == "summary_graph":
-        if _summary_graph is None:
-            _summary_graph = create_summary_agent()
-        return _summary_graph
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# Module-level compiled graph registered with LSD via langgraph.json.
+# Tools (summarise_tickets) are bound per-request via the HTTP route in main.py;
+# this default instance has no tools but satisfies LSD's required `graphs` entry.
+summary_graph = create_summary_agent()
 
 
 async def generate_account_summary(
