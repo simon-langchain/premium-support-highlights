@@ -1,13 +1,16 @@
 # Environment
 .env
+frontend/.env.local
 
 # Runtime data
 .cache/
 logs/
+.langgraph_api/
 
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
 .venv/
 
 # Next.js

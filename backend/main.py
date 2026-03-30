@@ -41,20 +41,33 @@ from summary_agent import generate_account_summary, make_summarise_tickets_tool
 
 app = FastAPI(title="Premium Support Highlights API", version="0.1.0")
 
+# ALLOWED_ORIGINS: comma-separated list of allowed origins.
+# Set this in the deployment env to your Vercel frontend URL.
+# Defaults to localhost for local development.
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------
-# In-memory cache (5-minute TTL)
+# In-memory cache (5-minute TTL) and in-flight deduplication
 # ---------------------------------------------------------------------------
 
 _CACHE_TTL = 300
 _data_cache: dict[str, tuple[float, Any]] = {}
+
+# Per-key asyncio locks: prevent concurrent requests for the same uncached
+# account from making duplicate Pylon API calls (which causes race conditions).
+_fetch_locks: dict[str, asyncio.Lock] = {}
 
 
 def _cache_get(key: str) -> Any:
@@ -169,36 +182,51 @@ async def _fetch_raw_data(
 
     Returns (field_labels, open_issues, period_issues, csat_responses).
     Shared by the /data and /summary routes so they never duplicate API calls.
+
+    Uses a per-key asyncio lock so that concurrent requests for the same
+    uncached account don't make duplicate Pylon API calls (which causes 500s).
     """
     cache_key = f"raw:{account_id}:{period}"
+
+    # Fast path: already cached
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached["field_labels"], cached["open_issues"], cached["period_issues"], cached["csat_responses"]
 
-    created_after, created_before = pylon_client.make_date_range(period)
-    try:
-        field_labels, open_issues, period_issues, csat_responses = await asyncio.gather(
-            asyncio.to_thread(pylon_client.get_issue_field_labels),
-            asyncio.to_thread(pylon_client.search_issues_for_account, account_id, OPEN_STATES),
-            asyncio.to_thread(
-                pylon_client.search_issues_for_account,
-                account_id,
-                None,
-                created_after,
-                created_before,
-            ),
-            asyncio.to_thread(pylon_client.get_csat_responses_for_account, account_id),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+    # Ensure a lock exists for this key (safe: event loop is single-threaded)
+    if cache_key not in _fetch_locks:
+        _fetch_locks[cache_key] = asyncio.Lock()
 
-    _cache_set(cache_key, {
-        "field_labels": field_labels,
-        "open_issues": open_issues,
-        "period_issues": period_issues,
-        "csat_responses": csat_responses,
-    })
-    return field_labels, open_issues, period_issues, csat_responses
+    async with _fetch_locks[cache_key]:
+        # Re-check after acquiring: another coroutine may have populated the cache
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached["field_labels"], cached["open_issues"], cached["period_issues"], cached["csat_responses"]
+
+        created_after, created_before = pylon_client.make_date_range(period)
+        try:
+            field_labels, open_issues, period_issues, csat_responses = await asyncio.gather(
+                asyncio.to_thread(pylon_client.get_issue_field_labels),
+                asyncio.to_thread(pylon_client.search_issues_for_account, account_id, OPEN_STATES),
+                asyncio.to_thread(
+                    pylon_client.search_issues_for_account,
+                    account_id,
+                    None,
+                    created_after,
+                    created_before,
+                ),
+                asyncio.to_thread(pylon_client.get_csat_responses_for_account, account_id),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+
+        _cache_set(cache_key, {
+            "field_labels": field_labels,
+            "open_issues": open_issues,
+            "period_issues": period_issues,
+            "csat_responses": csat_responses,
+        })
+        return field_labels, open_issues, period_issues, csat_responses
 
 
 def _build_payload(
@@ -258,7 +286,7 @@ async def get_account_data(
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
     _cache_set(payload_key, payload)
-    audit.log("account_loaded", {"account_id": account_id, "account_name": account_name})
+    await asyncio.to_thread(audit.log, "account_loaded", {"account_id": account_id, "account_name": account_name})
     return payload
 
 
@@ -280,17 +308,20 @@ async def get_cached_ticket_summaries(account_id: str):
             raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
         _cache_set(open_key, open_issues)
 
-    result: dict[int, str] = {}
-    for issue in open_issues:
-        issue_id = issue.get("id", "")
-        number = issue.get("number")
-        if number is None:
-            continue
-        latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-        summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
-        if summary:
-            result[number] = summary
-    return result
+    def _read_summaries() -> dict[int, str]:
+        out: dict[int, str] = {}
+        for issue in open_issues:
+            issue_id = issue.get("id", "")
+            number = issue.get("number")
+            if number is None:
+                continue
+            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
+            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if summary:
+                out[number] = summary
+        return out
+
+    return await asyncio.to_thread(_read_summaries)
 
 
 @app.post("/api/accounts/{account_id}/summary")

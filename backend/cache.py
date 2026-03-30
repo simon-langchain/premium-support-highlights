@@ -7,6 +7,7 @@ from pathlib import Path
 
 CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_FILE = CACHE_DIR / "analysis_cache.json"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)  # create once at import time
 
 
 def _cache_key(issue_id: str, latest_message_time: str) -> str:
@@ -24,7 +25,6 @@ def _load() -> dict:
 
 
 def _save(cache: dict) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(json.dumps(cache, indent=2))
 
 

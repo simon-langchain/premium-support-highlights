@@ -1,0 +1,16 @@
+{
+  "dependencies": ["./backend"],
+  "graphs": {
+    "summary_agent": "./backend/summary_agent.py:summary_graph"
+  },
+  "http": {
+    "app": "./backend/main.py:app",
+    "cors": {
+      "allow_origins": ["*"],
+      "allow_methods": ["*"],
+      "allow_headers": ["*"]
+    }
+  },
+  "env": ".env",
+  "python_version": "3.11"
+}

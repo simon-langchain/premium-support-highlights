@@ -51,4 +51,36 @@ Pass `-v` to stream logs to the terminal instead of `logs/`.
 
 ---
 
+## Deployment
+
+The backend deploys to **LangSmith Deployments** (LSD); the frontend deploys to **Vercel**.
+
+### Backend — LangSmith Deployments
+
+Requires a LangSmith Plus plan or above.
+
+```bash
+# Install the CLI
+pip install langgraph-cli
+
+# Test locally against the LSD dev server (no Docker required)
+langgraph dev
+
+# Deploy to LangSmith Cloud
+langgraph deploy
+```
+
+Set the following environment variables in the LSD deployment:
+- `PYLON_API_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `ALLOWED_ORIGINS` — your Vercel frontend URL (e.g. `https://your-app.vercel.app`)
+
+### Frontend — Vercel
+
+Connect the GitHub repo to Vercel and set these environment variables:
+- `BACKEND_URL` — your LSD deployment URL (e.g. `https://your-deployment.api.langchain.com`)
+- `LANGSMITH_API_KEY` — used server-side to authenticate requests to LSD (never exposed to the browser)
+
+---
+
 For architecture and implementation details, see `CLAUDE.md`.

@@ -7,7 +7,9 @@ import { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const BACKEND = "http://localhost:8000";
+// BACKEND_URL: set to the LSD deployment URL in production (e.g. Vercel env var).
+// Falls back to localhost for local development with start.sh.
+const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 async function forward(req: NextRequest, segments: string[]): Promise<Response> {
   const url = `${BACKEND}/api/${segments.join("/")}${req.nextUrl.search}`;
@@ -18,6 +20,11 @@ async function forward(req: NextRequest, segments: string[]): Promise<Response> 
       headers.set(key, value);
     }
   });
+  // LSD requires a LangSmith API key. Injected server-side so it is never
+  // exposed to the browser. Set LANGSMITH_API_KEY in Vercel environment variables.
+  if (process.env.LANGSMITH_API_KEY) {
+    headers.set("x-api-key", process.env.LANGSMITH_API_KEY);
+  }
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   const body = hasBody ? await req.arrayBuffer() : undefined;

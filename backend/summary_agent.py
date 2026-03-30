@@ -59,7 +59,7 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool):
             number = issue.get("number")
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
             if not force:
-                cached = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+                cached = await asyncio.to_thread(cache_mod.get_ticket_summary, issue_id, latest_msg_time)
                 if cached:
                     return number, cached
             try:
@@ -70,7 +70,7 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool):
                     messages=messages,
                 )
                 if issue_id and latest_msg_time:
-                    cache_mod.set_ticket_summary(issue_id, latest_msg_time, summary)
+                    await asyncio.to_thread(cache_mod.set_ticket_summary, issue_id, latest_msg_time, summary)
                 return number, summary
             except Exception:
                 return number, ""
@@ -191,6 +191,12 @@ def _format_key_metrics(
         parts = ", ".join(f"{k}: {v}" for k, v in disposition_breakdown.items())
         lines.append(f"Disposition breakdown: {parts}")
     return "\n".join(lines) if lines else "No metrics available."
+
+
+# Module-level compiled graph registered with LSD via langgraph.json.
+# Tools (summarise_tickets) are bound per-request via the HTTP route in main.py;
+# this default instance has no tools but satisfies LSD's required `graphs` entry.
+summary_graph = create_summary_agent()
 
 
 async def generate_account_summary(

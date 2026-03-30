@@ -10,11 +10,17 @@ export async function POST(
   const { accountId } = await params;
   const body = await req.text();
 
+  const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (process.env.LANGSMITH_API_KEY) {
+    headers["x-api-key"] = process.env.LANGSMITH_API_KEY;
+  }
+
   const res = await fetch(
-    `http://localhost:8000/api/accounts/${accountId}/summary`,
+    `${backendUrl}/api/accounts/${accountId}/summary`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body,
       signal: AbortSignal.timeout(300_000),
     }

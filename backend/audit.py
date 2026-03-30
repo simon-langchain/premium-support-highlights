@@ -11,11 +11,11 @@ from typing import Any
 
 AUDIT_DIR = Path(__file__).parent / ".cache"
 AUDIT_FILE = AUDIT_DIR / "audit.jsonl"
+AUDIT_DIR.mkdir(parents=True, exist_ok=True)  # create once at import time
 
 
 def log(action: str, details: dict[str, Any] | None = None) -> None:
     """Append a single audit entry."""
-    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "action": action,
