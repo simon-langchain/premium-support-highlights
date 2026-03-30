@@ -1,5 +1,6 @@
 {
   "dependencies": ["./backend"],
+  "python_path": ["./backend"],
   "graphs": {
     "summary_agent": "./backend/summary_agent.py:summary_graph"
   },
