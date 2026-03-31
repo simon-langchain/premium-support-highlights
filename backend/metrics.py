@@ -30,22 +30,18 @@ def compute_monthly_metrics(issues: list[dict], months: int = 6) -> list[dict]:
     """
     now = datetime.now(timezone.utc)
 
-    # Build ordered bucket list: (year, month_num) tuples
-    buckets: list[tuple[int, int]] = []
-    for offset in range(months - 1, -1, -1):
-        # Walk back month by month from current
-        target = now - timedelta(days=offset * 30)
-        buckets.append((target.year, target.month))
-
-    # Deduplicate while preserving order (timedelta approximation can repeat)
-    seen: set[tuple[int, int]] = set()
+    # Build ordered bucket list: (year, month_num) tuples by subtracting
+    # calendar months directly — avoids 30-day approximation skipping short
+    # months like February when the current day is the 29th, 30th, or 31st.
+    year, month = now.year, now.month
     unique_buckets: list[tuple[int, int]] = []
-    for b in buckets:
-        if b not in seen:
-            seen.add(b)
-            unique_buckets.append(b)
-    # Keep only last `months` buckets
-    unique_buckets = unique_buckets[-months:]
+    for offset in range(months - 1, -1, -1):
+        m = month - offset
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        unique_buckets.append((y, m))
 
     CLOSED_STATES = {"closed", "resolved"}
 
