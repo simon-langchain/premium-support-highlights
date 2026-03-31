@@ -48,9 +48,9 @@ export default function SummaryPanel({ summary, generatedAt, loading, error, onR
         <div className="border-l-2 border-[#006ddd] pl-4 mt-2">
           <div style={{ color: "var(--text-primary)" }} className="text-sm leading-relaxed prose prose-sm prose-invert max-w-none
             [&_p]:mb-2 [&_p:last-child]:mb-0
-            [&_ul]:mb-2 [&_ul]:pl-4 [&_ul:last-child]:mb-0
-            [&_ol]:mb-2 [&_ol]:pl-4 [&_ol:last-child]:mb-0
-            [&_li]:mb-0.5
+            [&_ul]:mb-2 [&_ul]:pl-4 [&_ul]:list-disc [&_ul:last-child]:mb-0
+            [&_ol]:mb-2 [&_ol]:pl-4 [&_ol]:list-decimal [&_ol:last-child]:mb-0
+            [&_li]:mb-0.5 [&_li]:marker:text-[var(--text-muted)]
             [&_strong]:text-[var(--text-primary)] [&_strong]:font-semibold
             [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mb-1
             [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mb-1
