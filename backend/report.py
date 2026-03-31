@@ -12,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import html as _html
-import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -130,7 +129,7 @@ def _days_open(created_at: str) -> str:
 # Section renderers
 # ---------------------------------------------------------------------------
 
-def _render_metrics(payload: dict, period_label: str) -> str:
+def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
     open_count   = len(payload.get("open_issues", []))
     monthly      = payload.get("monthly_metrics", [])
     total_raised = sum(m["tickets_raised"] for m in monthly)
@@ -138,116 +137,91 @@ def _render_metrics(payload: dict, period_label: str) -> str:
     avg_rt       = payload.get("avg_response_time")
     csat         = payload.get("csat")
 
-    cards = [
-        _metric_card("Open Issues", str(open_count)),
-        _metric_card(f"Tickets Raised", str(total_raised), period_label),
-        _metric_card(f"Tickets Closed", str(total_closed), period_label),
-    ]
-    if avg_rt is not None:
-        cards.append(_metric_card("Avg Response Time", f"{avg_rt:.1f} hrs"))
-    if csat is not None:
-        cards.append(_metric_card("CSAT", f"{csat:.2f} / 5.0"))
+    card_open   = _metric_card("Open Issues", str(open_count))
+    card_raised = _metric_card("Tickets Raised", str(total_raised), period_label)
+    card_closed = _metric_card("Tickets Closed", str(total_closed), period_label)
+    card_rt     = _metric_card("Avg Response Time", f"{avg_rt:.1f} hrs") if avg_rt is not None else None
+    card_csat   = _metric_card("CSAT", f"{csat:.2f} / 5.0") if csat is not None else None
 
-    cols = min(len(cards), 4)
-    grid = (
-        f'<div style="display:grid;grid-template-columns:repeat({cols},1fr);gap:12px;">'
-        + "".join(cards)
-        + "</div>"
-    )
-    return grid
+    if max_cols == 2 and card_rt is not None:
+        # Row 1: Open Issues | Avg Response Time
+        # Row 2: Tickets Raised | Tickets Closed
+        cards = [card_open, card_rt, card_raised, card_closed]
+    else:
+        cards = [card_open, card_raised, card_closed]
+        if card_rt is not None:
+            cards.append(card_rt)
+    if card_csat is not None:
+        cards.append(card_csat)
+
+    cols = min(len(cards), max_cols)
+    pct = f"{100 // cols}%"
+
+    # Split cards into rows of `cols`
+    rows_html = ""
+    for i in range(0, len(cards), cols):
+        row_cards = cards[i:i + cols]
+        # Pad the last row so columns stay consistent width
+        while len(row_cards) < cols:
+            row_cards.append('<div style="border:1px solid transparent;border-radius:8px;padding:16px 20px;"></div>')
+        cells = "".join(
+            f'<td style="width:{pct};padding:6px;vertical-align:top;">{card}</td>'
+            for card in row_cards
+        )
+        rows_html += f"<tr>{cells}</tr>"
+
+    return f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
 
 
 def _render_trend(monthly: list[dict]) -> str:
     if not monthly:
         return ""
 
-    W, H       = 800, 200
-    PAD_L      = 36   # left  (y-axis labels)
-    PAD_R      = 16
-    PAD_T      = 12
-    PAD_B      = 32   # bottom (x-axis labels)
-    chart_w    = W - PAD_L - PAD_R
-    chart_h    = H - PAD_T - PAD_B
+    max_val = max((max(m["tickets_raised"], m["closed_tickets"]) for m in monthly), default=1)
+    max_val = max(max_val, 1)
 
-    max_val    = max((max(m["tickets_raised"], m["closed_tickets"]) for m in monthly), default=1)
-    max_val    = max(max_val, 1)
-    # Round up to a nice ceiling for y-axis
-    y_top      = math.ceil(max_val / 5) * 5 or 5
-
-    n          = len(monthly)
-    group_w    = chart_w / n
-    bar_w      = max(group_w * 0.28, 4)
-    gap        = group_w * 0.08
-
-    def y(val: int) -> float:
-        return PAD_T + chart_h - (val / y_top) * chart_h
-
-    def x_center(i: int) -> float:
-        return PAD_L + i * group_w + group_w / 2
-
-    # Y-axis grid lines and labels (5 steps)
-    grid_lines = []
-    for step in range(6):
-        val    = round(y_top * step / 5)
-        cy     = y(val)
-        grid_lines.append(
-            f'<line x1="{PAD_L}" y1="{cy:.1f}" x2="{W - PAD_R}" y2="{cy:.1f}" '
-            f'stroke="#f3f4f6" stroke-width="1"/>'
-        )
-        grid_lines.append(
-            f'<text x="{PAD_L - 6}" y="{cy + 4:.1f}" text-anchor="end" '
-            f'font-size="10" fill="#9ca3af">{val}</text>'
-        )
-
-    # Bars + x labels
-    bars   = []
-    labels = []
-    for i, m in enumerate(monthly):
-        cx    = x_center(i)
-        raised = m["tickets_raised"]
-        closed = m["closed_tickets"]
-
-        # Raised bar (blue)
-        bh_r  = max((raised / y_top) * chart_h, 1) if raised else 0
-        bx_r  = cx - bar_w - gap / 2
-        bars.append(
-            f'<rect x="{bx_r:.1f}" y="{y(raised):.1f}" width="{bar_w:.1f}" '
-            f'height="{bh_r:.1f}" rx="2" fill="#006ddd" opacity="0.85"/>'
-        )
-
-        # Closed bar (teal)
-        bh_c  = max((closed / y_top) * chart_h, 1) if closed else 0
-        bx_c  = cx + gap / 2
-        bars.append(
-            f'<rect x="{bx_c:.1f}" y="{y(closed):.1f}" width="{bar_w:.1f}" '
-            f'height="{bh_c:.1f}" rx="2" fill="#10b981" opacity="0.85"/>'
-        )
-
-        # X label — abbreviated month (e.g. "Oct 2025" → "Oct")
-        short = m["month"].split()[0] if " " in m["month"] else m["month"]
-        labels.append(
-            f'<text x="{cx:.1f}" y="{H - 6}" text-anchor="middle" '
-            f'font-size="10" fill="#9ca3af">{_e(short)}</text>'
-        )
-
-    # Legend
-    legend = (
-        f'<rect x="{PAD_L}" y="{H + 8}" width="10" height="10" rx="2" fill="#006ddd" opacity="0.85"/>'
-        f'<text x="{PAD_L + 14}" y="{H + 17}" font-size="11" fill="#6b7280">Raised</text>'
-        f'<rect x="{PAD_L + 64}" y="{H + 8}" width="10" height="10" rx="2" fill="#10b981" opacity="0.85"/>'
-        f'<text x="{PAD_L + 78}" y="{H + 17}" font-size="11" fill="#6b7280">Closed</text>'
+    header = (
+        '<tr style="border-bottom:1px solid #e5e7eb;">'
+        '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;'
+        'letter-spacing:0.05em;text-transform:uppercase;color:#6b7280;white-space:nowrap;">Month</th>'
+        '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;'
+        'letter-spacing:0.05em;text-transform:uppercase;color:#006ddd;" colspan="2">'
+        '&#9646; Raised</th>'
+        '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;'
+        'letter-spacing:0.05em;text-transform:uppercase;color:#10b981;" colspan="2">'
+        '&#9646; Closed</th>'
+        '</tr>'
     )
 
-    svg_h = H + 28  # extra room for legend
+    rows = []
+    for m in monthly:
+        short = m["month"].split()[0] if " " in m["month"] else m["month"]
+        raised = m["tickets_raised"]
+        closed = m["closed_tickets"]
+        r_pct = max(int(raised / max_val * 100), 2) if raised else 0
+        c_pct = max(int(closed / max_val * 100), 2) if closed else 0
+        rows.append(
+            f'<tr style="border-bottom:1px solid #f3f4f6;">'
+            f'<td style="padding:8px 12px;font-size:12px;color:#6b7280;white-space:nowrap;">{_e(short)}</td>'
+            f'<td style="padding:8px 4px 8px 12px;width:35%;">'
+            f'<div style="background:#006ddd;height:12px;width:{r_pct}%;border-radius:2px;'
+            f'min-width:2px;opacity:0.85;"></div></td>'
+            f'<td style="padding:8px 12px 8px 4px;font-size:12px;font-weight:600;color:#374151;'
+            f'white-space:nowrap;">{raised}</td>'
+            f'<td style="padding:8px 4px 8px 12px;width:35%;">'
+            f'<div style="background:#10b981;height:12px;width:{c_pct}%;border-radius:2px;'
+            f'min-width:2px;opacity:0.85;"></div></td>'
+            f'<td style="padding:8px 12px 8px 4px;font-size:12px;font-weight:600;color:#374151;'
+            f'white-space:nowrap;">{closed}</td>'
+            f'</tr>'
+        )
+
     return (
-        f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px 12px 8px;">'
-        f'<svg width="100%" viewBox="0 0 {W} {svg_h}" '
-        f'xmlns="http://www.w3.org/2000/svg" style="display:block;">'
-        + "".join(grid_lines)
-        + "".join(bars)
-        + "".join(labels)
-        + legend
-        + "</svg></div>"
+        f'<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
+        f'<table style="width:100%;border-collapse:collapse;">'
+        f'<thead>{header}</thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        f'</table></div>'
     )
 
 
@@ -277,33 +251,42 @@ def _render_breakdown(breakdown: dict[str, int], labels: dict[str, str] | None =
     </table>"""
 
 
-def _render_breakdowns(payload: dict) -> str:
-    sections = []
+def _render_breakdowns(payload: dict, stacked: bool = False) -> str:
     priority_bd = payload.get("priority_breakdown", {})
     state_bd    = payload.get("state_breakdown", {})
     disp_bd     = payload.get("disposition_breakdown", {})
 
-    col_style = "flex:1;min-width:200px;"
-    def _col(title: str, content: str) -> str:
+    sections = []
+    if priority_bd:
+        sections.append(("Priority", _render_breakdown(priority_bd, _PRIORITY_LABELS)))
+    if state_bd:
+        sections.append(("State", _render_breakdown(state_bd, _STATE_LABELS)))
+    if disp_bd:
+        sections.append(("Disposition", _render_breakdown(disp_bd)))
+
+    if not sections:
+        return ""
+
+    def _box(title: str, content: str) -> str:
         return (
-            f'<div style="{col_style}border:1px solid #e5e7eb;border-radius:8px;'
-            f'padding:16px;overflow:hidden;">'
+            f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;">'
             f'<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;'
             f'text-transform:uppercase;color:#6b7280;margin-bottom:10px;">{_e(title)}</div>'
             f"{content}</div>"
         )
 
-    cols = []
-    if priority_bd:
-        cols.append(_col("Priority", _render_breakdown(priority_bd, _PRIORITY_LABELS)))
-    if state_bd:
-        cols.append(_col("State", _render_breakdown(state_bd, _STATE_LABELS)))
-    if disp_bd:
-        cols.append(_col("Disposition", _render_breakdown(disp_bd)))
+    if stacked:
+        rows = "".join(
+            f'<tr><td style="padding:6px 0;">{_box(title, content)}</td></tr>'
+            for title, content in sections
+        )
+        return f'<table style="width:100%;border-collapse:collapse;">{rows}</table>'
 
-    if not cols:
-        return ""
-    return f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{"".join(cols)}</div>'
+    cols = "".join(
+        f'<td style="width:33%;padding:6px;vertical-align:top;">{_box(title, content)}</td>'
+        for title, content in sections
+    )
+    return f'<table style="width:100%;border-collapse:collapse;"><tr>{cols}</tr></table>'
 
 
 def _md_to_html(text: str) -> str:
@@ -393,6 +376,16 @@ def _render_tickets(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+_LOGO_SVG = (
+    '<svg width="22" height="22" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    '<path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd"/>'
+    '<path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="#006ddd"/>'
+    '<path d="M11.8146 115.987C19.3329 123.502 29.541 127.732 40.1724 127.732V87.6289H0.0664062C0.0700559 98.2606 4.29635 108.469 11.8146 115.987Z" fill="#006ddd"/>'
+    '<path d="M110.387 45.7684C102.869 38.2535 92.6608 34.0198 82.0258 34.0234C71.3943 34.0234 61.1863 38.2535 53.668 45.772L82.0258 74.1306L110.387 45.7684Z" fill="#006ddd"/>'
+    '</svg>'
+)
+
+
 def generate_report_html(
     account_name: str,
     period: str,
@@ -401,12 +394,117 @@ def generate_report_html(
     account_summary: str | None = None,
     sort_by: str = "priority",
     sort_order: str = "asc",
+    logo_url: str | None = None,
+    is_email: bool = False,
+    banner_url: str | None = None,
 ) -> str:
     period_label = _PERIOD_LABELS.get(period, period)
     generated    = datetime.now().strftime("%-d %B %Y")
     open_issues  = payload.get("open_issues", [])
     monthly      = payload.get("monthly_metrics", [])
+    logo_html    = (
+        f'<img src="{_e(logo_url)}" width="22" height="22" alt="LangChain" style="display:block;">'
+        if logo_url else _LOGO_SVG
+    )
 
+    # Inner report content — shared by both email and browser/PDF versions
+    body_content = f"""
+    <!-- Header -->
+    <table style="width:100%;border-collapse:collapse;padding-bottom:24px;
+                  border-bottom:2px solid #006ddd;margin-bottom:32px;">
+      <tr>
+        <td style="vertical-align:top;padding-bottom:24px;">
+          <table style="border-collapse:collapse;margin-bottom:8px;">
+            <tr>
+              <td style="vertical-align:middle;padding-right:8px;">
+                {logo_html}
+              </td>
+              <td style="vertical-align:middle;font-size:11px;font-weight:600;
+                         letter-spacing:0.08em;text-transform:uppercase;color:#006ddd;">
+                Premium Support Highlights
+              </td>
+            </tr>
+          </table>
+          <h1 style="font-size:28px;font-weight:700;color:#111827;line-height:1.2;margin:0;">
+            {_e(account_name)}
+          </h1>
+        </td>
+        <td style="vertical-align:top;text-align:right;font-size:12px;color:#6b7280;
+                   padding-top:4px;padding-bottom:24px;white-space:nowrap;">
+          <div>{_e(period_label)}</div>
+          <div style="margin-top:2px;">Generated {_e(generated)}</div>
+        </td>
+      </tr>
+    </table>
+
+    {_section_heading("Key Metrics")}
+    {_render_metrics(payload, period_label, max_cols=2 if is_email else 4)}
+
+    {_section_heading("Monthly Trend")}
+    {_render_trend(monthly)}
+
+    {_section_heading("Breakdowns")}
+    {_render_breakdowns(payload, stacked=is_email)}
+
+    {(_section_heading("AI Account Summary") + _render_summary(account_summary)) if account_summary else ""}
+
+    {_section_heading(f"Open Issues ({len(open_issues)})")}
+    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order)}
+"""
+
+    if is_email:
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{_e(account_name)} — Support Highlights</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f8f7ff;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f8f7ff;">
+    <tr>
+      <td align="center">
+        <table border="0" cellpadding="0" cellspacing="0" width="660"
+               style="max-width:660px;width:100%;background:#ffffff;">
+
+          <!-- Banner -->
+          {f'''<tr>
+            <td style="padding:0;">
+              <img src="{_e(banner_url)}"
+                   alt="LangChain"
+                   width="660"
+                   style="display:block;width:100%;max-width:660px;height:auto;border:0;">
+            </td>
+          </tr>''' if banner_url else ""}
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:24px 28px;font-size:14px;line-height:1.5;color:#111827;">
+              {body_content}
+            </td>
+          </tr>
+
+          <!-- Divider -->
+          <tr>
+            <td style="padding:10px 20px;">
+              <hr style="border:0;border-top:2px solid #000;">
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="padding:10px;font-size:12px;background-color:#f8f7ff;color:#333;">
+              <em>Copyright &copy; {datetime.now().year} LangChain. All rights reserved.</em>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+    # Browser / print-to-PDF version
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -429,59 +527,16 @@ def generate_report_html(
   </style>
 </head>
 <body>
-  <div style="max-width:900px;margin:0 auto;padding:40px 32px;">
+  <div style="max-width:900px;margin:0 auto;">
+    {f'<img src="{_e(banner_url)}" alt="LangChain" style="display:block;width:100%;height:auto;border:0;">' if banner_url else ""}
+    <div style="padding:40px 32px;">
+    {body_content}
 
-    <!-- Header -->
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;
-                padding-bottom:24px;border-bottom:2px solid #006ddd;margin-bottom:32px;">
-      <div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-          <svg width="22" height="22" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd"/>
-            <path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="#006ddd"/>
-            <path d="M11.8146 115.987C19.3329 123.502 29.541 127.732 40.1724 127.732V87.6289H0.0664062C0.0700559 98.2606 4.29635 108.469 11.8146 115.987Z" fill="#006ddd"/>
-            <path d="M110.387 45.7684C102.869 38.2535 92.6608 34.0198 82.0258 34.0234C71.3943 34.0234 61.1863 38.2535 53.668 45.772L82.0258 74.1306L110.387 45.7684Z" fill="#006ddd"/>
-          </svg>
-          <span style="font-size:11px;font-weight:600;letter-spacing:0.08em;
-                       text-transform:uppercase;color:#006ddd;">
-            Premium Support Highlights
-          </span>
-        </div>
-        <h1 style="font-size:28px;font-weight:700;color:#111827;line-height:1.2;">
-          {_e(account_name)}
-        </h1>
-      </div>
-      <div style="text-align:right;font-size:12px;color:#6b7280;margin-top:4px;">
-        <div>{_e(period_label)}</div>
-        <div style="margin-top:2px;">Generated {_e(generated)}</div>
-      </div>
+    <hr style="margin-top:48px;border:0;border-top:2px solid #000;">
+    <div style="padding:10px;font-size:12px;background-color:#f8f7ff;color:#333;text-align:center;">
+      <em>Copyright &copy; {datetime.now().year} LangChain. All rights reserved.</em>
     </div>
-
-    <!-- Key Metrics -->
-    {_section_heading("Key Metrics")}
-    {_render_metrics(payload, period_label)}
-
-    <!-- Monthly Trend -->
-    {_section_heading("Monthly Trend")}
-    {_render_trend(monthly)}
-
-    <!-- Breakdowns -->
-    {_section_heading("Breakdowns")}
-    {_render_breakdowns(payload)}
-
-    <!-- AI Account Summary -->
-    {(_section_heading("AI Account Summary") + _render_summary(account_summary)) if account_summary else ""}
-
-    <!-- Open Tickets -->
-    {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order)}
-
-    <!-- Footer -->
-    <div style="margin-top:48px;padding-top:16px;border-top:1px solid #e5e7eb;
-                font-size:11px;color:#9ca3af;text-align:center;">
-      Generated by Support Highlights &middot; Powered by Pylon + Claude
     </div>
-
   </div>
 </body>
 </html>"""

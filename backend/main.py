@@ -21,6 +21,9 @@ import os
 import time
 import asyncio
 import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any
 
 from dotenv import load_dotenv
@@ -99,6 +102,14 @@ class SummaryRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
     period: str = "6m"
     force: bool = False
+
+
+class EmailReportRequest(BaseModel):
+    email: str
+    account_name: str
+    period: str = "6m"
+    sort_by: str = "priority"
+    sort_order: str = "asc"
 
 
 # ---------------------------------------------------------------------------
@@ -427,5 +438,90 @@ async def get_account_report(
         account_summary=account_summary,
         sort_by=sort_by,
         sort_order=sort_order,
+        banner_url=os.environ.get("REPORT_BANNER_URL") or None,
     )
     return HTMLResponse(content=html)
+
+
+@app.post("/api/accounts/{account_id}/email-report")
+async def email_account_report(account_id: str, body: EmailReportRequest):
+    """Generate a report and email it as HTML to the specified address.
+
+    Requires SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD env vars.
+    SMTP_FROM defaults to SMTP_USER if not set.
+    """
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_password = os.environ.get("SMTP_PASSWORD", "")
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+
+    if not smtp_host or not smtp_user or not smtp_password:
+        raise HTTPException(
+            status_code=503,
+            detail="Email is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD.",
+        )
+
+    period = body.period if body.period in VALID_PERIODS else "6m"
+
+    field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
+        account_id, period
+    )
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+
+    def _read_summaries() -> dict[int, str]:
+        out: dict[int, str] = {}
+        for issue in open_issues:
+            issue_id = issue.get("id", "")
+            number = issue.get("number")
+            if number is None:
+                continue
+            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
+            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if summary:
+                out[number] = summary
+        return out
+
+    ticket_summaries = await asyncio.to_thread(_read_summaries)
+    account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
+
+    logo_url = os.environ.get("REPORT_LOGO_URL") or None
+    banner_url = os.environ.get("REPORT_BANNER_URL") or None
+    html = generate_report_html(
+        account_name=body.account_name,
+        period=period,
+        payload=payload,
+        ticket_summaries=ticket_summaries,
+        account_summary=account_summary,
+        sort_by=body.sort_by,
+        sort_order=body.sort_order,
+        logo_url=logo_url,
+        is_email=True,
+        banner_url=banner_url,
+    )
+
+    subject = f"Support Highlights: {body.account_name}"
+
+    def _send_email() -> None:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = smtp_from
+        msg["To"] = body.email
+        msg.attach(MIMEText(html, "html"))
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_from, [body.email], msg.as_string())
+
+    try:
+        await asyncio.to_thread(_send_email)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to send email: {exc}") from exc
+
+    await asyncio.to_thread(
+        audit.log,
+        "report_emailed",
+        {"account_id": account_id, "account_name": body.account_name, "to": body.email},
+    )
+    return {"ok": True}

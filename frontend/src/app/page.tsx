@@ -17,7 +17,8 @@ import {
   type Issue,
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
-import { downloadCsv, downloadPdf } from "@/lib/downloads";
+import EmailButton from "@/components/EmailButton";
+import { downloadCsv, downloadPdf, emailReport } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
 
@@ -337,10 +338,15 @@ export default function Home() {
                 </p>
               </div>
               {accountData && (
-                <DownloadMenu
-                  onDownloadPdf={() => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder)}
-                  onDownloadCsv={() => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries)}
-                />
+                <div className="flex items-center gap-2">
+                  <EmailButton
+                    onEmailReport={(email) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder)}
+                  />
+                  <DownloadMenu
+                    onDownloadPdf={() => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder)}
+                    onDownloadCsv={() => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries)}
+                  />
+                </div>
               )}
             </div>
 

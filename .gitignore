@@ -1,11 +1,17 @@
-# Environment
+# Environment — contains API keys, SMTP credentials, banner/logo URLs
 .env
+.env.local
+.env.*.local
 frontend/.env.local
 
-# Runtime data
+# Runtime data — contains customer names, ticket content, AI summaries, audit logs
 .cache/
 logs/
+*.log
 .langgraph_api/
+
+# Customer context
+customer_context/
 
 # Python
 __pycache__/
@@ -15,4 +21,4 @@ __pycache__/
 
 # Next.js
 frontend/.next/
-frontend/node_modules/
+node_modules/

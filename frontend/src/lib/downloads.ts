@@ -111,3 +111,22 @@ export function downloadPdf(accountId: string, accountName: string, period: stri
   const params = new URLSearchParams({ account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder });
   window.open(`/api/accounts/${accountId}/report?${params}`, "_blank");
 }
+
+export async function emailReport(
+  accountId: string,
+  accountName: string,
+  email: string,
+  period: string,
+  sortBy: string,
+  sortOrder: string,
+): Promise<void> {
+  const res = await fetch(`/api/accounts/${accountId}/email-report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Failed to send email");
+  }
+}
