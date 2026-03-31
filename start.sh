@@ -139,17 +139,32 @@ _wait_for_port() {
   echo "slow to start — check $logfile"
 }
 
+# Poll the langgraph /ok health endpoint until the Python app is fully ready.
+# Usage: _wait_for_backend LABEL PORT TIMEOUT_SECS LOG_FILE
+_wait_for_backend() {
+  local label="$1" port="$2" timeout="$3" logfile="$4"
+  printf "  %-14s" "$label"
+  local attempts=$((timeout * 2))
+  for _ in $(seq 1 $attempts); do
+    if curl -sf "http://localhost:${port}/ok" >/dev/null 2>&1; then
+      echo "✓"; return
+    fi
+    sleep 0.5
+  done
+  echo "slow to start — check $logfile"
+}
+
 echo
 
 if [ "$VERBOSE" = true ]; then
   # Use exec inside the subshells so BACKEND_PID/FRONTEND_PID point to the
-  # actual processes (uv, npm) rather than a bash wrapper. This lets `wait`
-  # in _cleanup properly block until they fully finish their graceful shutdown.
+  # actual processes rather than a bash wrapper. This lets `wait` in _cleanup
+  # properly block until they fully finish their graceful shutdown.
   echo "Starting services (verbose — logs to terminal)..."
-  bash -c "cd '$SCRIPT_DIR/backend' && \
-    LANGSMITH_TRACING='${LANGSMITH_TRACING:-false}' \
-    exec uv run uvicorn main:app --reload --port 8000" &
+  bash -c "cd '$SCRIPT_DIR' && \
+    exec uv run --project '$SCRIPT_DIR/backend' langgraph dev --port 8000 --no-browser" &
   BACKEND_PID=$!
+  _wait_for_backend "Backend"   8000 60 "/dev/stderr"
   bash -c "cd '$SCRIPT_DIR/frontend' && \
     NODE_NO_WARNINGS=1 exec npm run dev" &
   FRONTEND_PID=$!
@@ -158,12 +173,11 @@ else
   # would hang waiting for the long-running processes to exit before returning).
   echo "Starting services..."
 
-  bash -c "cd '$SCRIPT_DIR/backend' && \
-    LANGSMITH_TRACING='${LANGSMITH_TRACING:-false}' \
-    uv run uvicorn main:app --reload --port 8000 \
+  bash -c "cd '$SCRIPT_DIR' && \
+    uv run --project '$SCRIPT_DIR/backend' langgraph dev --port 8000 --no-browser \
     >> '$LOG_DIR/backend.log' 2>&1" &
   BACKEND_PID=$!
-  _wait_for_port "Backend"   8000 15 "$LOG_DIR/backend.log"
+  _wait_for_backend "Backend"   8000 60 "$LOG_DIR/backend.log"
 
   bash -c "cd '$SCRIPT_DIR/frontend' && \
     NODE_NO_WARNINGS=1 npm run dev \

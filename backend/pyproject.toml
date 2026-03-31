@@ -12,6 +12,12 @@ dependencies = [
     "langsmith>=0.2.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "markdown>=3.6",
+]
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]>=0.2",
 ]
 
 [tool.setuptools.packages.find]

@@ -255,7 +255,7 @@ export default function Sidebar({
         background: "var(--bg-base)",
         borderRight: "1px solid var(--border)",
       }}
-      className="relative flex flex-col h-screen overflow-hidden transition-[width,min-width] duration-200 ease-in-out"
+      className="relative flex flex-col h-screen overflow-hidden transition-[width,min-width] duration-200 ease-in-out print:hidden"
     >
       {/* Toggle button */}
       <button

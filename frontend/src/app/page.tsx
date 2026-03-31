@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, ArrowUpDown } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
@@ -16,6 +16,8 @@ import {
   type AccountData,
   type Issue,
 } from "@/lib/api";
+import DownloadMenu from "@/components/DownloadMenu";
+import { downloadCsv, downloadPdf } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
 
@@ -61,20 +63,17 @@ const PERIOD_LABELS: Record<string, string> = {
   "7d": "7d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1yr",
 };
 
-function sortIssues(issues: Issue[], sortBy: string): Issue[] {
+function sortIssues(issues: Issue[], sortBy: string, sortOrder: "asc" | "desc"): Issue[] {
+  const dir = sortOrder === "desc" ? -1 : 1;
   return [...issues].sort((a, b) => {
     if (sortBy === "state") {
-      return (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99);
+      return dir * ((STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99));
     }
     if (sortBy === "created") {
-      return (
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
+      return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     }
     if (sortBy === "priority") {
-      return (
-        (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99)
-      );
+      return dir * ((PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99));
     }
     return 0;
   });
@@ -91,6 +90,7 @@ export default function Home() {
   const [period, setPeriod] = useState("6m");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("priority");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [selectedStates, setSelectedStates] = useState<string[]>(OPEN_STATES);
   const [forceRefresh, setForceRefresh] = useState(0);
   const [ticketSummaries, setTicketSummaries] = useState<Record<number, string | null>>({});
@@ -289,7 +289,8 @@ export default function Home() {
             issue.tags.some((t) => t.toLowerCase().includes(q));
           return matchesState && matchesSearch;
         }),
-        sortBy
+        sortBy,
+        sortOrder
       )
     : [];
 
@@ -326,13 +327,21 @@ export default function Home() {
         ) : (
           <>
             {/* Page header */}
-            <div className="mb-6">
-              <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
-                {selectedAccount.name}
-              </h1>
-              <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>
-                Premium account overview
-              </p>
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
+                  {selectedAccount.name}
+                </h1>
+                <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>
+                  Premium account overview
+                </p>
+              </div>
+              {accountData && (
+                <DownloadMenu
+                  onDownloadPdf={() => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder)}
+                  onDownloadCsv={() => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries)}
+                />
+              )}
             </div>
 
             {error && (
@@ -425,7 +434,7 @@ export default function Home() {
                   </h2>
 
                   {/* Filters row */}
-                  <div className="flex flex-wrap gap-2 mb-4">
+                  <div className="flex flex-wrap gap-2 mb-4 print:hidden" data-print-hide>
                     <input
                       type="text"
                       placeholder="Search tickets..."
@@ -438,20 +447,35 @@ export default function Home() {
                       }}
                       className="text-sm rounded px-3 py-1.5 focus:outline-none w-48 placeholder:text-[var(--text-caption)]"
                     />
-                    <select
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value)}
-                      style={{
-                        background: "var(--bg-secondary)",
-                        border: "1px solid var(--border)",
-                        color: "var(--text-primary)",
-                      }}
-                      className="text-sm rounded px-2 py-1.5 focus:outline-none cursor-pointer"
-                    >
-                      {SORT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>Sort: {opt.label}</option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-0">
+                      <select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value)}
+                        style={{
+                          background: "var(--bg-secondary)",
+                          border: "1px solid var(--border)",
+                          borderRight: "none",
+                          color: "var(--text-primary)",
+                        }}
+                        className="text-sm rounded-l px-2 py-1.5 focus:outline-none cursor-pointer"
+                      >
+                        {SORT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>Sort: {opt.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => setSortOrder((o) => o === "asc" ? "desc" : "asc")}
+                        title={sortOrder === "asc" ? "Ascending" : "Descending"}
+                        style={{
+                          background: "var(--bg-secondary)",
+                          border: "1px solid var(--border)",
+                          color: sortOrder === "desc" ? "var(--text-primary)" : "var(--text-muted)",
+                        }}
+                        className="px-2 py-1.5 rounded-r text-sm hover:bg-[var(--bg-tertiary)] transition-colors focus:outline-none cursor-pointer"
+                      >
+                        <ArrowUpDown size={13} style={{ transform: sortOrder === "desc" ? "scaleY(-1)" : "none" }} />
+                      </button>
+                    </div>
                     <div className="flex flex-wrap gap-1">
                       {OPEN_STATES.map((state) => {
                         const active = selectedStates.includes(state);

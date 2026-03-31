@@ -44,3 +44,21 @@ def set_ticket_summary(issue_id: str, latest_message_time: str, summary: str) ->
         "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     _save(cache)
+
+
+def get_account_summary(account_id: str, period: str) -> str | None:
+    """Return the cached AI account summary, or None if not cached."""
+    key = f"as:{account_id}:{period}"
+    entry = _load().get(key)
+    return entry.get("summary") if isinstance(entry, dict) else None
+
+
+def set_account_summary(account_id: str, period: str, summary: str) -> None:
+    """Persist an AI account summary to the file cache."""
+    cache = _load()
+    key = f"as:{account_id}:{period}"
+    cache[key] = {
+        "summary": summary,
+        "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(cache)

@@ -30,7 +30,7 @@ load_dotenv(os.path.join(_root, ".env"))
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
 import pylon_client
@@ -38,6 +38,7 @@ import metrics as metrics_mod
 import audit
 import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool
+from report import generate_report_html
 
 app = FastAPI(title="Premium Support Highlights API", version="0.1.0")
 
@@ -369,6 +370,7 @@ async def get_account_summary(account_id: str, body: SummaryRequest):
 
         yield f"event: result\ndata: {json.dumps({'summary': summary})}\n\n"
         try:
+            await asyncio.to_thread(cache_mod.set_account_summary, account_id, period, summary)
             audit.log(
                 "summary_generated",
                 {"account_id": account_id, "account_name": body.account_name, "model": body.model},
@@ -377,3 +379,53 @@ async def get_account_summary(account_id: str, body: SummaryRequest):
             pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/accounts/{account_id}/report", response_class=HTMLResponse)
+async def get_account_report(
+    account_id: str,
+    account_name: str = Query(...),
+    period: str = Query("6m"),
+    sort_by: str = Query("priority"),
+    sort_order: str = Query("asc"),
+):
+    """Return a self-contained HTML report for an account.
+
+    Includes cached ticket summaries and the latest cached AI account summary
+    if one exists. Suitable for printing to PDF or sending as an HTML email.
+    """
+    if period not in VALID_PERIODS:
+        period = "6m"
+
+    field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
+        account_id, period
+    )
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+
+    # Collect cached per-ticket summaries (same logic as /cached-ticket-summaries)
+    def _read_summaries() -> dict[int, str]:
+        out: dict[int, str] = {}
+        for issue in open_issues:
+            issue_id = issue.get("id", "")
+            number = issue.get("number")
+            if number is None:
+                continue
+            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
+            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if summary:
+                out[number] = summary
+        return out
+
+    ticket_summaries = await asyncio.to_thread(_read_summaries)
+    account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
+
+    html = generate_report_html(
+        account_name=account_name,
+        period=period,
+        payload=payload,
+        ticket_summaries=ticket_summaries,
+        account_summary=account_summary,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    return HTMLResponse(content=html)

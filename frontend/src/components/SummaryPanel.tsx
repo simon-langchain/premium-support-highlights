@@ -24,7 +24,8 @@ export default function SummaryPanel({ summary, generatedAt, loading, error, onR
         <button
           onClick={onRegenerate}
           disabled={loading}
-          className="flex items-center gap-1.5 text-sm bg-[#006ddd] hover:bg-[#0058b8] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded px-3 py-1.5 transition-colors font-medium"
+          data-print-hide
+          className="print:hidden flex items-center gap-1.5 text-sm bg-[#006ddd] hover:bg-[#0058b8] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded px-3 py-1.5 transition-colors font-medium"
         >
           {loading ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
           {loading ? "Generating..." : "Regenerate Summaries"}
