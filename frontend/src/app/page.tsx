@@ -364,7 +364,7 @@ export default function Home() {
             ) : accountData ? (
               <>
                 {/* Metric cards */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                <div className={`grid grid-cols-2 gap-3 mb-5 ${accountData.csat !== null ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
                   <MetricCard label="Open Issues" value={accountData.open_issues.length} />
                   <MetricCard label={`Tickets Raised (${PERIOD_LABELS[period] ?? period})`} value={totalRaised} />
                   <MetricCard label={`Tickets Closed (${PERIOD_LABELS[period] ?? period})`} value={totalClosed} />
