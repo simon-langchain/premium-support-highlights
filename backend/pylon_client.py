@@ -103,6 +103,15 @@ def get_me() -> dict:
     return _cached_get("me", "/me")
 
 
+def get_team_members() -> list[dict]:
+    """Return all Pylon team members. Cached for 2 minutes.
+
+    Uses GET /users. Each member has at minimum an `email` field.
+    """
+    data = _cached_get("users", "/users")
+    return data.get("data", []) if isinstance(data, dict) else []
+
+
 def get_accounts() -> list[dict]:
     """List all accounts from the Pylon API, paginating through all results.
 

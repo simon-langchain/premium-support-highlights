@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { RefreshCw, ChevronLeft, ChevronRight, Sun, Moon, Search, Check, ChevronDown } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight, Sun, Moon, Search, Check, ChevronDown, LogOut, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useRouter } from "next/navigation";
 import type { Account } from "@/lib/api";
 
 interface SidebarProps {
@@ -232,20 +233,29 @@ export default function Sidebar({
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    router.push("/login");
+  }
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setMounted(true), []);
 
-  const ThemeToggle = ({ size = 14 }: { size?: number }) =>
-    mounted ? (
-      <button
-        onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-        title="Toggle theme"
-        style={{ color: "var(--text-muted)" }}
-        className="p-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
-      >
-        {resolvedTheme === "dark" ? <Sun size={size} /> : <Moon size={size} />}
-      </button>
-    ) : null;
+  useEffect(() => {
+    function onMouseDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
+
+  const isDark = resolvedTheme === "dark";
 
   return (
     <aside
@@ -255,7 +265,7 @@ export default function Sidebar({
         background: "var(--bg-base)",
         borderRight: "1px solid var(--border)",
       }}
-      className="relative flex flex-col h-screen overflow-hidden transition-[width,min-width] duration-200 ease-in-out print:hidden"
+      className="relative flex flex-col h-screen transition-[width,min-width] duration-200 ease-in-out print:hidden"
     >
       {/* Toggle button */}
       <button
@@ -267,75 +277,120 @@ export default function Sidebar({
         {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
       </button>
 
-      {/* Collapsed: logo at top, theme toggle pinned to bottom */}
-      {collapsed && (
-        <div className="flex flex-col items-center flex-1 pt-[18px] pb-4">
-          <Logo />
-          <div className="flex-1" />
-          <ThemeToggle />
-        </div>
-      )}
+      {/* Inner content — overflow-hidden here so text clips during collapse animation */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        {/* Collapsed: logo at top, spacer */}
+        {collapsed && (
+          <div className="flex flex-col items-center flex-1 pt-[18px]">
+            <Logo />
+          </div>
+        )}
 
-      {/* Expanded content */}
-      {!collapsed && (
-        <>
-          {/* Logo + title */}
-          <div className="px-4 pt-5 pb-4 pr-8">
-            <div className="flex items-center gap-2 mb-1">
-              <Logo />
-              <span style={{ color: "var(--text-primary)" }} className="font-semibold text-sm leading-tight whitespace-nowrap">
-                Support Highlights
-              </span>
+        {/* Expanded content */}
+        {!collapsed && (
+          <>
+            {/* Logo + title */}
+            <div className="px-4 pt-5 pb-4 pr-8">
+              <div className="flex items-center gap-2 mb-1">
+                <Logo />
+                <span style={{ color: "var(--text-primary)" }} className="font-semibold text-sm leading-tight whitespace-nowrap">
+                  Support Highlights
+                </span>
+              </div>
+              <p style={{ color: "var(--text-muted)" }} className="text-xs ml-7">Premium accounts</p>
             </div>
-            <p style={{ color: "var(--text-muted)" }} className="text-xs ml-7">Premium accounts</p>
-          </div>
 
-          <div className="px-4 pb-3">
-            <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-              Account
-            </label>
-            <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} />
-          </div>
-
-          <div className="px-4 pb-3">
-            <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-              Time Period
-            </label>
-            <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
-          </div>
-
-          <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
-
-          <div className="px-4 py-3 flex flex-col gap-3">
-            <button
-              onClick={onRefresh}
-              style={{
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-              }}
-              className="flex items-center gap-2 text-sm rounded px-3 py-1.5 transition-colors hover:bg-[var(--bg-tertiary)]"
-            >
-              <RefreshCw size={14} />
-              Refresh Data
-            </button>
-
-            <div>
+            <div className="px-4 pb-3">
               <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Summary Model
+                Account
               </label>
-              <OptionPicker options={MODELS} value={selectedModel} onChange={onModelChange} />
+              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} />
             </div>
-          </div>
 
-          <div className="flex-1" />
+            <div className="px-4 pb-3">
+              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+                Time Period
+              </label>
+              <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
+            </div>
 
-          <div className="px-4 py-4 flex items-center justify-between">
-            <p style={{ color: "var(--text-caption)" }} className="text-xs">Powered by Pylon + Claude</p>
-            <ThemeToggle />
+            <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
+
+            <div className="px-4 py-3 flex flex-col gap-3">
+              <button
+                onClick={onRefresh}
+                style={{
+                  background: "var(--bg-secondary)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-primary)",
+                }}
+                className="flex items-center gap-2 text-sm rounded px-3 py-1.5 transition-colors hover:bg-[var(--bg-tertiary)]"
+              >
+                <RefreshCw size={14} />
+                Refresh Data
+              </button>
+
+              <div>
+                <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+                  Summary Model
+                </label>
+                <OptionPicker options={MODELS} value={selectedModel} onChange={onModelChange} />
+              </div>
+            </div>
+
+            <div className="flex-1" />
+          </>
+        )}
+      </div>
+
+      {/* Settings footer — outside overflow-hidden so the popover can escape */}
+      <div
+        ref={menuRef}
+        className="relative"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <button
+          onClick={() => setMenuOpen((o) => !o)}
+          style={{
+            color: menuOpen ? "var(--text-primary)" : "var(--text-muted)",
+            background: menuOpen ? "var(--bg-tertiary)" : "transparent",
+            width: "100%",
+          }}
+          className={`flex items-center gap-2.5 px-3.5 py-3 text-sm transition-colors hover:bg-[var(--bg-tertiary)] ${collapsed ? "justify-center" : ""}`}
+        >
+          <Settings size={14} className="flex-shrink-0" />
+          {!collapsed && <span className="whitespace-nowrap">Settings</span>}
+        </button>
+
+        {menuOpen && mounted && (
+          <div
+            style={{
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 -4px 24px rgba(0,0,0,0.4)",
+            }}
+            className="absolute bottom-[calc(100%+4px)] left-2 z-50 rounded-lg overflow-hidden w-44"
+          >
+            <button
+              onClick={() => { setTheme(isDark ? "light" : "dark"); setMenuOpen(false); }}
+              style={{ color: "var(--text-primary)" }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              {isDark ? <Sun size={14} /> : <Moon size={14} />}
+              {isDark ? "Light mode" : "Dark mode"}
+            </button>
+            <div style={{ borderColor: "var(--border)" }} className="border-t" />
+            <button
+              onClick={() => { setMenuOpen(false); handleSignOut(); }}
+              style={{ color: "var(--text-primary)" }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              <LogOut size={14} />
+              Sign out
+            </button>
           </div>
-        </>
-      )}
+        )}
+      </div>
     </aside>
   );
 }

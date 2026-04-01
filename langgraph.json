@@ -5,12 +5,7 @@
     "summary_agent": "./backend/summary_agent.py:summary_graph"
   },
   "http": {
-    "app": "./backend/main.py:app",
-    "cors": {
-      "allow_origins": ["*"],
-      "allow_methods": ["*"],
-      "allow_headers": ["*"]
-    }
+    "app": "./backend/main.py:app"
   },
   "env": ".env",
   "python_version": "3.11"

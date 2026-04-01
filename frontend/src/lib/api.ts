@@ -36,9 +36,16 @@ export interface AccountData {
   disposition_breakdown: Record<string, number>;
 }
 
+function handleUnauthorized(res: Response): void {
+  if (res.status === 401 && typeof window !== "undefined") {
+    window.location.href = "/login";
+  }
+}
+
 /** Fetch all premium accounts, sorted alphabetically by name. */
 export async function fetchAccounts(): Promise<Account[]> {
   const res = await fetch("/api/accounts");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
   if (!res.ok) {
     throw new Error(`Failed to fetch accounts: ${res.status} ${res.statusText}`);
   }
@@ -53,6 +60,7 @@ export async function fetchAccountData(
 ): Promise<AccountData> {
   const params = new URLSearchParams({ account_name: accountName, period });
   const res = await fetch(`/api/accounts/${accountId}/data?${params}`);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
   if (!res.ok) {
     throw new Error(
       `Failed to fetch account data: ${res.status} ${res.statusText}`
@@ -68,6 +76,7 @@ export async function fetchAccountData(
  */
 export async function fetchCachedTicketSummaries(accountId: string): Promise<Record<number, string>> {
   const res = await fetch(`/api/accounts/${accountId}/cached-ticket-summaries`);
+  if (res.status === 401) { handleUnauthorized(res); return {}; }
   if (!res.ok) {
     throw new Error(`Failed to fetch ticket summaries: ${res.status} ${res.statusText}`);
   }
@@ -97,6 +106,7 @@ export async function generateSummary(
     body: JSON.stringify({ account_name: accountName, model, period, force }),
     signal,
   });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(

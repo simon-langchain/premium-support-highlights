@@ -31,10 +31,12 @@ from dotenv import load_dotenv
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_root, ".env"))
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+import auth as auth_mod
 
 import pylon_client
 import metrics as metrics_mod
@@ -110,6 +112,91 @@ class EmailReportRequest(BaseModel):
     period: str = "6m"
     sort_by: str = "priority"
     sort_order: str = "asc"
+
+
+class AuthRequestBody(BaseModel):
+    email: str
+
+
+class AuthVerifyBody(BaseModel):
+    email: str
+    code: str
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+def _get_session_token(request: Request) -> str | None:
+    return request.cookies.get("psh_session")
+
+
+async def require_auth(request: Request) -> str:
+    token = _get_session_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    email = auth_mod.validate_session(token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return email
+
+
+# ---------------------------------------------------------------------------
+# OTP email helper
+# ---------------------------------------------------------------------------
+
+def _send_otp_email(to_email: str, code: str) -> None:
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_password = os.environ.get("SMTP_PASSWORD", "")
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+
+    if not smtp_host or not smtp_user or not smtp_password:
+        raise RuntimeError("SMTP not configured")
+
+    html = f"""<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;background:#f8f7ff;margin:0;padding:0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f8f7ff;">
+  <tr><td align="center">
+    <table width="480" cellpadding="0" cellspacing="0"
+           style="background:#fff;margin:40px auto;border-radius:8px;overflow:hidden;">
+      <tr><td style="padding:32px 40px;">
+        <p style="font-size:13px;font-weight:600;letter-spacing:0.08em;
+                  text-transform:uppercase;color:#006ddd;margin:0 0 8px;">
+          Support Highlights
+        </p>
+        <h1 style="font-size:22px;font-weight:700;color:#111827;margin:0 0 24px;">
+          Your login code
+        </h1>
+        <p style="font-size:15px;color:#374151;margin:0 0 24px;">
+          Enter this code to sign in. It expires in 15 minutes.
+        </p>
+        <div style="background:#f3f4f6;border-radius:8px;padding:20px;
+                    text-align:center;letter-spacing:0.3em;
+                    font-size:32px;font-weight:700;color:#111827;margin:0 0 24px;">
+          {code}
+        </div>
+        <p style="font-size:13px;color:#9ca3af;margin:0;">
+          If you didn't request this, you can ignore this email.
+        </p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your Support Highlights login code"
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+    msg.attach(MIMEText(html, "html"))
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_from, [to_email], msg.as_string())
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +356,72 @@ def _build_payload(
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.post("/api/auth/request")
+async def auth_request(body: AuthRequestBody):
+    """Check eligibility and send a login OTP. Never reveals whether an email
+    exists in Pylon — unauthorized addresses get the same non-error response."""
+    email = body.email.lower().strip()
+
+    if not email.endswith("@langchain.dev"):
+        return {"status": "not_authorized"}
+
+    if auth_mod.is_rate_limited(email):
+        return {"status": "rate_limited"}
+
+    try:
+        members = await asyncio.to_thread(pylon_client.get_team_members)
+        member_emails = {(m.get("email") or "").lower() for m in members}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to verify membership: {exc}") from exc
+
+    if email not in member_emails:
+        return {"status": "not_authorized"}
+
+    code = auth_mod.generate_otp(email)
+    try:
+        await asyncio.to_thread(_send_otp_email, email, code)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to send email: {exc}") from exc
+
+    return {"status": "sent"}
+
+
+@app.post("/api/auth/verify")
+async def auth_verify(body: AuthVerifyBody):
+    """Validate a login OTP, create a session, and set the session cookie."""
+    email = body.email.lower().strip()
+    if not auth_mod.verify_otp(email, body.code.strip()):
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+    token = auth_mod.create_session(email)
+    response = JSONResponse({"ok": True})
+    # secure=True is required in production (HTTPS) but breaks localhost (HTTP).
+    # LSD always runs over HTTPS; local dev uses http://localhost.
+    is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
+    response.set_cookie(
+        key="psh_session",
+        value=token,
+        max_age=28800,  # 8 hours
+        httponly=True,
+        secure=is_https,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    """Revoke the current session and clear the session cookie."""
+    token = _get_session_token(request)
+    if token:
+        auth_mod.revoke_session(token)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(key="psh_session", path="/")
+    return response
+
+
 @app.get("/api/accounts")
-def get_accounts():
+def get_accounts(_email: str = Depends(require_auth)):
     """Return sorted list of premium accounts [{id, name}, ...]."""
     try:
         accounts = pylon_client.get_premium_accounts()
@@ -286,6 +437,7 @@ async def get_account_data(
     account_id: str,
     account_name: str = Query(...),
     period: str = Query("6m"),
+    _email: str = Depends(require_auth),
 ):
     """Fetch issues and compute all metrics for an account."""
     if period not in VALID_PERIODS:
@@ -303,7 +455,7 @@ async def get_account_data(
 
 
 @app.get("/api/accounts/{account_id}/cached-ticket-summaries")
-async def get_cached_ticket_summaries(account_id: str):
+async def get_cached_ticket_summaries(account_id: str, _email: str = Depends(require_auth)):
     """Return cached per-ticket summaries keyed by ticket number.
 
     Uses the open-issues cache so the frequent frontend polling doesn't
@@ -337,7 +489,7 @@ async def get_cached_ticket_summaries(account_id: str):
 
 
 @app.post("/api/accounts/{account_id}/summary")
-async def get_account_summary(account_id: str, body: SummaryRequest):
+async def get_account_summary(account_id: str, body: SummaryRequest, _email: str = Depends(require_auth)):
     """Generate an AI account summary, streamed as SSE to keep the connection alive."""
     period = body.period if body.period in VALID_PERIODS else "6m"
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
@@ -399,6 +551,7 @@ async def get_account_report(
     period: str = Query("6m"),
     sort_by: str = Query("priority"),
     sort_order: str = Query("asc"),
+    _email: str = Depends(require_auth),
 ):
     """Return a self-contained HTML report for an account.
 
@@ -444,7 +597,7 @@ async def get_account_report(
 
 
 @app.post("/api/accounts/{account_id}/email-report")
-async def email_account_report(account_id: str, body: EmailReportRequest):
+async def email_account_report(account_id: str, body: EmailReportRequest, _email: str = Depends(require_auth)):
     """Generate a report and email it as HTML to the specified address.
 
     Requires SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD env vars.

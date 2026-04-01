@@ -15,6 +15,9 @@ export async function POST(
   if (process.env.LANGSMITH_API_KEY) {
     headers["x-api-key"] = process.env.LANGSMITH_API_KEY;
   }
+  // Forward session cookie so the backend require_auth dependency can validate it
+  const cookie = req.headers.get("cookie");
+  if (cookie) headers["cookie"] = cookie;
 
   const res = await fetch(
     `${backendUrl}/api/accounts/${accountId}/summary`,
