@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, ArrowUpDown } from "lucide-react";
+import { Loader2, ArrowUpDown, ChevronRight } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
@@ -18,6 +18,8 @@ import {
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
 import EmailButton from "@/components/EmailButton";
+import AccountPicker from "@/components/AccountPicker";
+import OptionPicker from "@/components/OptionPicker";
 import { downloadCsv, downloadPdf, emailReport } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
@@ -80,7 +82,23 @@ function sortIssues(issues: Issue[], sortBy: string, sortOrder: "asc" | "desc"):
   });
 }
 
+const MODELS = [
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+];
+
+const Logo = () => (
+  <svg width="32" height="32" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
+    <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd" />
+    <path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="#006ddd" />
+    <path d="M11.8146 115.987C19.3329 123.502 29.541 127.732 40.1724 127.732V87.6289H0.0664062C0.0700559 98.2606 4.29635 108.469 11.8146 115.987Z" fill="#006ddd" />
+    <path d="M110.387 45.7684C102.869 38.2535 92.6608 34.0198 82.0258 34.0234C71.3943 34.0234 61.1863 38.2535 53.668 45.772L82.0258 74.1306L110.387 45.7684Z" fill="#006ddd" />
+  </svg>
+);
+
 export default function Home() {
+  const [configured, setConfigured] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [accountData, setAccountData] = useState<AccountData | null>(null);
@@ -109,16 +127,11 @@ export default function Home() {
   // Abort controller for any in-flight summary pipeline (ticket SSE + account summary)
   const summaryAbortRef = useRef<AbortController | null>(null);
 
-  // Load accounts on mount
+  // Load accounts on mount — do not auto-select; user picks on setup screen
   useEffect(() => {
     setAccountsLoading(true);
     fetchAccounts()
-      .then((data) => {
-        setAccounts(data);
-        if (data.length > 0) {
-          setSelectedAccount(data[0]);
-        }
-      })
+      .then((data) => setAccounts(data))
       .catch((err) => setError(err.message))
       .finally(() => setAccountsLoading(false));
   }, []);
@@ -249,11 +262,10 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (selectedAccount) {
-      const cleanup = loadAccountData(selectedAccount);
-      return cleanup;
+    if (configured && selectedAccount) {
+      return loadAccountData(selectedAccount);
     }
-  }, [selectedAccount, loadAccountData]);
+  }, [configured, selectedAccount, loadAccountData]);
 
   function handleRefresh() {
     setForceRefresh((n) => n + 1);
@@ -301,6 +313,101 @@ export default function Home() {
   const totalClosed =
     accountData?.monthly_metrics.reduce((sum, m) => sum + m.closed_tickets, 0) ?? null;
 
+  // ── Setup screen ──────────────────────────────────────────────────────────
+  if (!configured) {
+    const setupAccount = selectedAccount ?? (accounts.length > 0 ? accounts[0] : null);
+
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center px-4"
+        style={{ background: "var(--bg-base)" }}
+      >
+        <div
+          className="w-full max-w-sm rounded-xl px-8 py-8"
+          style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
+        >
+          <div className="flex items-center gap-2.5 mb-6">
+            <Logo />
+            <span className="font-semibold text-base" style={{ color: "var(--text-primary)" }}>
+              Support Highlights
+            </span>
+          </div>
+
+          <h1 className="text-xl font-bold mb-1" style={{ color: "var(--text-primary)" }}>
+            Welcome
+          </h1>
+          <p className="text-sm mb-6" style={{ color: "var(--text-muted)" }}>
+            Choose an account and settings to get started.
+          </p>
+
+          {accountsLoading ? (
+            <div className="flex items-center gap-2 py-4" style={{ color: "var(--text-muted)" }}>
+              <Loader2 size={16} className="animate-spin" />
+              <span className="text-sm">Loading accounts...</span>
+            </div>
+          ) : error ? (
+            <p className="text-sm mb-4 text-red-500">{error}</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                  Account
+                </label>
+                <AccountPicker
+                  accounts={accounts}
+                  selected={setupAccount}
+                  onSelect={setSelectedAccount}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                  Time Period
+                </label>
+                <OptionPicker
+                  options={[
+                    { value: "7d", label: "7 Days" },
+                    { value: "1m", label: "1 Month" },
+                    { value: "3m", label: "3 Months" },
+                    { value: "6m", label: "6 Months" },
+                    { value: "1y", label: "1 Year" },
+                  ]}
+                  value={period}
+                  onChange={setPeriod}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                  Summary Model
+                </label>
+                <OptionPicker
+                  options={MODELS}
+                  value={selectedModel}
+                  onChange={setSelectedModel}
+                />
+              </div>
+
+              <button
+                onClick={() => {
+                  if (!setupAccount) return;
+                  setSelectedAccount(setupAccount);
+                  setConfigured(true);
+                }}
+                disabled={!setupAccount}
+                className="w-full flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium text-white bg-[#006ddd] hover:bg-[#0058b8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors mt-2"
+              >
+                View Dashboard
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Dashboard ──────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
@@ -312,6 +419,7 @@ export default function Home() {
         onModelChange={setSelectedModel}
         period={period}
         onPeriodChange={setPeriod}
+        onSetup={() => setConfigured(false)}
       />
 
       {/* Main content */}
