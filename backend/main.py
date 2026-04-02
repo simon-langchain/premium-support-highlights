@@ -190,6 +190,7 @@ def _send_otp_email(to_email: str, code: str) -> None:
     msg["Subject"] = "Your Support Highlights login code"
     msg["From"] = smtp_from
     msg["To"] = to_email
+    msg["X-PM-Message-Stream"] = "support-highlights"
     msg.attach(MIMEText(html, "html"))
 
     with smtplib.SMTP(smtp_host, smtp_port) as server:
@@ -660,6 +661,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         msg["Subject"] = subject
         msg["From"] = smtp_from
         msg["To"] = body.email
+        msg["X-PM-Message-Stream"] = "support-highlights"
         msg.attach(MIMEText(html, "html"))
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.ehlo()
