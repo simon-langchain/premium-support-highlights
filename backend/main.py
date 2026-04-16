@@ -1140,13 +1140,24 @@ async def get_slack_channel(
     else:
         default_id = None
 
-    # Always ensure the default channel appears first in the list
+    # Prepend all account-linked Slack channels (internal + external) so they always
+    # appear in the picker regardless of the external-prefix filter applied by get_channels().
+    if account and not override:
+        account_channels = pylon_client.get_all_slack_channels(account)
+        seen_ids = {c["id"] for c in available_channels}
+        for ch in reversed(account_channels):
+            if ch["id"] not in seen_ids:
+                # Name may be just the raw channel_id from Pylon — resolve the real name
+                real_name = await _resolve_name(ch["id"])
+                available_channels = [{"id": ch["id"], "name": real_name or ch["name"]}] + available_channels
+                seen_ids.add(ch["id"])
+
+    # Ensure the default channel is first
     if default_id:
         if not any(c["id"] == default_id for c in available_channels):
             default_name = await _resolve_name(default_id)
             available_channels = [{"id": default_id, "name": default_name or default_id}] + available_channels
         else:
-            # Move it to the front
             available_channels = [c for c in available_channels if c["id"] == default_id] + \
                                   [c for c in available_channels if c["id"] != default_id]
 

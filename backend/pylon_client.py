@@ -415,6 +415,23 @@ def get_slack_channel_info(account: dict) -> dict | None:
     }
 
 
+def get_all_slack_channels(account: dict) -> list[dict]:
+    """Return all Slack channels linked to the account as [{id, name}], primary first."""
+    channels = account.get("channels") or []
+    slack_channels = [c for c in channels if c.get("source") == "slack" and c.get("channel_id")]
+    result = []
+    seen: set[str] = set()
+    # Primary first, then the rest
+    ordered = sorted(slack_channels, key=lambda c: 0 if c.get("is_primary") else 1)
+    for c in ordered:
+        cid = c["channel_id"]
+        if cid not in seen:
+            seen.add(cid)
+            name = c.get("name") or c.get("channel_name") or cid
+            result.append({"id": cid, "name": name})
+    return result
+
+
 def _get_primary_slack_channel(account: dict) -> dict | None:
     channels = account.get("channels") or []
     slack_channels = [c for c in channels if c.get("source") == "slack" and c.get("channel_id")]
