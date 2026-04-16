@@ -141,7 +141,7 @@ def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
     card_raised = _metric_card("Tickets Raised", str(total_raised), period_label)
     card_closed = _metric_card("Tickets Closed", str(total_closed), period_label)
     card_rt     = _metric_card("Avg Response Time", f"{avg_rt:.1f} hrs") if avg_rt is not None else None
-    card_csat   = _metric_card("CSAT", f"{csat:.1f} / 5.0") if csat is not None else None
+    card_csat   = _metric_card("CSAT", f"{int(csat) if csat == int(csat) else f'{csat:.1f}'} / 5") if csat is not None else None
 
     if max_cols == 2 and card_rt is not None:
         # Row 1: Open Issues | Avg Response Time

@@ -18,9 +18,10 @@ import {
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
 import EmailButton from "@/components/EmailButton";
+import SlackButton from "@/components/SlackButton";
 import AccountPicker from "@/components/AccountPicker";
 import OptionPicker from "@/components/OptionPicker";
-import { downloadCsv, downloadPdf, emailReport } from "@/lib/downloads";
+import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
 
@@ -117,6 +118,9 @@ export default function Home() {
   const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<Date | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [slackChannelName, setSlackChannelName] = useState<string | null>(null);
+  const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
+  const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
 
   // Refs so pipeline callbacks always see current model/period without stale closures
   const modelRef = useRef(selectedModel);
@@ -266,6 +270,23 @@ export default function Home() {
       return loadAccountData(selectedAccount);
     }
   }, [configured, selectedAccount, loadAccountData]);
+
+  useEffect(() => {
+    if (!selectedAccount) {
+      setSlackChannelName(null);
+      setSlackChannelId(null);
+      setSlackAvailableChannels([]);
+      return;
+    }
+    fetch(`/api/accounts/${selectedAccount.id}/slack-channel`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        setSlackChannelName(d?.channel_name ?? null);
+        setSlackChannelId(d?.channel_id ?? null);
+        setSlackAvailableChannels(d?.available_channels ?? []);
+      })
+      .catch(() => { setSlackChannelName(null); setSlackChannelId(null); setSlackAvailableChannels([]); });
+  }, [selectedAccount]);
 
   function handleRefresh() {
     setForceRefresh((n) => n + 1);
@@ -447,6 +468,12 @@ export default function Home() {
               </div>
               {accountData && (
                 <div className="flex items-center gap-2">
+                  <SlackButton
+                    onSlackReport={(channelId) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId)}
+                    channelName={slackChannelName}
+                    channelId={slackChannelId}
+                    availableChannels={slackAvailableChannels}
+                  />
                   <EmailButton
                     onEmailReport={(email) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder)}
                   />
@@ -484,7 +511,7 @@ export default function Home() {
                   {accountData.csat !== null && (
                     <MetricCard
                       label="CSAT"
-                      value={accountData.csat.toFixed(1)}
+                      value={accountData.csat % 1 === 0 ? String(accountData.csat) : accountData.csat.toFixed(1)}
                       unit="/ 5"
                     />
                   )}

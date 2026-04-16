@@ -21,7 +21,8 @@
   --badge-new-bg: #bfdbfe;      --badge-new-text: #1e3a8a;  --badge-new-border: #60a5fa;
   --badge-hold-bg: #ddd6fe;     --badge-hold-text: #4c1d95; --badge-hold-border: #a78bfa;
   --badge-orange-bg: #fed7aa;   --badge-orange-text: #7c2d12; --badge-orange-border: #fb923c;
-  --badge-sky-bg: #bae6fd;      --badge-sky-text: #0c4a6e;  --badge-sky-border: #38bdf8;
+  --badge-lc-bg: #dbeafe;       --badge-lc-text: #1e40af;    --badge-lc-border: #7cc8f0;
+  --badge-sky-bg: #f1f5f9;      --badge-sky-text: #334155;  --badge-sky-border: #94a3b8;
   --badge-emerald-bg: #a7f3d0;  --badge-emerald-text: #064e3b; --badge-emerald-border: #34d399;
   --badge-teal-bg: #99f6e4;     --badge-teal-text: #134e4a; --badge-teal-border: #2dd4bf;
 
@@ -47,6 +48,7 @@
   --badge-new-bg: rgba(30,58,138,0.5);   --badge-new-text: #93c5fd;  --badge-new-border: rgba(30,64,175,0.4);
   --badge-hold-bg: rgba(76,29,149,0.5);  --badge-hold-text: #c4b5fd; --badge-hold-border: rgba(91,33,182,0.4);
   --badge-orange-bg: rgba(120,53,15,0.5); --badge-orange-text: #fcd34d; --badge-orange-border: rgba(146,64,14,0.4);
+  --badge-lc-bg: rgba(30,64,175,0.25);   --badge-lc-text: #7cc8f0;    --badge-lc-border: rgba(124,200,240,0.5);
   --badge-sky-bg: #1e293b;               --badge-sky-text: #94a3b8;  --badge-sky-border: #475569;
   --badge-emerald-bg: rgba(6,78,59,0.5); --badge-emerald-text: #6ee7b7; --badge-emerald-border: rgba(4,120,87,0.4);
   --badge-teal-bg: rgba(19,78,74,0.5);   --badge-teal-text: #5eead4; --badge-teal-border: rgba(15,118,110,0.4);

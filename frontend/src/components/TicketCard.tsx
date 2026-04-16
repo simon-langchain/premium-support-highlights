@@ -32,7 +32,7 @@ interface BadgeVars {
 
 const STATE_BADGE: Record<string, BadgeVars> = {
   new:                 { bg: "var(--badge-new-bg)",     text: "var(--badge-new-text)",     border: "var(--badge-new-border)" },
-  waiting_on_you:      { bg: "var(--badge-orange-bg)",  text: "var(--badge-orange-text)",  border: "var(--badge-orange-border)" },
+  waiting_on_you:      { bg: "var(--badge-lc-bg)",      text: "var(--badge-lc-text)",      border: "var(--badge-lc-border)" },
   on_hold:             { bg: "var(--badge-hold-bg)",    text: "var(--badge-hold-text)",    border: "var(--badge-hold-border)" },
   waiting_on_customer: { bg: "var(--badge-sky-bg)",     text: "var(--badge-sky-text)",     border: "var(--badge-sky-border)" },
   closed:              { bg: "var(--badge-emerald-bg)", text: "var(--badge-emerald-text)", border: "var(--badge-emerald-border)" },

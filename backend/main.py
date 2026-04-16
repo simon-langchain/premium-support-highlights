@@ -1,23 +1,26 @@
 """FastAPI backend for Premium Support Highlights dashboard.
 
 API surface:
-  GET  /api/accounts                              — sorted list of premium accounts
-  GET  /api/accounts/{id}/data                    — metrics + open issues for an account
-  GET  /api/accounts/{id}/cached-ticket-summaries — per-ticket AI summaries from disk cache
-  POST /api/accounts/{id}/summary                 — stream an AI-generated account summary
+  GET  /api/accounts                              -sorted list of premium accounts
+  GET  /api/accounts/{id}/data                    -metrics + open issues for an account
+  GET  /api/accounts/{id}/cached-ticket-summaries -per-ticket AI summaries from disk cache
+  POST /api/accounts/{id}/summary                 -stream an AI-generated account summary
 
 The /summary endpoint uses SSE (server-sent events) with keepalive pings while Claude
 generates. The Next.js route handler at frontend/.../summary/route.ts converts this
 stream to plain JSON before it reaches the browser.
 
 Caching strategy (all in-memory, 5-minute TTL):
-  raw:{id}:{period}     — raw Pylon API responses, shared by /data and /summary so
+  raw:{id}:{period}     -raw Pylon API responses, shared by /data and /summary so
                           they never make duplicate API calls within the same window
-  payload:{id}:{period} — computed metrics payload, served directly by /data
-  open:{id}             — current open issues for the polled /cached-ticket-summaries
+  payload:{id}:{period} -computed metrics payload, served directly by /data
+  open:{id}             -current open issues for the polled /cached-ticket-summaries
 """
 
+import hashlib
+import hmac
 import os
+import re
 import time
 import asyncio
 import json
@@ -25,20 +28,22 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
+from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_root, ".env"))
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 import auth as auth_mod
 
 import pylon_client
+import slack_client
 import metrics as metrics_mod
 import audit
 import cache as cache_mod
@@ -114,6 +119,12 @@ class EmailReportRequest(BaseModel):
     sort_order: str = "asc"
 
 
+class SlackReportRequest(BaseModel):
+    account_name: str
+    period: str = "6m"
+    channel_id: str | None = None  # Override the default channel for this post
+
+
 class AuthRequestBody(BaseModel):
     email: str
 
@@ -131,7 +142,16 @@ def _get_session_token(request: Request) -> str | None:
     return request.cookies.get("psh_session")
 
 
+# LOCAL_TEST_MODE bypasses login. Ignored if ALLOWED_ORIGINS is set (production).
+_LOCAL_TEST_MODE = (
+    os.environ.get("LOCAL_TEST_MODE", "").lower() in ("1", "true", "yes")
+    and not os.environ.get("ALLOWED_ORIGINS")
+)
+
+
 async def require_auth(request: Request) -> str:
+    if _LOCAL_TEST_MODE:
+        return "dev@langchain.dev"
     token = _get_session_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -263,6 +283,12 @@ def _normalise_issue(issue: dict, field_labels: dict) -> dict:
         for ei in (issue.get("external_issues") or [])
         if ei.get("link")
     ]
+    slack_url = None
+    slack_data = issue.get("slack") or {}
+    if slack_data.get("channel_id") and slack_data.get("message_ts"):
+        ts_no_dot = slack_data["message_ts"].replace(".", "")
+        slack_url = f"https://slack.com/archives/{slack_data['channel_id']}/p{ts_no_dot}"
+
     return {
         "number": issue.get("number"),
         "title": issue.get("title", ""),
@@ -272,6 +298,7 @@ def _normalise_issue(issue: dict, field_labels: dict) -> dict:
         "tags": tags,
         "disposition": disposition,
         "external_issues": external_issues,
+        "slack_url": slack_url,
     }
 
 
@@ -354,13 +381,56 @@ def _build_payload(
 
 
 # ---------------------------------------------------------------------------
+# Summary freshness helper
+# ---------------------------------------------------------------------------
+
+async def _get_or_regenerate_account_summary(
+    account_id: str,
+    account_name: str,
+    period: str,
+    payload: dict,
+    open_issues: list[dict],
+    model: str = "claude-sonnet-4-6",
+) -> str | None:
+    """Return a fresh account summary, regenerating if missing or stale.
+
+    Also ensures ticket summaries are fresh -stale ones are regenerated as
+    part of the account summary pipeline (the agent calls summarise_tickets).
+    """
+    summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
+    if summary:
+        return summary
+
+    # Regenerate -force=True ensures stale ticket summaries are also refreshed
+    summarise_tickets = make_summarise_tickets_tool(open_issues, force=True)
+    try:
+        summary = await generate_account_summary(
+            account_name=account_name,
+            open_tickets=payload["open_issues"],
+            monthly_metrics=payload["monthly_metrics"],
+            avg_response_time=payload["avg_response_time"],
+            csat=payload["csat"],
+            priority_breakdown=payload["priority_breakdown"],
+            state_breakdown=payload["state_breakdown"],
+            disposition_breakdown=payload["disposition_breakdown"],
+            model=model,
+            period=period,
+            tools=[summarise_tickets],
+        )
+        await asyncio.to_thread(cache_mod.set_account_summary, account_id, period, summary)
+    except Exception:
+        summary = None
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/request")
 async def auth_request(body: AuthRequestBody):
     """Check eligibility and send a login OTP. Never reveals whether an email
-    exists in Pylon — unauthorized addresses get the same non-error response."""
+    exists in Pylon -unauthorized addresses get the same non-error response."""
     email = body.email.lower().strip()
 
     if not email.endswith("@langchain.dev"):
@@ -582,7 +652,9 @@ async def get_account_report(
         return out
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
-    account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
+    account_summary = await _get_or_regenerate_account_summary(
+        account_id, account_name, period, payload, open_issues
+    )
 
     html = generate_report_html(
         account_name=account_name,
@@ -637,7 +709,9 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         return out
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
-    account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
+    account_summary = await _get_or_regenerate_account_summary(
+        account_id, body.account_name, period, payload, open_issues
+    )
 
     logo_url = os.environ.get("REPORT_LOGO_URL") or None
     banner_url = os.environ.get("REPORT_BANNER_URL") or None
@@ -680,3 +754,647 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         {"account_id": account_id, "account_name": body.account_name, "to": body.email},
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Slack report helpers
+# ---------------------------------------------------------------------------
+
+_PERIOD_DISPLAY = {
+    "7d": "7 Days", "1m": "1 Month", "3m": "3 Months", "6m": "6 Months", "1y": "1 Year",
+}
+
+_PRIORITY_LABELS = {
+    "urgent": "Sev 1", "high": "Sev 2", "medium": "Sev 3", "low": "Sev 4", "none": "—",
+}
+
+# Emoji stand-ins for colour-coded badges
+_PRIORITY_EMOJI = {
+    "urgent": ":red_circle:",
+    "high":   ":large_orange_circle:",
+    "medium": ":large_yellow_circle:",
+    "low":    ":white_circle:",
+    "none":   ":white_circle:",
+}
+
+_STATE_LABELS = {
+    "new":                 "New",
+    "waiting_on_you":      "Waiting on LangChain",
+    "on_hold":             "On Hold",
+    "waiting_on_customer": "Waiting on Customer",
+}
+
+_STATE_EMOJI = {
+    "new":                 ":large_green_circle:",
+    "waiting_on_you":      ":large_blue_circle:",
+    "on_hold":             ":large_purple_circle:",
+    "waiting_on_customer": ":white_circle:",
+}
+
+def _fmt_csat(v: float) -> str:
+    """Format a CSAT score without a trailing .0 when it's a whole number."""
+    return str(int(v)) if v == int(v) else f"{v:.1f}"
+
+
+# Attachment sidebar colours -one per priority level
+_PRIORITY_COLORS = {
+    "urgent": "#C0392B",  # red
+    "high":   "#E67E22",  # orange
+    "medium": "#F1C40F",  # yellow
+    "low":    "#95A5A6",  # light grey
+    "none":   "#95A5A6",
+}
+
+
+def _field(label: str, value: str) -> dict:
+    return {"type": "mrkdwn", "text": f"*{label}*\n{value}"}
+
+
+def _build_metrics_blocks(
+    account_id: str,
+    account_name: str,
+    payload: dict,
+    period: str,
+) -> tuple[str, list[dict]]:
+    """Compact metrics snapshot with 2-column field grid and action buttons."""
+    period_label = _PERIOD_DISPLAY.get(period, period)
+    open_count = len(payload["open_issues"])
+    total_raised = sum(m["tickets_raised"] for m in payload["monthly_metrics"])
+    total_closed = sum(m["closed_tickets"] for m in payload["monthly_metrics"])
+    avg_rt: float | None = payload.get("avg_response_time")
+    csat: float | None = payload.get("csat")
+
+    # Priority breakdown as a compact string, e.g. "Sev 1: 2  Sev 2: 5  Sev 3: 3"
+    priority_bd = payload.get("priority_breakdown", {})
+    _p_order = ["urgent", "high", "medium", "low"]
+    priority_parts = [
+        f"{_PRIORITY_EMOJI.get(p, '')} {_PRIORITY_LABELS[p]}: *{priority_bd[p]}*"
+        for p in _p_order if priority_bd.get(p, 0) > 0
+    ]
+
+    fields = [
+        _field("Current Open Issues", str(open_count)),
+        _field(f"Raised ({period_label})", str(total_raised)),
+        _field(f"Closed ({period_label})", str(total_closed)),
+        _field("Avg Response", f"{avg_rt:.1f} hrs" if avg_rt is not None else "—"),
+    ]
+    if csat is not None:
+        fields.append(_field("CSAT", f"{_fmt_csat(csat)} / 5"))
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": account_name,
+                "emoji": False,
+            },
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"*{period_label}*  ·  {_today()}"}],
+        },
+        {"type": "divider"},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": ":dart: *KEY METRICS*"}]},
+        {"type": "section", "fields": fields},
+    ]
+
+    # Trend chart — daily labels for short periods, monthly abbreviations otherwise
+    monthly = payload.get("monthly_metrics", [])
+    if len(monthly) >= 2:
+        is_daily = period in ("7d", "1m")
+        # Daily labels: "Apr 9" / "Apr 10" (max 6 chars); monthly: "Apr" (3 chars)
+        label_w = 6 if is_daily else 3
+        raised_vals = [m["tickets_raised"] for m in monthly]
+        closed_vals = [m["closed_tickets"] for m in monthly]
+        shared_max = max(max(raised_vals), max(closed_vals), 1)
+        bar_width = 15
+        rows = []
+        for m in monthly:
+            label = m["month"] if is_daily else m["month"][:3]
+            raised = m["tickets_raised"]
+            closed = m["closed_tickets"]
+            r_len = round(raised / shared_max * bar_width)
+            c_len = round(closed / shared_max * bar_width)
+            r_bar = "█" * r_len + "░" * (bar_width - r_len)
+            c_bar = "█" * c_len + "░" * (bar_width - c_len)
+            rows.append(f"`{label:<{label_w}}  {r_bar} {raised:>2}  {c_bar} {closed:>2}`")
+        gap = label_w + 2  # label + 2 spaces before bars
+        header_row = f"`{'':{gap}}{'Raised':^18}  {'Closed':^18}`"
+        trend_label = ":calendar: *DAILY TREND*" if is_daily else ":calendar: *MONTHLY TREND*"
+        blocks += [
+            {"type": "divider"},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": trend_label}]},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join([header_row] + rows)}},
+        ]
+
+    state_bd = payload.get("state_breakdown", {})
+    _s_order = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
+    state_parts = [
+        f"{_STATE_EMOJI.get(s, '')} {_STATE_LABELS.get(s, s)}: *{state_bd[s]}*"
+        for s in _s_order if state_bd.get(s, 0) > 0
+    ]
+
+    if priority_parts or state_parts:
+        breakdown_fields = []
+        if priority_parts:
+            breakdown_fields.append(_field("Priority", "\n".join(priority_parts)))
+        if state_parts:
+            breakdown_fields.append(_field("State", "\n".join(state_parts)))
+        blocks += [
+            {"type": "divider"},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": ":mag: *BREAKDOWNS*"}]},
+            {"type": "section", "fields": breakdown_fields},
+        ]
+
+    action_value = json.dumps({"account_id": account_id, "account_name": account_name, "period": period})
+    blocks += [
+        {"type": "divider"},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": ":open_book: *MORE DETAILS*"}]},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Account Summary", "emoji": True},
+                    "action_id": "psh_post_summary",
+                    "value": action_value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Current Open Issues", "emoji": True},
+                    "action_id": "psh_post_issues",
+                    "value": action_value,
+                },
+            ],
+        },
+    ]
+
+    fallback = f"Support Highlights: {account_name} - {open_count} open issues, {total_raised} raised ({period_label})"
+    return fallback, blocks
+
+
+def _today() -> str:
+    from datetime import datetime as _dt, timezone as _tz
+    return _dt.now(_tz.utc).strftime("%-d %b %Y")
+
+
+def _build_summary_blocks(
+    account_name: str,
+    account_summary: str,
+    period: str,
+    ticket_urls: dict[str, str] | None = None,
+) -> tuple[str, list[dict]]:
+    """AI-generated account summary, split into paragraphs to avoid the 3000-char limit."""
+    period_label = _PERIOD_DISPLAY.get(period, period)
+
+    # Convert standard Markdown bold/italic to Slack mrkdwn equivalents
+    slack_summary = re.sub(r'\*\*(.+?)\*\*', r'*\1*', account_summary)  # **bold** → *bold*
+    slack_summary = re.sub(r'__(.+?)__', r'_\1_', slack_summary)         # __italic__ → _italic_
+
+    # Hyperlink ticket numbers to their Slack threads where available
+    if ticket_urls:
+        def _linkify(m: re.Match) -> str:
+            url = ticket_urls.get(m.group(1))
+            return f"<{url}|#{m.group(1)}>" if url else m.group(0)
+        slack_summary = re.sub(r'#(\d+)', _linkify, slack_summary)
+
+    # Split into paragraphs and post each as its own section (max 3000 chars each)
+    paragraphs = [p.strip() for p in slack_summary.split("\n\n") if p.strip()]
+    # Merge short paragraphs so we don't exceed Slack's 50-block limit
+    chunks: list[str] = []
+    current = ""
+    for p in paragraphs:
+        candidate = f"{current}\n\n{p}".strip() if current else p
+        if len(candidate) > 2800:
+            if current:
+                chunks.append(current)
+            current = p
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{account_name} - Account Summary", "emoji": False},
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"*{period_label}*  ·  {_today()}"}],
+        },
+        {"type": "divider"},
+    ]
+    for chunk in chunks:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+
+    fallback = f"Account summary for {account_name} ({period_label})"
+    return fallback, blocks
+
+
+_PAGE_SIZE = 5
+
+
+def _build_issues_blocks(
+    account_name: str,
+    open_issues: list[dict],
+    ticket_summaries: dict[int, str],
+    period: str,
+    offset: int = 0,
+    account_id: str = "",
+) -> tuple[str, list[dict], list[dict]]:
+    """Open issues breakdown sorted by priority.
+
+    Returns (fallback_text, blocks, attachments).
+    blocks — header message (rendered first by Slack).
+    attachments — one legacy attachment per issue, each with a severity colour bar.
+    """
+    _PRIORITY_ORDER = {"urgent": 0, "high": 1, "medium": 2, "low": 3, "none": 4}
+    sorted_issues = sorted(open_issues, key=lambda i: _PRIORITY_ORDER.get(i.get("priority", "none"), 4))
+    total = len(open_issues)
+    page = sorted_issues[offset:offset + _PAGE_SIZE]
+    next_offset = offset + _PAGE_SIZE
+    has_more = next_offset < total
+
+    header_text = f"{account_name} - Open Issues ({total})"
+    if offset > 0:
+        header_text = f"{account_name} - Open Issues ({offset + 1}–{min(next_offset, total)} of {total})"
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": header_text, "emoji": False},
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": _today()}],
+        },
+    ]
+
+    attachments: list[dict] = []
+
+    for issue in page:
+        number = issue.get("number", "")
+        title = issue.get("title", "")
+        priority = issue.get("priority", "none")
+        state = issue.get("state", "")
+        summary = ticket_summaries.get(number, "")
+
+        priority_label = _PRIORITY_LABELS.get(priority, priority.title())
+        state_label = _STATE_LABELS.get(state, state.replace("_", " ").title())
+        color = _PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"])
+
+        s_emoji = _STATE_EMOJI.get(state, "")
+
+        slack_link = issue.get("slack_url")
+        ticket_ref = f"<{slack_link}|#{number}>" if slack_link else f"#{number}"
+        title_line = f"*{ticket_ref}  {title}*"
+
+        if summary:
+            summary_text = summary[:1200] + ("…" if len(summary) > 1200 else "")
+            body = f"{title_line}\n{summary_text}"
+        else:
+            body = title_line
+
+        p_emoji = _PRIORITY_EMOJI.get(priority, "")
+        disposition = issue.get("disposition") or ""
+        if disposition:
+            d_lower = disposition.lower()
+            if "bug" in d_lower:
+                d_prefix = ":bug: "
+            elif "feature" in d_lower:
+                d_prefix = ":hatching_chick: "
+            else:
+                d_prefix = ""
+            disposition_str = f"  ·  {d_prefix}{disposition}"
+        else:
+            disposition_str = ""
+        meta = f"{p_emoji} {priority_label}  ·  {s_emoji} {state_label}{disposition_str}"
+
+        attachments.append({
+            "color": color,
+            "fallback": f"#{number} {title}",
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": meta}]},
+            ],
+        })
+
+    if has_more:
+        remaining = total - next_offset
+        btn_value = json.dumps({
+            "account_id": account_id,
+            "account_name": account_name,
+            "period": period,
+            "offset": next_offset,
+        })
+        attachments.append({
+            "fallback": f"Show next {min(remaining, _PAGE_SIZE)} issues",
+            "blocks": [
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": f"Show Next {min(remaining, _PAGE_SIZE)}", "emoji": False},
+                            "action_id": "psh_post_issues_more",
+                            "value": btn_value,
+                        }
+                    ],
+                }
+            ],
+        })
+
+    fallback = f"Open issues for {account_name}: {total} tickets"
+    return fallback, blocks, attachments
+
+
+@app.get("/api/accounts/{account_id}/slack-channel")
+async def get_slack_channel(
+    account_id: str,
+    _email: str = Depends(require_auth),
+):
+    """Return the Slack channel name configured for this account."""
+    slack_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+
+    if not slack_token:
+        return {"channel_name": None, "channel_id": None, "override": False, "available_channels": []}
+
+    # Fetch available channels and resolve default in parallel
+    override = os.environ.get("SLACK_OVERRIDE_CHANNEL", "").strip()
+
+    async def _resolve_name(cid: str) -> str | None:
+        return await asyncio.to_thread(slack_client.get_channel_name, slack_token, cid)
+
+    # Fetch account info and available channels in parallel
+    account = await asyncio.to_thread(pylon_client.get_account, account_id)
+    available_channels = await asyncio.to_thread(slack_client.get_channels, slack_token)
+
+    # Resolve the default channel (override env var takes precedence)
+    if override:
+        default_id = override
+    elif account:
+        info = pylon_client.get_slack_channel_info(account)
+        default_id = info["channel_id"] if info else None
+    else:
+        default_id = None
+
+    # Always ensure the default channel appears first in the list
+    if default_id:
+        if not any(c["id"] == default_id for c in available_channels):
+            default_name = await _resolve_name(default_id)
+            available_channels = [{"id": default_id, "name": default_name or default_id}] + available_channels
+        else:
+            # Move it to the front
+            available_channels = [c for c in available_channels if c["id"] == default_id] + \
+                                  [c for c in available_channels if c["id"] != default_id]
+
+    default_channel = next((c for c in available_channels if c["id"] == default_id), None)
+    default_name = default_channel["name"] if default_channel else None
+
+    return {
+        "channel_id": default_id,
+        "channel_name": default_name,
+        "override": bool(override),
+        "available_channels": available_channels,
+    }
+
+
+@app.post("/api/accounts/{account_id}/slack-report")
+async def post_slack_report(
+    account_id: str,
+    body: SlackReportRequest,
+    _email: str = Depends(require_auth),
+):
+    """Post a support highlights summary to the account's Slack channel.
+
+    Requires SLACK_BOT_TOKEN. If SLACK_OVERRIDE_CHANNEL is set, all messages are
+    redirected there regardless of the account's real channel (use during testing).
+    """
+    slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    if not slack_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Slack is not configured. Set SLACK_BOT_TOKEN.",
+        )
+
+    period = body.period if body.period in VALID_PERIODS else "6m"
+
+    # Resolve target channel: env override → request body override → account default
+    override_channel = os.environ.get("SLACK_OVERRIDE_CHANNEL", "").strip()
+    if override_channel:
+        channel_id = override_channel
+    elif body.channel_id:
+        channel_id = body.channel_id
+    else:
+        account = await asyncio.to_thread(pylon_client.get_account, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        channel_id = pylon_client.get_slack_channel_id(account)
+        if not channel_id:
+            raise HTTPException(
+                status_code=422,
+                detail="No Slack channel configured for this account in Pylon",
+            )
+
+    field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
+        account_id, period
+    )
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    fallback_text, blocks = _build_metrics_blocks(account_id, body.account_name, payload, period)
+
+    try:
+        await asyncio.to_thread(
+            slack_client.post_message, slack_token, channel_id, fallback_text, blocks
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "channel_not_found" in msg:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Slack channel '{channel_id}' not found. "
+                    "If this is a DM, open a conversation with the bot in Slack first "
+                    "(search for it and send any message), then try again."
+                ),
+            ) from exc
+        if "not_in_channel" in msg:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The bot is not a member of channel '{channel_id}'. "
+                    "Invite it with /invite @BotName in that channel, then try again."
+                ),
+            ) from exc
+        raise HTTPException(status_code=502, detail=f"Slack error: {msg}") from exc
+
+    await asyncio.to_thread(
+        audit.log,
+        "slack_report_sent",
+        {
+            "account_id": account_id,
+            "account_name": body.account_name,
+            "channel_id": channel_id,
+            "override": bool(override_channel),
+        },
+    )
+
+    # Pre-warm summaries in the background so they're ready if buttons are clicked
+    asyncio.create_task(_get_or_regenerate_account_summary(
+        account_id, body.account_name, period, payload, open_issues
+    ))
+
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Slack interactive callbacks
+# ---------------------------------------------------------------------------
+
+def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
+    """Verify a Slack request using HMAC-SHA256 and SLACK_SIGNING_SECRET.
+
+    Returns True if the signature is valid, or if SLACK_SIGNING_SECRET is not
+    configured (allows local testing without a public URL).
+    """
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "").strip()
+    if not signing_secret:
+        return True  # Skip verification when not configured (local dev)
+    try:
+        if abs(time.time() - int(timestamp)) > 300:
+            return False  # Replay attack guard: reject if older than 5 minutes
+    except (ValueError, TypeError):
+        return False
+    basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
+    computed = "v0=" + hmac.new(signing_secret.encode(), basestring.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, signature)
+
+
+async def _handle_slack_action(
+    action_id: str,
+    account_id: str,
+    account_name: str,
+    period: str,
+    channel_id: str,
+    thread_ts: str | None = None,
+    **kwargs,
+) -> None:
+    """Post a follow-up message in response to a Slack button click."""
+    slack_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    if not slack_token or not channel_id:
+        return
+    attachments: list[dict] | None = None
+    try:
+        if action_id == "psh_post_summary":
+            field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
+            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+            account_summary = await _get_or_regenerate_account_summary(
+                account_id, account_name, period, payload, open_issues
+            )
+            if not account_summary:
+                await asyncio.to_thread(
+                    slack_client.post_message,
+                    slack_token,
+                    channel_id,
+                    "Summary generation failed",
+                    [{"type": "section", "text": {"type": "mrkdwn", "text": ":warning: Summary generation failed. Please try again."}}],
+                    thread_ts,
+                )
+                return
+            ticket_urls = {
+                str(i["number"]): i["slack_url"]
+                for i in payload["open_issues"]
+                if i.get("number") is not None and i.get("slack_url")
+            }
+            fallback_text, blocks = _build_summary_blocks(account_name, account_summary, period, ticket_urls=ticket_urls)
+
+        elif action_id in ("psh_post_issues", "psh_post_issues_more"):
+            offset = kwargs.get("offset", 0) if action_id == "psh_post_issues_more" else 0
+            field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
+            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+
+            # For the first page, regenerate stale/missing summaries.
+            # Subsequent pages skip regeneration -summaries were already warmed on first click.
+            if action_id == "psh_post_issues":
+                summarise_tickets = make_summarise_tickets_tool(open_issues, force=False)
+                await summarise_tickets.ainvoke({})
+
+            def _read_ticket_summaries() -> dict[int, str]:
+                out: dict[int, str] = {}
+                for issue in open_issues:
+                    number = issue.get("number")
+                    if number is None:
+                        continue
+                    latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
+                    summary = cache_mod.get_ticket_summary(issue.get("id", ""), latest)
+                    if summary:
+                        out[number] = summary
+                return out
+
+            ticket_summaries = await asyncio.to_thread(_read_ticket_summaries)
+            fallback_text, blocks, attachments = _build_issues_blocks(
+                account_name, payload["open_issues"], ticket_summaries, period,
+                offset=offset, account_id=account_id,
+            )
+        else:
+            return
+
+        await asyncio.to_thread(
+            slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
+            attachments=attachments,
+        )
+    except Exception:
+        pass  # Best-effort; failures silently dropped so Slack doesn't retry
+
+
+@app.post("/api/slack/actions")
+async def slack_actions(request: Request, background_tasks: BackgroundTasks):
+    """Handle Slack interactive component callbacks (button clicks).
+
+    Slack POSTs here when a user clicks a button in a Block Kit message.
+    Must respond 200 within 3 seconds; the actual work runs via BackgroundTasks
+    after the response is sent.
+    """
+    body = await request.body()
+    timestamp = request.headers.get("x-slack-request-timestamp", "")
+    signature = request.headers.get("x-slack-signature", "")
+
+    if not _verify_slack_signature(body, timestamp, signature):
+        return Response(status_code=200)  # Return 200 to prevent Slack retries
+
+    form_data = parse_qs(body.decode())
+    payload = json.loads(form_data.get("payload", ["{}"])[0])
+
+    actions = payload.get("actions") or []
+    if not actions:
+        return Response(status_code=200)
+
+    action = actions[0]
+    action_id = action.get("action_id", "")
+    channel_id = (payload.get("channel") or {}).get("id", "")
+    thread_ts = (payload.get("message") or {}).get("ts")
+
+    if action_id not in ("psh_post_summary", "psh_post_issues", "psh_post_issues_more"):
+        return Response(status_code=200)
+
+    try:
+        value = json.loads(action.get("value", "{}"))
+        account_id = value["account_id"]
+        account_name = value["account_name"]
+        period = value["period"]
+        if period not in VALID_PERIODS:
+            period = "6m"
+        offset = int(value.get("offset", 0))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return Response(status_code=200)
+
+    # Fire and forget - BackgroundTasks runs after the 200 response is sent,
+    # ensuring Slack's 3-second deadline is always met.
+    background_tasks.add_task(
+        _handle_slack_action,
+        action_id, account_id, account_name, period, channel_id, thread_ts,
+        offset=offset,
+    )
+
+    return Response(status_code=200)

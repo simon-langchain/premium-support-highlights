@@ -381,6 +381,49 @@ def make_date_range(period: str) -> tuple[str, str]:
     )
 
 
+def get_account(account_id: str) -> dict | None:
+    """Look up a single account by ID from the premium accounts cache.
+
+    Returns the full account dict (including channels) or None if not found.
+    Does NOT make a network request — uses the same disk cache as get_premium_accounts().
+    """
+    accounts = get_premium_accounts()
+    for account in accounts:
+        if account.get("id") == account_id:
+            return account
+    return None
+
+
+def get_slack_channel_id(account: dict) -> str | None:
+    """Extract the primary Slack channel ID from an account's channels array.
+
+    Prefers is_primary=True channels; falls back to first Slack channel found.
+    Returns None if no Slack channel is configured.
+    """
+    ch = _get_primary_slack_channel(account)
+    return ch.get("channel_id") if ch else None
+
+
+def get_slack_channel_info(account: dict) -> dict | None:
+    """Return {channel_id, channel_name} for the primary Slack channel, or None."""
+    ch = _get_primary_slack_channel(account)
+    if not ch:
+        return None
+    return {
+        "channel_id": ch.get("channel_id"),
+        "channel_name": ch.get("name") or ch.get("channel_name") or ch.get("channel_id"),
+    }
+
+
+def _get_primary_slack_channel(account: dict) -> dict | None:
+    channels = account.get("channels") or []
+    slack_channels = [c for c in channels if c.get("source") == "slack" and c.get("channel_id")]
+    if not slack_channels:
+        return None
+    primary = next((c for c in slack_channels if c.get("is_primary")), None)
+    return primary or slack_channels[0]
+
+
 if __name__ == "__main__":
     print("Testing Pylon client...")
     me = get_me()

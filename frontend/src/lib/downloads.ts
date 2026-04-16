@@ -53,7 +53,7 @@ export function downloadCsv(
     rows.push(`Avg Response Time (hrs),${data.avg_response_time.toFixed(1)}`);
   }
   if (data.csat !== null) {
-    rows.push(`CSAT,${data.csat.toFixed(2)}`);
+    rows.push(`CSAT,${data.csat % 1 === 0 ? data.csat : data.csat.toFixed(1)}`);
   }
   rows.push("");
 
@@ -110,6 +110,27 @@ export function downloadCsv(
 export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string): void {
   const params = new URLSearchParams({ account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder });
   window.open(`/api/accounts/${accountId}/report?${params}`, "_blank");
+}
+
+export async function slackReport(
+  accountId: string,
+  accountName: string,
+  period: string,
+  channelId?: string,
+): Promise<void> {
+  const res = await fetch(`/api/accounts/${accountId}/slack-report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_name: accountName, period, ...(channelId ? { channel_id: channelId } : {}) }),
+  });
+  if (res.status === 401) {
+    if (typeof window !== "undefined") window.location.href = "/login";
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Failed to send to Slack");
+  }
 }
 
 export async function emailReport(

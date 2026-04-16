@@ -43,6 +43,11 @@ Optional variables:
 - `REPORT_BANNER_URL` — Banner image URL for emailed/PDF reports
 - `REPORT_LOGO_URL` — Logo PNG URL for email reports (improves Outlook compatibility)
 - `ALLOWED_ORIGINS` — Comma-separated allowed CORS origins (default: `http://localhost:3000`)
+- `LOCAL_TEST_MODE` — Set to `true` to bypass login for local development. Automatically disabled when `ALLOWED_ORIGINS` is set.
+- `SLACK_BOT_TOKEN` — Slack bot token (`xoxb-...`) with `chat:write`, `channels:read`, `groups:read` scopes
+- `SLACK_SIGNING_SECRET` — From Slack app Basic Information page; used to verify interactive button callbacks
+- `SLACK_OVERRIDE_CHANNEL` — When set, ALL Slack posts go to this channel ID (use during testing to avoid sending to real customers)
+- `DASHBOARD_URL` — Frontend URL linked from the "View Full Report" button in Slack messages
 
 ## Architecture
 
@@ -75,14 +80,21 @@ Protected routes:
 - `POST /api/accounts/{id}/summary` — body `{account_name, model, period, force}`, streams SSE keepalive pings while Claude generates, sends final `result` event
 - `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=` — self-contained HTML report for PDF or email
 - `POST /api/accounts/{id}/email-report` — body `{email, account_name, period, sort_by, sort_order}`, generates and emails report via SMTP
+- `GET /api/accounts/{id}/slack-channel` — returns `{channel_id, channel_name, override, available_channels}` for the Slack channel picker in the UI
+- `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
+- `POST /api/slack/actions` — Slack interactive callback endpoint; handles `psh_post_summary`, `psh_post_issues`, `psh_post_issues_more` button actions; verifies HMAC-SHA256 signature
 
 **`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
 
 **`pylon_client.py`** — Pylon REST API client. Shared `httpx.Client`, `_get`/`_post`/`_patch` helpers with 429 retry, in-memory TTL cache. Key functions:
 - `get_premium_accounts()` — GET /accounts
 - `get_team_members()` — GET /users, cached 2 minutes, used for auth eligibility check
+- `get_account(account_id)` — looks up a single account from the premium accounts disk cache (no network request)
+- `get_slack_channel_id(account)` — extracts primary Slack channel ID from account's `channels` array
 - `search_issues_for_account(account_id, ...)` — POST /issues/search with account filter, auto-paginates
 - `make_date_range(period)` — returns (created_after, created_before) for the given period string
+
+**`slack_client.py`** — Slack API client. `post_message` posts Block Kit + legacy attachment messages via `chat.postMessage`. `get_channels` lists internal channels the bot can post to (filters Slack Connect and external-prefixed channels). `get_channel_name` resolves a channel ID to its name via `conversations.info`, with in-process caching.
 
 **`metrics.py`** — Pure-Python metric computation. Uses calendar arithmetic (not `timedelta(days=30)`) for monthly bucketing to correctly handle February and short months.
 - `compute_period_metrics(issues, period)` — bucketed ticket counts
@@ -116,6 +128,8 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 **`src/components/Sidebar.tsx`** — Fixed left sidebar with LangChain logo, account selector, period selector, refresh button, model selector, and Settings menu (light/dark toggle + sign out). Collapsible.
 
 **`src/components/EmailButton.tsx`** — Standalone email button that opens a popover with email input and send status.
+
+**`src/components/SlackButton.tsx`** — One-click Slack send button. Shows spinner while sending, success/error states inline. No input needed — channel is resolved server-side from Pylon account data.
 
 **`src/components/DownloadMenu.tsx`** — Dropdown with PDF and CSV export options.
 

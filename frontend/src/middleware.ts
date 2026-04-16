@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// LOCAL_TEST_MODE bypasses login. Ignored if ALLOWED_ORIGINS is set (production).
+const LOCAL_TEST_MODE =
+  process.env.LOCAL_TEST_MODE === "true" && !process.env.ALLOWED_ORIGINS;
+
 export function middleware(req: NextRequest) {
+  if (LOCAL_TEST_MODE) return NextResponse.next();
+
   const { pathname } = req.nextUrl;
 
-  // Auth routes and login page are always accessible
+  // Auth routes, login page, and Slack callbacks are always accessible
   if (
     pathname === "/login" ||
     pathname.startsWith("/api/auth/") ||
+    pathname.startsWith("/api/slack/") ||
     pathname.startsWith("/_next/")
   ) {
     return NextResponse.next();
