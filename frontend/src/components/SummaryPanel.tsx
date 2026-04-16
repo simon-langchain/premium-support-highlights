@@ -19,7 +19,7 @@ export default function SummaryPanel({ summary, generatedAt, loading, error, onR
     >
       <div className="flex items-center justify-between mb-3">
         <h3 style={{ color: "var(--text-muted)" }} className="text-xs uppercase tracking-wider font-medium">
-          AI Account Summary
+          Account Summary
         </h3>
         <button
           onClick={onRegenerate}

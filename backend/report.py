@@ -446,7 +446,7 @@ def generate_report_html(
     {_section_heading("Breakdowns")}
     {_render_breakdowns(payload, stacked=is_email)}
 
-    {(_section_heading("AI Account Summary") + _render_summary(account_summary)) if account_summary else ""}
+    {(_section_heading("Account Summary") + _render_summary(account_summary)) if account_summary else ""}
 
     {_section_heading(f"Open Issues ({len(open_issues)})")}
     {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order)}
