@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   title: "Premium Support Highlights",
   description: "Monthly support metrics and open-issue summaries for premium customer accounts.",
   icons: {
-    icon: "/favicon.svg",
+    icon: "/logo.jpeg",
   },
 };
 
