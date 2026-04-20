@@ -68,7 +68,7 @@ export function downloadCsv(
 
   const breakdowns: [string, Record<string, number>, Record<string, string> | null][] = [
     ["PRIORITY BREAKDOWN", data.priority_breakdown, PRIORITY_LABELS],
-    ["STATE BREAKDOWN", data.state_breakdown, STATE_LABELS],
+    ["STATE BREAKDOWN", data.state_breakdown, getStateLabels(accountName)],
     ["DISPOSITION BREAKDOWN", data.disposition_breakdown, null],
   ];
   for (const [title, breakdown, labels] of breakdowns) {
