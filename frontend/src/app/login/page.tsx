@@ -135,47 +135,42 @@ export default function LoginPage() {
           Sign in
         </h1>
 
-        {/* Google sign-in — primary method */}
-        <button
-          onClick={handleGoogleSignIn}
-          disabled={googleLoading}
-          className="w-full flex items-center justify-center gap-3 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          style={{
-            background: "var(--bg-tertiary)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-          }}
-        >
-          {googleLoading ? <Loader2 size={16} className="animate-spin" /> : <GoogleIcon />}
-          {googleLoading ? "Redirecting..." : "Sign in with Google"}
-        </button>
+        {/* Google sign-in — primary method, hidden when OTP is active */}
+        {!showOtp && (
+          <>
+            <button
+              onClick={handleGoogleSignIn}
+              disabled={googleLoading}
+              className="w-full flex items-center justify-center gap-3 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              style={{
+                background: "var(--bg-tertiary)",
+                border: "1px solid var(--border)",
+                color: "var(--text-primary)",
+              }}
+            >
+              {googleLoading ? <Loader2 size={16} className="animate-spin" /> : <GoogleIcon />}
+              {googleLoading ? "Redirecting..." : "Sign in with Google"}
+            </button>
 
-        {googleError && (
-          <p className="mt-3 text-sm rounded-lg px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 text-red-700 dark:text-red-400">
-            {googleError}
-          </p>
+            {googleError && (
+              <p className="mt-3 text-sm rounded-lg px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 text-red-700 dark:text-red-400">
+                {googleError}
+              </p>
+            )}
+          </>
         )}
-
-        {/* Divider */}
-        <div className="flex items-center gap-3 my-5">
-          <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
-          <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>or</span>
-          <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
-        </div>
 
         {/* OTP sign-in — secondary method */}
         {!showOtp ? (
-          <button
-            onClick={() => setShowOtp(true)}
-            className="w-full text-sm py-2 rounded-lg transition-colors hover:bg-[var(--bg-tertiary)]"
-            style={{
-              background: "transparent",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-            }}
-          >
-            Sign in with email code
-          </button>
+          <p className="mt-4 text-sm text-center" style={{ color: "var(--text-muted)" }}>
+            or{" "}
+            <button
+              onClick={() => setShowOtp(true)}
+              className="text-[#006ddd] hover:underline"
+            >
+              sign in with email
+            </button>
+          </p>
         ) : otpStep === "email" ? (
           <>
             <form onSubmit={handleEmailSubmit} className="flex flex-col gap-3">
@@ -220,6 +215,14 @@ export default function LoginPage() {
               </p>
             )}
 
+            <p className="mt-4 text-sm text-center" style={{ color: "var(--text-muted)" }}>
+              <button
+                onClick={() => { setShowOtp(false); setOtpStatus("idle"); setOtpError(""); }}
+                className="text-[#006ddd] hover:underline"
+              >
+                Back to Google sign-in
+              </button>
+            </p>
           </>
         ) : (
           <>
@@ -269,6 +272,15 @@ export default function LoginPage() {
             >
               Use a different email
             </button>
+
+            <p className="mt-3 text-sm text-center" style={{ color: "var(--text-muted)" }}>
+              <button
+                onClick={() => { setShowOtp(false); setOtpStep("email"); setEmail(""); setCode(""); setOtpStatus("idle"); setOtpError(""); }}
+                className="text-[#006ddd] hover:underline"
+              >
+                Back to Google sign-in
+              </button>
+            </p>
           </>
         )}
       </div>
