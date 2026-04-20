@@ -52,6 +52,7 @@ import audit
 import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool
 from report import generate_report_html
+from ticket_summarizer import parse_ticket_output
 
 app = FastAPI(title="Premium Support Highlights API", version="0.1.0")
 
@@ -423,7 +424,7 @@ async def _get_or_regenerate_account_summary(
         return summary
 
     # Regenerate -force=True ensures stale ticket summaries are also refreshed
-    summarise_tickets = make_summarise_tickets_tool(open_issues, force=True)
+    summarise_tickets = make_summarise_tickets_tool(open_issues, force=True, account_name=account_name)
     try:
         summary = await generate_account_summary(
             account_name=account_name,
@@ -648,17 +649,19 @@ async def get_cached_ticket_summaries(account_id: str, _email: str = Depends(req
             raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
         _cache_set(open_key, open_issues)
 
-    def _read_summaries() -> dict[int, str]:
-        out: dict[int, str] = {}
+    def _read_summaries() -> dict[int, dict]:
+        out: dict[int, dict] = {}
         for issue in open_issues:
             issue_id = issue.get("id", "")
             number = issue.get("number")
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
-            if summary:
-                out[number] = summary
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if raw:
+                s, ns = parse_ticket_output(raw)
+                if s or ns:
+                    out[number] = {"summary": s, "next_steps": ns}
         return out
 
     return await asyncio.to_thread(_read_summaries)
@@ -670,7 +673,7 @@ async def get_account_summary(account_id: str, body: SummaryRequest, _email: str
     period = body.period if body.period in VALID_PERIODS else "6m"
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
-    summarise_tickets = make_summarise_tickets_tool(open_issues, body.force)
+    summarise_tickets = make_summarise_tickets_tool(open_issues, body.force, account_name=body.account_name)
 
     async def event_stream():
         # Run the agent as a background task and emit SSE keepalive pings every 3
@@ -743,17 +746,19 @@ async def get_account_report(
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
 
     # Collect cached per-ticket summaries (same logic as /cached-ticket-summaries)
-    def _read_summaries() -> dict[int, str]:
-        out: dict[int, str] = {}
+    def _read_summaries() -> dict[int, dict]:
+        out: dict[int, dict] = {}
         for issue in open_issues:
             issue_id = issue.get("id", "")
             number = issue.get("number")
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
-            if summary:
-                out[number] = summary
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if raw:
+                s, ns = parse_ticket_output(raw)
+                if s or ns:
+                    out[number] = {"summary": s, "next_steps": ns}
         return out
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
@@ -1104,7 +1109,7 @@ _PAGE_SIZE = 5
 def _build_issues_blocks(
     account_name: str,
     open_issues: list[dict],
-    ticket_summaries: dict[int, str],
+    ticket_summaries: dict[int, dict],
     period: str,
     offset: int = 0,
     account_id: str = "",
@@ -1144,7 +1149,9 @@ def _build_issues_blocks(
         title = issue.get("title", "")
         priority = issue.get("priority", "none")
         state = issue.get("state", "")
-        summary = ticket_summaries.get(number, "")
+        entry = ticket_summaries.get(number, {})
+        ticket_summary = entry.get("summary", "")
+        ticket_next_steps = entry.get("next_steps", "")
 
         priority_label = _PRIORITY_LABELS.get(priority, priority.title())
         state_label = _STATE_LABELS.get(state, state.replace("_", " ").title())
@@ -1156,11 +1163,13 @@ def _build_issues_blocks(
         ticket_ref = f"<{slack_link}|#{number}>" if slack_link else f"#{number}"
         title_line = f"*{ticket_ref}  {title}*"
 
-        if summary:
-            summary_text = summary[:1200] + ("…" if len(summary) > 1200 else "")
-            body = f"{title_line}\n{summary_text}"
-        else:
-            body = title_line
+        body_parts = [title_line]
+        if ticket_summary:
+            body_parts.append(ticket_summary)
+        if ticket_next_steps:
+            body_parts.append(f"*Next steps:* {ticket_next_steps}")
+        full_body = "\n".join(body_parts)
+        body = full_body[:1200] + ("…" if len(full_body) > 1200 else "")
 
         p_emoji = _PRIORITY_EMOJI.get(priority, "")
         disposition = issue.get("disposition") or ""
@@ -1433,19 +1442,21 @@ async def _handle_slack_action(
             # For the first page, regenerate stale/missing summaries.
             # Subsequent pages skip regeneration -summaries were already warmed on first click.
             if action_id == "psh_post_issues":
-                summarise_tickets = make_summarise_tickets_tool(open_issues, force=False)
+                summarise_tickets = make_summarise_tickets_tool(open_issues, force=False, account_name=account_name)
                 await summarise_tickets.ainvoke({})
 
-            def _read_ticket_summaries() -> dict[int, str]:
-                out: dict[int, str] = {}
+            def _read_ticket_summaries() -> dict[int, dict]:
+                out: dict[int, dict] = {}
                 for issue in open_issues:
                     number = issue.get("number")
                     if number is None:
                         continue
                     latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-                    summary = cache_mod.get_ticket_summary(issue.get("id", ""), latest)
-                    if summary:
-                        out[number] = summary
+                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest)
+                    if raw:
+                        s, ns = parse_ticket_output(raw)
+                        if s or ns:
+                            out[number] = {"summary": s, "next_steps": ns}
                 return out
 
             ticket_summaries = await asyncio.to_thread(_read_ticket_summaries)

@@ -1,17 +1,19 @@
-import type { AccountData, Issue } from "./api";
+import type { AccountData, Issue, TicketSummary } from "./api";
 
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1", high: "Sev 2", medium: "Sev 3", low: "Sev 4", none: "None",
 };
 
-const STATE_LABELS: Record<string, string> = {
-  new: "New",
-  waiting_on_you: "Waiting on LangChain",
-  on_hold: "On Hold",
-  waiting_on_customer: "Waiting on Customer",
-  closed: "Closed",
-  resolved: "Resolved",
-};
+function getStateLabels(accountName: string): Record<string, string> {
+  return {
+    new: "New",
+    waiting_on_you: "Waiting on LangChain",
+    on_hold: "On Hold",
+    waiting_on_customer: `Waiting on ${accountName}`,
+    closed: "Closed",
+    resolved: "Resolved",
+  };
+}
 
 const PERIOD_LABELS: Record<string, string> = {
   "7d": "7 Days", "1m": "1 Month", "3m": "3 Months", "6m": "6 Months", "1y": "1 Year",
@@ -30,7 +32,7 @@ export function downloadCsv(
   period: string,
   data: AccountData,
   issues: Issue[],
-  ticketSummaries: Record<number, string | null>,
+  ticketSummaries: Record<number, TicketSummary | null>,
 ): void {
   const rows: string[] = [];
   const periodLabel = PERIOD_LABELS[period] ?? period;
@@ -82,11 +84,11 @@ export function downloadCsv(
   }
 
   rows.push("OPEN TICKETS");
-  rows.push("Number,Title,State,Priority,Disposition,Created,AI Summary");
+  rows.push("Number,Title,State,Priority,Disposition,Created,Summary,Next steps");
   for (const issue of issues) {
-    const state = STATE_LABELS[issue.state] ?? issue.state.replace(/_/g, " ");
+    const state = getStateLabels(accountName)[issue.state] ?? issue.state.replace(/_/g, " ");
     const priority = PRIORITY_LABELS[issue.priority] ?? issue.priority;
-    const summary = ticketSummaries[issue.number] ?? "";
+    const entry = ticketSummaries[issue.number];
     rows.push([
       issue.number,
       cell(issue.title),
@@ -94,7 +96,8 @@ export function downloadCsv(
       cell(priority),
       cell(issue.disposition),
       cell(issue.created_at ? issue.created_at.split("T")[0] : ""),
-      cell(summary),
+      cell(entry?.summary ?? ""),
+      cell(entry?.next_steps ?? ""),
     ].join(","));
   }
 

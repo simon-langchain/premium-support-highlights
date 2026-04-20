@@ -1,11 +1,11 @@
-"""Per-ticket AI summarization using Claude Haiku.
+"""Per-ticket AI next-steps generation using Claude Haiku.
 
 Called by make_summarise_tickets_tool() in summary_agent.py. Each open ticket gets a
-1-2 sentence "current state" summary that the summary agent uses as context before
-writing its account-level report.
+1-2 sentence "next steps" output that the summary agent uses as context before
+writing its account-level report, and that appears directly on each ticket card in the UI.
 
 Haiku is used here (rather than Sonnet) because we make one call per open ticket,
-often 20-40 in parallel. It's significantly cheaper and fast enough for short summaries.
+often 20-40 in parallel. It's significantly cheaper and fast enough for short outputs.
 Results are cached by the tool in cache.py so unchanged tickets skip the API call.
 """
 
@@ -52,13 +52,26 @@ def _build_message_context(messages: list[dict], max_messages: int = 5) -> str:
     return "\n\n".join(parts)
 
 
+def _state_label(state: str, account_name: str) -> str:
+    customer = account_name or "the customer"
+    labels = {
+        "new": "New (not yet picked up by LangChain)",
+        "waiting_on_you": f"Waiting on LangChain — {customer} is waiting, LangChain needs to act or respond",
+        "waiting_on_customer": f"Waiting on {customer} — LangChain has responded and is waiting for {customer} to reply or act",
+        "on_hold": "On hold — LangChain support is waiting on another internal LangChain team (e.g. Engineering or Product) to take action",
+    }
+    return labels.get(state, state.replace("_", " ").title())
+
+
 async def summarize_ticket(
     title: str,
     body_html: str,
     messages: list[dict],
+    state: str = "",
+    account_name: str = "",
     model: str | None = None,
 ) -> str:
-    """Generate a 1-2 sentence summary of the ticket's current state."""
+    """Generate a 1-2 sentence next-steps action for an open ticket."""
     from anthropic import AsyncAnthropic
 
     client = AsyncAnthropic()
@@ -66,7 +79,10 @@ async def summarize_ticket(
     body_text = _strip_html(body_html)[:600]
     messages_text = _build_message_context(messages)
 
+    state_label = _state_label(state, account_name) if state else ""
     context = f"Title: {title}"
+    if state_label:
+        context += f"\nStatus: {state_label}"
     if body_text:
         context += f"\n\nOriginal request: {body_text}"
     if messages_text:
@@ -74,15 +90,38 @@ async def summarize_ticket(
 
     prompt = (
         context
-        + "\n\nIn 1-2 sentences, describe where this ticket stands right now. "
-        "Focus on current status and any blocking factors. "
-        "No markdown, no intro phrase like 'The ticket' or 'This ticket'."
+        + "\n\nRespond in exactly this format (two lines, no extra text):\n"
+        "Summary: <1-2 sentences describing the issue and its current state>\n"
+        f"Next steps: <1 concise sentence in present tense — "
+        f"if status is 'Waiting on {account_name or 'the customer'}', LangChain has replied and is waiting, "
+        f"so write 'LangChain is awaiting a response from {account_name or 'the customer'}...'; "
+        f"if status is 'Waiting on LangChain', write what LangChain is actively doing; "
+        f"use 'LangChain' for the LangChain team and '{account_name or 'the customer'}' for the customer, "
+        f"never individual names, never use 'should' or prescriptive language>"
     )
 
     response = await client.messages.create(
         model=model or DEFAULT_TICKET_SUMMARY_MODEL,
-        max_tokens=120,
+        max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
 
     return response.content[0].text.strip()
+
+
+def parse_ticket_output(text: str) -> tuple[str, str]:
+    """Parse 'Summary: ...\\nNext steps: ...' into (summary, next_steps).
+
+    For old-format cache entries (plain text without labelled fields), the whole
+    text is returned as next_steps so cards stay populated until regenerated.
+    """
+    summary = ""
+    next_steps = ""
+    for line in text.splitlines():
+        if line.startswith("Summary:"):
+            summary = line[len("Summary:"):].strip()
+        elif line.startswith("Next steps:"):
+            next_steps = line[len("Next steps:"):].strip()
+    if not summary and not next_steps and text.strip():
+        return "", text.strip()
+    return summary, next_steps

@@ -74,7 +74,12 @@ export async function fetchAccountData(
  * keyed by ticket number. Polled every 2s while the summary agent is running
  * so ticket cards populate progressively as Haiku finishes each summary.
  */
-export async function fetchCachedTicketSummaries(accountId: string): Promise<Record<number, string>> {
+export interface TicketSummary {
+  summary: string;
+  next_steps: string;
+}
+
+export async function fetchCachedTicketSummaries(accountId: string): Promise<Record<number, TicketSummary>> {
   const res = await fetch(`/api/accounts/${accountId}/cached-ticket-summaries`);
   if (res.status === 401) { handleUnauthorized(res); return {}; }
   if (!res.ok) {

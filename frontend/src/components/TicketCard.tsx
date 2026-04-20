@@ -1,4 +1,4 @@
-import type { Issue, ExternalIssue } from "@/lib/api";
+import type { Issue, ExternalIssue, TicketSummary } from "@/lib/api";
 
 // SVG paths sourced from simpleicons.org (24×24 viewBox)
 const SOURCE_ICONS: Record<string, string> = {
@@ -20,8 +20,9 @@ function SourceIcon({ source }: { source: string }) {
 
 interface TicketCardProps {
   issue: Issue;
-  /** null = still loading, string = loaded (may be empty) */
-  ticketSummary?: string | null;
+  accountName?: string;
+  /** null = still loading, object = loaded (fields may be empty strings) */
+  ticketSummary?: TicketSummary | null;
 }
 
 interface BadgeVars {
@@ -39,14 +40,16 @@ const STATE_BADGE: Record<string, BadgeVars> = {
   resolved:            { bg: "var(--badge-teal-bg)",    text: "var(--badge-teal-text)",    border: "var(--badge-teal-border)" },
 };
 
-const STATE_LABELS: Record<string, string> = {
-  new: "New",
-  waiting_on_you: "Waiting on LangChain",
-  on_hold: "On Hold",
-  waiting_on_customer: "Waiting on Customer",
-  closed: "Closed",
-  resolved: "Resolved",
-};
+function getStateLabels(accountName?: string): Record<string, string> {
+  return {
+    new: "New",
+    waiting_on_you: "Waiting on LangChain",
+    on_hold: "On Hold",
+    waiting_on_customer: accountName ? `Waiting on ${accountName}` : "Waiting on Customer",
+    closed: "Closed",
+    resolved: "Resolved",
+  };
+}
 
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1",
@@ -87,9 +90,9 @@ function Badge({ vars, label }: { vars: BadgeVars; label: string }) {
   );
 }
 
-export default function TicketCard({ issue, ticketSummary }: TicketCardProps) {
+export default function TicketCard({ issue, accountName, ticketSummary }: TicketCardProps) {
   const stateBadge = STATE_BADGE[issue.state] ?? STATE_BADGE.waiting_on_customer;
-  const stateLabel = STATE_LABELS[issue.state] ?? issue.state;
+  const stateLabel = getStateLabels(accountName)[issue.state] ?? issue.state;
   const priorityBadge = issue.priority ? PRIORITY_BADGE[issue.priority] : null;
 
   return (
@@ -113,12 +116,23 @@ export default function TicketCard({ issue, ticketSummary }: TicketCardProps) {
 
       {ticketSummary === null ? (
         <p style={{ color: "var(--text-caption)" }} className="text-xs mt-1 mb-2 italic">
-          Generating summary...
+          Generating next steps...
         </p>
-      ) : ticketSummary ? (
-        <p style={{ color: "var(--text-muted)" }} className="text-xs leading-relaxed mt-1 mb-2">
-          {ticketSummary}
-        </p>
+      ) : ticketSummary && (ticketSummary.summary || ticketSummary.next_steps) ? (
+        <div className="mt-1 mb-2 space-y-1">
+          {ticketSummary.summary && (
+            <p style={{ color: "var(--text-muted)" }} className="text-xs leading-relaxed">
+              <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>Summary:</span>{" "}
+              {ticketSummary.summary}
+            </p>
+          )}
+          {ticketSummary.next_steps && (
+            <p style={{ color: "var(--text-muted)" }} className="text-xs leading-relaxed">
+              <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>Next steps:</span>{" "}
+              {ticketSummary.next_steps}
+            </p>
+          )}
+        </div>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-1.5">

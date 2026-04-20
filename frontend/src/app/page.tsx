@@ -15,6 +15,7 @@ import {
   type Account,
   type AccountData,
   type Issue,
+  type TicketSummary,
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
 import EmailButton from "@/components/EmailButton";
@@ -42,14 +43,16 @@ const PRIORITY_LABELS: Record<string, string> = {
   none: "None",
 };
 
-const STATE_LABELS: Record<string, string> = {
-  new: "New",
-  waiting_on_you: "Waiting on LangChain",
-  on_hold: "On Hold",
-  waiting_on_customer: "Waiting on Customer",
-  closed: "Closed",
-  resolved: "Resolved",
-};
+function getStateLabels(accountName?: string): Record<string, string> {
+  return {
+    new: "New",
+    waiting_on_you: "Waiting on LangChain",
+    on_hold: "On Hold",
+    waiting_on_customer: accountName ? `Waiting on ${accountName}` : "Waiting on Customer",
+    closed: "Closed",
+    resolved: "Resolved",
+  };
+}
 
 const SORT_OPTIONS = [
   { value: "priority", label: "Priority" },
@@ -122,7 +125,7 @@ export default function Home() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [selectedStates, setSelectedStates] = useState<string[]>(OPEN_STATES);
   const [forceRefresh, setForceRefresh] = useState(0);
-  const [ticketSummaries, setTicketSummaries] = useState<Record<number, string | null>>({});
+  const [ticketSummaries, setTicketSummaries] = useState<Record<number, TicketSummary | null>>({});
   const [accountSummary, setAccountSummary] = useState<string | null>(null);
   const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<Date | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -172,7 +175,7 @@ export default function Home() {
       setSummaryError(null);
 
       // Poll for ticket summaries while the agent runs
-      const applysummaries = (summaries: Record<number, string>) => {
+      const applysummaries = (summaries: Record<number, TicketSummary>) => {
         setTicketSummaries((prev) => {
           const next = { ...prev };
           for (const [num, summary] of Object.entries(summaries)) {
@@ -213,7 +216,7 @@ export default function Home() {
               next[Number(num)] = summary;
             }
             for (const n of openNumbers) {
-              if (next[n] === null) next[n] = "";
+              if (next[n] === null) next[n] = { summary: "", next_steps: "" };
             }
             return next;
           });
@@ -223,7 +226,7 @@ export default function Home() {
           setTicketSummaries((prev) => {
             const next = { ...prev };
             for (const n of openNumbers) {
-              if (next[n] === null) next[n] = "";
+              if (next[n] === null) next[n] = { summary: "", next_steps: "" };
             }
             return next;
           });
@@ -256,7 +259,7 @@ export default function Home() {
           // Initialise all tickets as loading (null), then immediately show
           // any previously cached summaries so returning visits feel instant.
           // The pipeline will fill in the rest progressively via polling.
-          const initial: Record<number, string | null> = {};
+          const initial: Record<number, TicketSummary | null> = {};
           for (const n of openNumbers) initial[n] = null;
           setTicketSummaries(initial);
           fetchCachedTicketSummaries(account.id)
@@ -562,7 +565,7 @@ export default function Home() {
                             <div key={label} className="flex items-center justify-between">
                               <span className="text-sm" style={{ color: "var(--text-primary)" }}>
                                 {key === "state_breakdown"
-                                  ? (STATE_LABELS[label] ?? label.replace(/_/g, " "))
+                                  ? (getStateLabels(selectedAccount?.name)[label] ?? label.replace(/_/g, " "))
                                   : key === "priority_breakdown"
                                     ? (PRIORITY_LABELS[label] ?? label.replace(/_/g, " "))
                                     : label}
@@ -658,7 +661,7 @@ export default function Home() {
                               active ? "bg-[#006ddd]/20 border-[#006ddd] text-[#006ddd]" : ""
                             }`}
                           >
-                            {STATE_LABELS[state] ?? state.replace(/_/g, " ")}
+                            {getStateLabels(selectedAccount?.name)[state] ?? state.replace(/_/g, " ")}
                           </button>
                         );
                       })}
@@ -673,6 +676,7 @@ export default function Home() {
                         <TicketCard
                           key={issue.number}
                           issue={issue}
+                          accountName={selectedAccount?.name}
                           ticketSummary={ticketSummaries[issue.number]}
                         />
                       ))}

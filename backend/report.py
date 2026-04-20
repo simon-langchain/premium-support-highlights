@@ -320,7 +320,7 @@ def _sort_issues(issues: list[dict], sort_by: str, sort_order: str = "asc") -> l
 
 def _render_tickets(
     issues: list[dict],
-    ticket_summaries: dict[int, str],
+    ticket_summaries: dict[int, dict],
     sort_by: str = "priority",
     sort_order: str = "asc",
 ) -> str:
@@ -337,13 +337,23 @@ def _render_tickets(
         priority = issue.get("priority", "")
         created  = issue.get("created_at", "")
         disp     = issue.get("disposition", "")
-        summary  = ticket_summaries.get(int(number), "") if number else ""
+        entry    = ticket_summaries.get(int(number), {}) if number else {}
+        summary  = entry.get("summary", "")
+        next_steps = entry.get("next_steps", "")
 
         age = _days_open(created)
-        summary_html = (
-            f'<div style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5;">'
-            f"{_e(summary)}</div>"
-        ) if summary else ""
+        summary_parts = []
+        if summary:
+            summary_parts.append(
+                f'<div style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5;">'
+                f'<span style="font-weight:600;color:#374151;">Summary:</span> {_e(summary)}</div>'
+            )
+        if next_steps:
+            summary_parts.append(
+                f'<div style="font-size:12px;color:#6b7280;margin-top:4px;line-height:1.5;">'
+                f'<span style="font-weight:600;color:#374151;">Next steps:</span> {_e(next_steps)}</div>'
+            )
+        summary_html = "".join(summary_parts)
         disp_html = (
             f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;">{_e(disp)}</span>'
         ) if disp else ""
@@ -390,7 +400,7 @@ def generate_report_html(
     account_name: str,
     period: str,
     payload: dict,
-    ticket_summaries: dict[int, str],
+    ticket_summaries: dict[int, dict],
     account_summary: str | None = None,
     sort_by: str = "priority",
     sort_order: str = "asc",

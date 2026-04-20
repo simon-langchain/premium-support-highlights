@@ -42,7 +42,7 @@ Guidelines:
 - Do not use headers — the summary is two paragraphs, not a structured document"""
 
 
-def make_summarise_tickets_tool(open_issues: list[dict], force: bool):
+def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_name: str = ""):
     """Return the summarise_tickets tool bound to this request's open issues.
 
     Defined as a factory so the tool (and its captured context) lives in the
@@ -50,9 +50,9 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool):
     """
     @tool
     async def summarise_tickets() -> str:
-        """Generate 1-2 sentence summaries for all open tickets in parallel.
+        """Generate next-steps actions for all open tickets in parallel.
         Call this before writing the account summary to have full context on each ticket.
-        Returns a list of ticket summaries.
+        Returns a list of per-ticket next steps.
         """
         async def _one(issue: dict) -> tuple[int, str]:
             issue_id = issue.get("id", "")
@@ -68,6 +68,8 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool):
                     title=issue.get("title", ""),
                     body_html=issue.get("body_html", ""),
                     messages=messages,
+                    state=issue.get("state", ""),
+                    account_name=account_name,
                 )
                 if issue_id and latest_msg_time:
                     await asyncio.to_thread(cache_mod.set_ticket_summary, issue_id, latest_msg_time, summary)
