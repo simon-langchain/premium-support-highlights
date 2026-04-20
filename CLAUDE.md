@@ -103,11 +103,13 @@ Protected routes:
 - `compute_avg_response_time(issues)` — hours to first response for closed tickets
 - `get_priority_breakdown(issues)` / `get_state_breakdown(issues)` / `get_disposition_breakdown(issues)`
 
-**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force)` returns a tool that generates and caches per-ticket summaries in parallel.
+**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt.
 
 **`report.py`** — Self-contained HTML report generator. `generate_report_html(..., is_email=False, banner_url=None, logo_url=None)`:
 - `is_email=True`: email-safe layout (table-based, no SVG/CSS grid/flex), banner + footer, metric cards 2x2, breakdowns stacked
 - `is_email=False`: browser/PDF layout with full CSS, banner inside max-width container
+
+**`ticket_summarizer.py`** — Per-ticket AI output via Claude Haiku. `summarize_ticket(title, body_html, messages, state, account_name)` returns structured `"Summary: ...\nNext steps: ..."` text. State labels are context-aware: `waiting_on_customer` tells the model LangChain has responded and is waiting; `waiting_on_you` means LangChain needs to act; `on_hold` means an internal LangChain team (Engineering/Product) is holding it. `parse_ticket_output(text)` parses the two-line output; old plain-text cache entries fall back to displaying as `next_steps`.
 
 **`cache.py`** — JSON file cache (`.cache/analysis_cache.json`). Per-ticket summaries keyed by `sha256(issue_id:latest_message_time)`; account summaries keyed by `as:{account_id}:{period}`.
 
@@ -119,9 +121,9 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/middleware.ts`** — Redirects to `/login?return=<path>` if `psh_session` cookie is absent. Skips `/login`, `/auth/google/callback`, `/api/auth/*`, `/api/slack/*`, `/_next/*`.
 
-**`src/app/login/page.tsx`** — Two-step login form: email input → 6-digit code input. Handles `sent` / `not_authorized` / `rate_limited` states inline without exposing which emails exist.
+**`src/app/login/page.tsx`** — Google OAuth button (primary). Clicking "or sign in with email" hides the Google button and reveals the OTP flow (email input → 6-digit code). Each OTP step has a "Back to Google sign-in" link. Handles `sent` / `not_authorized` / `rate_limited` states inline.
 
-**`src/app/page.tsx`** — Main dashboard. Fetches accounts on mount, account data on selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens).
+**`src/app/page.tsx`** — Main dashboard. Fetches accounts on mount, account data on selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`.
 
 **`src/app/api/[...path]/route.ts`** — Catch-all proxy. Forwards all headers (including `cookie` and `authorization`) to the backend. Injects `x-api-key` for LSD authentication server-side.
 
@@ -137,7 +139,7 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`.
 
-**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab. `downloadCsv` builds and downloads a CSV blob client-side. `emailReport` posts to `/email-report`.
+**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab. `downloadCsv` builds and downloads a CSV blob client-side with separate Summary and Next steps columns. `emailReport` posts to `/email-report`.
 
 ## Key Patterns
 
