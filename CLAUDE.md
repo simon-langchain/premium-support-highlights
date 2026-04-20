@@ -76,7 +76,8 @@ Auth routes (unauthenticated):
 - `POST /api/auth/logout` — revokes session, clears cookie
 
 Protected routes:
-- `GET /api/accounts` — sorted list of premium accounts
+- `GET /api/tiers` — sorted list of available support tiers (derived from current customers cache)
+- `GET /api/accounts?tier=Premium` — sorted list of accounts for the given tier (defaults to Premium)
 - `GET /api/accounts/{id}/data?account_name=...&period=` — metrics + open issues, 5-minute in-memory TTL cache
 - `GET /api/accounts/{id}/cached-ticket-summaries` — per-ticket AI summaries from disk cache, keyed by ticket number
 - `POST /api/accounts/{id}/summary` — body `{account_name, model, period, force}`, streams SSE keepalive pings while Claude generates, sends final `result` event
@@ -89,12 +90,16 @@ Protected routes:
 **`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
 
 **`pylon_client.py`** — Pylon REST API client. Shared `httpx.Client`, `_get`/`_post`/`_patch` helpers with 429 retry, in-memory TTL cache. Key functions:
-- `get_premium_accounts()` — GET /accounts
+- `get_current_customers(force_refresh)` — POST /accounts/search filtered to Relationship_Status = "Current Customer"; disk-cached for 1 hour; single source of truth for all tier/account derivation
+- `get_available_tiers()` — sorted list of unique Support_Tier values across all current customers (derived from cache, no extra API calls)
+- `get_accounts_by_tier(tier)` — current customers filtered to the given tier (derived from cache, no extra API calls)
+- `get_premium_accounts()` — backward-compatible wrapper for `get_accounts_by_tier("Premium")`
 - `get_team_members()` — GET /users, cached 2 minutes, used for auth eligibility check
-- `get_account(account_id)` — looks up a single account from the premium accounts disk cache (no network request)
+- `get_account(account_id)` — looks up a single account from the current customers disk cache (no network request)
 - `get_slack_channel_id(account)` — extracts primary Slack channel ID from account's `channels` array
 - `search_issues_for_account(account_id, ...)` — POST /issues/search with account filter, auto-paginates
 - `make_date_range(period)` — returns (created_after, created_before) for the given period string
+- **Custom fields**: Pylon returns `custom_fields` as a dict keyed by slug, e.g. `{"account.salesforce.Support_Tier__c": {"value": "Premium"}}`. Use `_get_custom_field(account, slug)` for safe extraction.
 
 **`slack_client.py`** — Slack API client. `post_message` posts Block Kit + legacy attachment messages via `chat.postMessage`. `get_channels` lists internal channels the bot can post to (filters Slack Connect and external-prefixed channels). `get_channel_name` resolves a channel ID to its name via `conversations.info`, with in-process caching.
 
@@ -123,13 +128,13 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/app/login/page.tsx`** — Google OAuth button (primary). Clicking "or sign in with email" hides the Google button and reveals the OTP flow (email input → 6-digit code). Each OTP step has a "Back to Google sign-in" link. Handles `sent` / `not_authorized` / `rate_limited` states inline.
 
-**`src/app/page.tsx`** — Main dashboard. Fetches accounts on mount, account data on selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`.
+**`src/app/page.tsx`** — Main dashboard. Loads available tiers on mount; re-fetches accounts when the selected tier changes. Fetches account data on account selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`. Shows a centered empty state when no account is selected.
 
 **`src/app/api/[...path]/route.ts`** — Catch-all proxy. Forwards all headers (including `cookie` and `authorization`) to the backend. Injects `x-api-key` for LSD authentication server-side.
 
 **`src/app/api/accounts/[accountId]/summary/route.ts`** — Custom route handler for the summary SSE stream. Buffers the stream and returns plain JSON once the `result` event arrives. Explicitly forwards `cookie` and `authorization` headers (the catch-all does this automatically; this handler has its own header dict).
 
-**`src/components/Sidebar.tsx`** — Fixed left sidebar with LangChain logo, account selector, period selector, refresh button, model selector, and Settings menu (light/dark toggle + sign out). Collapsible.
+**`src/components/Sidebar.tsx`** — Fixed left sidebar with LangChain logo, support tier selector, account selector, period selector, refresh button, model selector, and Settings menu (light/dark toggle + sign out). Collapsible.
 
 **`src/components/EmailButton.tsx`** — Standalone email button that opens a popover with email input and send status.
 

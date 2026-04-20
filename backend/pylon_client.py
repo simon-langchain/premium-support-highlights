@@ -134,88 +134,76 @@ def get_accounts() -> list[dict]:
     return all_accounts
 
 
-_PREMIUM_ACCOUNTS_CACHE_FILE = Path(__file__).parent / ".cache" / "premium_accounts.json"
-_PREMIUM_ACCOUNTS_TTL_SECONDS = 3600  # 1 hour
+_ACCOUNTS_TTL_SECONDS = 3600  # 1 hour
+_CACHE_DIR = Path(__file__).parent / ".cache"
+_CURRENT_CUSTOMERS_CACHE_FILE = _CACHE_DIR / "current_customers.json"
 
-
+_RELATIONSHIP_STATUS_SLUG = "account.salesforce.Relationship_Status__c"
 _SUPPORT_TIER_SLUG = "account.salesforce.Support_Tier__c"
 
 
-def _is_premium_account(account: dict) -> bool:
-    """Return True if the account's Support_Tier__c custom field equals Premium."""
-    custom_fields = account.get("custom_fields") or []
-    for field in custom_fields:
-        if not isinstance(field, dict):
-            continue
-        if field.get("slug") == _SUPPORT_TIER_SLUG:
-            return str(field.get("value", "")).strip().lower() == "premium"
-    return False
+def _get_custom_field(account: dict, slug: str) -> str:
+    fields = account.get("custom_fields") or {}
+    if isinstance(fields, dict):
+        return str((fields.get(slug) or {}).get("value", "")).strip()
+    return ""
 
 
-def _load_premium_accounts_disk_cache() -> list[dict] | None:
-    """Return cached premium accounts if the disk cache exists and is fresh."""
-    if not _PREMIUM_ACCOUNTS_CACHE_FILE.exists():
-        return None
-    try:
-        raw = json.loads(_PREMIUM_ACCOUNTS_CACHE_FILE.read_text())
-        cached_at = raw.get("cached_at", 0)
-        if time.time() - cached_at < _PREMIUM_ACCOUNTS_TTL_SECONDS:
-            return raw.get("accounts", [])
-    except (json.JSONDecodeError, OSError, KeyError):
-        pass
-    return None
+def get_current_customers(force_refresh: bool = False) -> list[dict]:
+    """Fetch all accounts where Relationship_Status__c = 'Current Customer'.
 
+    Cached to disk for 1 hour. Single source of truth — tiers and per-tier
+    account lists are derived from this without additional API calls.
+    """
+    if not force_refresh and _CURRENT_CUSTOMERS_CACHE_FILE.exists():
+        try:
+            raw = json.loads(_CURRENT_CUSTOMERS_CACHE_FILE.read_text())
+            if time.time() - raw.get("cached_at", 0) < _ACCOUNTS_TTL_SECONDS:
+                return raw.get("accounts", [])
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
 
-def _save_premium_accounts_disk_cache(accounts: list[dict]) -> None:
-    """Persist premium accounts to disk with a timestamp."""
-    _PREMIUM_ACCOUNTS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PREMIUM_ACCOUNTS_CACHE_FILE.write_text(
+    accounts: list[dict] = []
+    body: dict = {
+        "filter": {
+            "field": _RELATIONSHIP_STATUS_SLUG,
+            "operator": "equals",
+            "value": "Current Customer",
+        },
+        "limit": 1000,
+    }
+    data = _post("/accounts/search", body)
+    accounts = data.get("data", [])
+    cursor = (data.get("pagination") or {}).get("cursor")
+    while cursor and (data.get("pagination") or {}).get("has_next_page"):
+        body = {**body, "cursor": cursor}
+        data = _post("/accounts/search", body)
+        accounts.extend(data.get("data", []))
+        cursor = (data.get("pagination") or {}).get("cursor")
+
+    _CURRENT_CUSTOMERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CURRENT_CUSTOMERS_CACHE_FILE.write_text(
         json.dumps({"cached_at": time.time(), "accounts": accounts}, default=str)
     )
+    return accounts
+
+
+def get_available_tiers(force_refresh: bool = False) -> list[str]:
+    """Return sorted Support Tier values across all current customers."""
+    customers = get_current_customers(force_refresh=force_refresh)
+    return sorted({_get_custom_field(a, _SUPPORT_TIER_SLUG) for a in customers
+                   if _get_custom_field(a, _SUPPORT_TIER_SLUG)})
+
+
+def get_accounts_by_tier(tier: str = "Premium", force_refresh: bool = False) -> list[dict]:
+    """Return current customers filtered to the given Support Tier."""
+    customers = get_current_customers(force_refresh=force_refresh)
+    return [a for a in customers if _get_custom_field(a, _SUPPORT_TIER_SLUG).lower() == tier.lower()]
 
 
 def get_premium_accounts(force_refresh: bool = False) -> list[dict]:
-    """Return accounts whose Support Tier custom field equals Premium.
-
-    Results are disk-cached for 1 hour so repeat loads are instant.
-    Set force_refresh=True to bypass the cache (e.g. after a manual refresh).
-
-    Strategy:
-      1. Return disk cache if fresh and force_refresh is False.
-      2. Try POST /accounts/search with a custom field filter (server-side, fast).
-      3. Fall back to paginated GET /accounts + client-side filter.
-    """
-    if not force_refresh:
-        cached = _load_premium_accounts_disk_cache()
-        if cached is not None:
-            return cached
-
-    # Try server-side filter first via POST /accounts/search
-    accounts: list[dict] = []
-    try:
-        body = {
-            "filter": {
-                "field": _SUPPORT_TIER_SLUG,
-                "operator": "equals",
-                "value": "Premium",
-            },
-            "limit": 1000,
-        }
-        data = _post("/accounts/search", body)
-        accounts = data.get("data", [])
-        # Paginate if needed
-        cursor = (data.get("pagination") or {}).get("cursor")
-        while cursor and (data.get("pagination") or {}).get("has_next_page"):
-            body["cursor"] = cursor
-            data = _post("/accounts/search", body)
-            accounts.extend(data.get("data", []))
-            cursor = (data.get("pagination") or {}).get("cursor")
-    except Exception:
-        # Fall back to full account list + client-side filter
-        accounts = [a for a in get_accounts() if _is_premium_account(a)]
-
-    _save_premium_accounts_disk_cache(accounts)
-    return accounts
+    """Backward-compatible wrapper for get_accounts_by_tier('Premium')."""
+    return get_accounts_by_tier("Premium", force_refresh=force_refresh)
 
 
 def search_issues_for_account(
@@ -382,16 +370,14 @@ def make_date_range(period: str) -> tuple[str, str]:
 
 
 def get_account(account_id: str) -> dict | None:
-    """Look up a single account by ID from the premium accounts cache.
-
-    Returns the full account dict (including channels) or None if not found.
-    Does NOT make a network request — uses the same disk cache as get_premium_accounts().
-    """
-    accounts = get_premium_accounts()
-    for account in accounts:
+    """Look up a single account by ID from the current customers cache."""
+    for account in get_current_customers():
         if account.get("id") == account_id:
             return account
-    return None
+    try:
+        return _get(f"/accounts/{account_id}")
+    except Exception:
+        return None
 
 
 def get_slack_channel_id(account: dict) -> str | None:

@@ -1,13 +1,14 @@
 # Premium Support Highlights
 
-An internal dashboard for the LangChain support team that surfaces monthly metrics and AI-generated summaries for premium customer accounts, powered by Pylon and Claude.
+An internal dashboard for the LangChain support team that surfaces monthly metrics and AI-generated summaries for customer accounts across all support tiers, powered by Pylon and Claude.
 
 ---
 
 ## Features
 
 - **Authentication** — Google OAuth (primary) or email OTP (fallback); restricted to active Pylon team members with a `@langchain.dev` Google Workspace account
-- **Account selector** — searchable dropdown of all premium accounts pulled from Pylon
+- **Support tier selector** — filter accounts by support tier (Premium, Standard, etc.); only current customers (Relationship_Status = "Current Customer") are included
+- **Account selector** — searchable dropdown of accounts within the selected tier
 - **Configurable time period** — view data across 7 days, 1 month, 3 months, 6 months, or 1 year
 - **Metric cards** — open ticket count, tickets raised/closed, avg first response time, and CSAT score (when available)
 - **Trend chart** — area chart of tickets raised vs. closed over the selected period

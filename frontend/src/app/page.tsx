@@ -11,6 +11,7 @@ import {
   fetchAccounts,
   fetchAccountData,
   fetchCachedTicketSummaries,
+  fetchTiers,
   generateSummary,
   type Account,
   type AccountData,
@@ -112,6 +113,8 @@ const Logo = () => (
 
 export default function Home() {
   const [configured, setConfigured] = useState(false);
+  const [tiers, setTiers] = useState<string[]>([]);
+  const [selectedTier, setSelectedTier] = useState("Premium");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [accountData, setAccountData] = useState<AccountData | null>(null);
@@ -143,10 +146,19 @@ export default function Home() {
   // Abort controller for any in-flight summary pipeline (ticket SSE + account summary)
   const summaryAbortRef = useRef<AbortController | null>(null);
 
-  // Load accounts on mount — auto-select if ?account= deep link is present
+  // Load available tiers once on mount
+  useEffect(() => {
+    fetchTiers()
+      .then((data) => setTiers(data))
+      .catch(() => {}); // non-fatal — tier selector will still show default
+  }, []);
+
+  // Load accounts when tier changes — auto-select deep link account on first load
   useEffect(() => {
     setAccountsLoading(true);
-    fetchAccounts()
+    setSelectedAccount(null);
+    setAccountData(null);
+    fetchAccounts(selectedTier)
       .then((data) => {
         setAccounts(data);
         const param = new URLSearchParams(window.location.search).get("account");
@@ -160,7 +172,7 @@ export default function Home() {
       })
       .catch((err) => setError(err.message))
       .finally(() => setAccountsLoading(false));
-  }, []);
+  }, [selectedTier]);
 
   // Run the summary pipeline: agent generates ticket summaries + account summary.
   // Polls cached ticket summaries every 2s while the agent runs so cards appear
@@ -395,6 +407,19 @@ export default function Home() {
             <div className="flex flex-col gap-4">
               <div>
                 <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                  Support Tier
+                </label>
+                <OptionPicker
+                  options={tiers.length > 0
+                    ? tiers.map((t) => ({ value: t, label: t }))
+                    : [{ value: "Premium", label: "Premium" }]}
+                  value={selectedTier}
+                  onChange={setSelectedTier}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
                   Account
                 </label>
                 <AccountPicker
@@ -465,6 +490,9 @@ export default function Home() {
         period={period}
         onPeriodChange={setPeriod}
         onSetup={() => setConfigured(false)}
+        tiers={tiers}
+        selectedTier={selectedTier}
+        onTierChange={setSelectedTier}
       />
 
       {/* Main content */}
@@ -475,9 +503,24 @@ export default function Home() {
             <span className="text-sm">Loading accounts...</span>
           </div>
         ) : !selectedAccount ? (
-          <p className="text-sm mt-8" style={{ color: "var(--text-muted)" }}>
-            No premium accounts found.
-          </p>
+          <div className="flex flex-col items-center justify-center h-full min-h-[60vh] text-center px-6">
+            <svg width="48" height="48" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className="mb-5 opacity-30">
+              <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="currentColor" />
+              <path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="currentColor" />
+              <path d="M11.8146 115.987C19.3329 123.502 29.541 127.732 40.1724 127.732V87.6289H0.0664062C0.0700559 98.2606 4.29635 108.469 11.8146 115.987Z" fill="currentColor" />
+              <path d="M110.387 45.7684C102.869 38.2535 92.6608 34.0198 82.0258 34.0234C71.3943 34.0234 61.1863 38.2535 53.668 45.772L82.0258 74.1306L110.387 45.7684Z" fill="currentColor" />
+            </svg>
+            <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--text-primary)" }}>
+              {accounts.length === 0
+                ? `No ${selectedTier} accounts found`
+                : "Select an account"}
+            </h2>
+            <p className="text-sm max-w-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
+              {accounts.length === 0
+                ? `There are no ${selectedTier.toLowerCase()} tier accounts in Pylon. Try a different support tier.`
+                : `Choose a ${selectedTier.toLowerCase()} account from the sidebar to view open issues, metrics, and AI-generated summaries.`}
+            </p>
+          </div>
         ) : (
           <>
             {/* Page header */}
@@ -487,7 +530,7 @@ export default function Home() {
                   {selectedAccount.name}
                 </h1>
                 <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>
-                  Premium account overview
+                  {selectedTier} account overview
                 </p>
               </div>
               {accountData && (

@@ -597,11 +597,20 @@ async def auth_logout(request: Request):
     return response
 
 
-@app.get("/api/accounts")
-def get_accounts(_email: str = Depends(require_auth)):
-    """Return sorted list of premium accounts [{id, name}, ...]."""
+@app.get("/api/tiers")
+def get_tiers(_email: str = Depends(require_auth)):
+    """Return sorted list of available Support Tier values from Pylon."""
     try:
-        accounts = pylon_client.get_premium_accounts()
+        return pylon_client.get_available_tiers()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+
+
+@app.get("/api/accounts")
+def get_accounts(tier: str = "Premium", _email: str = Depends(require_auth)):
+    """Return sorted list of accounts for the given support tier [{id, name}, ...]."""
+    try:
+        accounts = pylon_client.get_accounts_by_tier(tier)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
     result = [{"id": a.get("id", ""), "name": a.get("name", "")} for a in accounts]

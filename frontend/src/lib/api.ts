@@ -42,9 +42,19 @@ function handleUnauthorized(res: Response): void {
   }
 }
 
-/** Fetch all premium accounts, sorted alphabetically by name. */
-export async function fetchAccounts(): Promise<Account[]> {
-  const res = await fetch("/api/accounts");
+/** Fetch available support tiers, sorted alphabetically. */
+export async function fetchTiers(): Promise<string[]> {
+  const res = await fetch("/api/tiers");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tiers: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Fetch accounts for the given support tier, sorted alphabetically by name. */
+export async function fetchAccounts(tier: string = "Premium"): Promise<Account[]> {
+  const res = await fetch(`/api/accounts?${new URLSearchParams({ tier })}`);
   if (res.status === 401) { handleUnauthorized(res); return []; }
   if (!res.ok) {
     throw new Error(`Failed to fetch accounts: ${res.status} ${res.statusText}`);

@@ -18,6 +18,9 @@ interface SidebarProps {
   period: string;
   onPeriodChange: (period: string) => void;
   onSetup: () => void;
+  tiers: string[];
+  selectedTier: string;
+  onTierChange: (tier: string) => void;
 }
 
 const MODELS = [
@@ -61,6 +64,9 @@ export default function Sidebar({
   period,
   onPeriodChange,
   onSetup,
+  tiers,
+  selectedTier,
+  onTierChange,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -129,7 +135,19 @@ export default function Sidebar({
                   Support Highlights
                 </span>
               </div>
-              <p style={{ color: "var(--text-muted)" }} className="text-xs ml-7">Premium accounts</p>
+            </div>
+
+            <div className="px-4 pb-3">
+              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+                Support Tier
+              </label>
+              <OptionPicker
+                options={tiers.length > 0
+                  ? tiers.map((t) => ({ value: t, label: t }))
+                  : [{ value: "Premium", label: "Premium" }]}
+                value={selectedTier}
+                onChange={onTierChange}
+              />
             </div>
 
             <div className="px-4 pb-3">
