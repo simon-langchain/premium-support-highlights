@@ -22,7 +22,10 @@ export function middleware(req: NextRequest) {
 
   const session = req.cookies.get("psh_session");
   if (!session?.value) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    const returnPath = `${req.nextUrl.pathname}${req.nextUrl.search}`;
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("return", returnPath);
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();

@@ -117,11 +117,11 @@ Protected routes:
 
 Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backend via a catch-all route handler.
 
-**`src/middleware.ts`** — Redirects to `/login` if `psh_session` cookie is absent. Skips `/login`, `/api/auth/*`, `/_next/*`.
+**`src/middleware.ts`** — Redirects to `/login?return=<path>` if `psh_session` cookie is absent. Skips `/login`, `/auth/google/callback`, `/api/auth/*`, `/api/slack/*`, `/_next/*`.
 
 **`src/app/login/page.tsx`** — Two-step login form: email input → 6-digit code input. Handles `sent` / `not_authorized` / `rate_limited` states inline without exposing which emails exist.
 
-**`src/app/page.tsx`** — Main dashboard. Fetches accounts on mount, account data on selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs.
+**`src/app/page.tsx`** — Main dashboard. Fetches accounts on mount, account data on selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens).
 
 **`src/app/api/[...path]/route.ts`** — Catch-all proxy. Forwards all headers (including `cookie` and `authorization`) to the backend. Injects `x-api-key` for LSD authentication server-side.
 

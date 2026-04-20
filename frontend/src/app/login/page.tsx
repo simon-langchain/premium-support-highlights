@@ -4,6 +4,13 @@ import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
+function getReturnUrl(): string {
+  if (typeof window === "undefined") return "/";
+  const raw = new URLSearchParams(window.location.search).get("return") || "/";
+  // Guard against open redirects — only allow relative paths
+  return raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
+}
+
 const Logo = () => (
   <svg width="36" height="36" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd" />
@@ -47,6 +54,8 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/google/start");
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json() as { url: string };
+      // Preserve the return URL across the Google redirect via localStorage
+      localStorage.setItem("psh_return_url", getReturnUrl());
       window.location.href = data.url;
     } catch (err) {
       setGoogleLoading(false);
@@ -99,7 +108,7 @@ export default function LoginPage() {
         return;
       }
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      router.push("/");
+      router.push(getReturnUrl());
     } catch (err) {
       setOtpStatus("error");
       setOtpError(err instanceof Error ? err.message : "Something went wrong.");

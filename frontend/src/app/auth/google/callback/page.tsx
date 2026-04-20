@@ -30,7 +30,10 @@ function CallbackHandler() {
     })
       .then(async (res) => {
         if (res.ok) {
-          router.push("/");
+          const returnUrl = localStorage.getItem("psh_return_url") || "/";
+          localStorage.removeItem("psh_return_url");
+          const safe = returnUrl.startsWith("/") && !returnUrl.startsWith("//") ? returnUrl : "/";
+          router.push(safe);
         } else {
           const data = await res.json().catch(() => ({})) as { detail?: string };
           setError(data.detail || "Authentication failed. Please try again.");

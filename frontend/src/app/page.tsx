@@ -25,6 +25,15 @@ import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downlo
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
 
+function toSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/['']/g, "")         // Dick's → dicks
+    .replace(/[()[\]{}]/g, "")    // remove brackets
+    .replace(/[^a-z0-9]+/g, "-")  // remaining non-alphanumeric → hyphen
+    .replace(/^-+|-+$/g, "");     // trim leading/trailing hyphens
+}
+
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1",
   high: "Sev 2",
@@ -131,11 +140,21 @@ export default function Home() {
   // Abort controller for any in-flight summary pipeline (ticket SSE + account summary)
   const summaryAbortRef = useRef<AbortController | null>(null);
 
-  // Load accounts on mount — do not auto-select; user picks on setup screen
+  // Load accounts on mount — auto-select if ?account= deep link is present
   useEffect(() => {
     setAccountsLoading(true);
     fetchAccounts()
-      .then((data) => setAccounts(data))
+      .then((data) => {
+        setAccounts(data);
+        const param = new URLSearchParams(window.location.search).get("account");
+        if (param) {
+          const match = data.find((a) => toSlug(a.name) === param.toLowerCase());
+          if (match) {
+            setSelectedAccount(match);
+            setConfigured(true);
+          }
+        }
+      })
       .catch((err) => setError(err.message))
       .finally(() => setAccountsLoading(false));
   }, []);
@@ -297,6 +316,7 @@ export default function Home() {
     setSearchQuery("");
     setSortBy("priority");
     setSelectedStates(OPEN_STATES);
+    window.history.replaceState(null, "", `/?account=${toSlug(account.name)}`);
   }
 
   function handleRegenerate() {
@@ -414,6 +434,7 @@ export default function Home() {
                   if (!setupAccount) return;
                   setSelectedAccount(setupAccount);
                   setConfigured(true);
+                  window.history.replaceState(null, "", `/?account=${encodeURIComponent(setupAccount.name)}`);
                 }}
                 disabled={!setupAccount}
                 className="w-full flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium text-white bg-[#006ddd] hover:bg-[#0058b8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors mt-2"

@@ -6,7 +6,7 @@ An internal dashboard for the LangChain support team that surfaces monthly metri
 
 ## Features
 
-- **Authentication** — OTP-based magic code login; only active Pylon team members with a `@langchain.dev` email can sign in
+- **Authentication** — Google OAuth (primary) or email OTP (fallback); restricted to active Pylon team members with a `@langchain.dev` Google Workspace account
 - **Account selector** — searchable dropdown of all premium accounts pulled from Pylon
 - **Configurable time period** — view data across 7 days, 1 month, 3 months, 6 months, or 1 year
 - **Metric cards** — open ticket count, tickets raised/closed, avg first response time, and CSAT score (when available)
@@ -17,6 +17,7 @@ An internal dashboard for the LangChain support team that surfaces monthly metri
 - **Email report** — send a self-contained HTML report directly to any email address via Postmark
 - **Downloads** — export as a self-contained HTML/PDF report (with logo, banner, AI summary, and ticket list) or a CSV of key metrics and open tickets
 - **Dark / light theme** — toggled from the Settings menu in the sidebar
+- **Deep links** — every account view has a shareable URL (`/?account=adobe`, `/?account=dicks-sporting-goods`); unauthenticated deep links redirect to login and land back on the original page after sign-in
 
 ---
 
@@ -50,6 +51,9 @@ Copy `.env.example` to `.env` and fill in the required values.
 |---|---|---|
 | `PYLON_API_TOKEN` | Yes | Pylon REST API token |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude summaries |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID (Web application type) |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret |
+| `DASHBOARD_URL` | Yes (prod) | Frontend URL — used to derive the OAuth redirect URI and Slack report links |
 | `SMTP_HOST` | Yes (email) | SMTP server hostname |
 | `SMTP_PORT` | Yes (email) | SMTP port (default `587`) |
 | `SMTP_USER` | Yes (email) | SMTP username |
@@ -80,7 +84,9 @@ langgraph deploy
 Set in the LSD deployment environment:
 - `PYLON_API_TOKEN`
 - `ANTHROPIC_API_KEY`
-- `ALLOWED_ORIGINS` — your Vercel frontend URL (e.g. `https://your-app.vercel.app`)
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+- `DASHBOARD_URL` — your Vercel frontend URL (e.g. `https://your-app.vercel.app`); also used to derive the Google OAuth redirect URI
+- `ALLOWED_ORIGINS` — same as `DASHBOARD_URL` (enables secure cookies and CORS)
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
 - `REPORT_BANNER_URL`, `REPORT_LOGO_URL` (optional)
 
