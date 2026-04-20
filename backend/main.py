@@ -896,12 +896,13 @@ _PRIORITY_EMOJI = {
     "none":   ":white_circle:",
 }
 
-_STATE_LABELS = {
-    "new":                 "New",
-    "waiting_on_you":      "Waiting on LangChain",
-    "on_hold":             "On Hold",
-    "waiting_on_customer": "Waiting on Customer",
-}
+def _state_labels(account_name: str = "") -> dict:
+    return {
+        "new":                 "New",
+        "waiting_on_you":      "Waiting on LangChain",
+        "on_hold":             "On Hold",
+        "waiting_on_customer": f"Waiting on {account_name}" if account_name else "Waiting on Customer",
+    }
 
 _STATE_EMOJI = {
     "new":                 ":large_green_circle:",
@@ -1009,8 +1010,9 @@ def _build_metrics_blocks(
 
     state_bd = payload.get("state_breakdown", {})
     _s_order = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
+    sl = _state_labels(account_name)
     state_parts = [
-        f"{_STATE_EMOJI.get(s, '')} {_STATE_LABELS.get(s, s)}: *{state_bd[s]}*"
+        f"{_STATE_EMOJI.get(s, '')} {sl.get(s, s)}: *{state_bd[s]}*"
         for s in _s_order if state_bd.get(s, 0) > 0
     ]
 
@@ -1163,7 +1165,7 @@ def _build_issues_blocks(
         ticket_next_steps = entry.get("next_steps", "")
 
         priority_label = _PRIORITY_LABELS.get(priority, priority.title())
-        state_label = _STATE_LABELS.get(state, state.replace("_", " ").title())
+        state_label = _state_labels(account_name).get(state, state.replace("_", " ").title())
         color = _PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"])
 
         s_emoji = _STATE_EMOJI.get(state, "")

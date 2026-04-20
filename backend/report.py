@@ -47,14 +47,15 @@ _PRIORITY_COLORS: dict[str, tuple[str, str]] = {
     "none":   ("#f1f5f9", "#475569"),
 }
 
-_STATE_LABELS: dict[str, str] = {
-    "new":                  "New",
-    "waiting_on_you":       "Waiting on LangChain",
-    "on_hold":              "On Hold",
-    "waiting_on_customer":  "Waiting on Customer",
-    "closed":               "Closed",
-    "resolved":             "Resolved",
-}
+def _get_state_labels(account_name: str = "") -> dict[str, str]:
+    return {
+        "new":                  "New",
+        "waiting_on_you":       "Waiting on LangChain",
+        "on_hold":              "On Hold",
+        "waiting_on_customer":  f"Waiting on {account_name}" if account_name else "Waiting on Customer",
+        "closed":               "Closed",
+        "resolved":             "Resolved",
+    }
 
 _STATE_COLORS: dict[str, tuple[str, str]] = {
     "new":                 ("#dbeafe", "#1d4ed8"),
@@ -89,8 +90,8 @@ def _priority_badge(priority: str) -> str:
     return _badge(label, bg, color)
 
 
-def _state_badge(state: str) -> str:
-    label = _STATE_LABELS.get(state, state.replace("_", " ").title())
+def _state_badge(state: str, account_name: str = "") -> str:
+    label = _get_state_labels(account_name).get(state, state.replace("_", " ").title())
     bg, color = _STATE_COLORS.get(state, ("#f1f5f9", "#374151"))
     return _badge(label, bg, color)
 
@@ -251,7 +252,7 @@ def _render_breakdown(breakdown: dict[str, int], labels: dict[str, str] | None =
     </table>"""
 
 
-def _render_breakdowns(payload: dict, stacked: bool = False) -> str:
+def _render_breakdowns(payload: dict, stacked: bool = False, account_name: str = "") -> str:
     priority_bd = payload.get("priority_breakdown", {})
     state_bd    = payload.get("state_breakdown", {})
     disp_bd     = payload.get("disposition_breakdown", {})
@@ -260,7 +261,7 @@ def _render_breakdowns(payload: dict, stacked: bool = False) -> str:
     if priority_bd:
         sections.append(("Priority", _render_breakdown(priority_bd, _PRIORITY_LABELS)))
     if state_bd:
-        sections.append(("State", _render_breakdown(state_bd, _STATE_LABELS)))
+        sections.append(("State", _render_breakdown(state_bd, _get_state_labels(account_name))))
     if disp_bd:
         sections.append(("Disposition", _render_breakdown(disp_bd)))
 
@@ -323,6 +324,7 @@ def _render_tickets(
     ticket_summaries: dict[int, dict],
     sort_by: str = "priority",
     sort_order: str = "asc",
+    account_name: str = "",
 ) -> str:
     if not issues:
         return '<p style="color:#9ca3af;font-size:13px;">No open issues.</p>'
@@ -371,7 +373,7 @@ def _render_tickets(
           </td>
           <td style="padding:12px;vertical-align:top;white-space:nowrap;text-align:right;">
             <div style="margin-bottom:4px;">{_priority_badge(priority)}</div>
-            <div style="margin-bottom:4px;">{_state_badge(state)}</div>
+            <div style="margin-bottom:4px;">{_state_badge(state, account_name)}</div>
             <div style="font-size:11px;color:#9ca3af;">{_e(age)}</div>
           </td>
         </tr>""")
@@ -454,12 +456,12 @@ def generate_report_html(
     {_render_trend(monthly)}
 
     {_section_heading("Breakdowns")}
-    {_render_breakdowns(payload, stacked=is_email)}
+    {_render_breakdowns(payload, stacked=is_email, account_name=account_name)}
 
     {(_section_heading("Account Summary") + _render_summary(account_summary)) if account_summary else ""}
 
     {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order)}
+    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name)}
 """
 
     if is_email:

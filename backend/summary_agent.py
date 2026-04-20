@@ -12,12 +12,15 @@ definition in the agent layer (here) rather than in the HTTP route handler (main
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 import pylon_client
 import cache as cache_mod
 from langchain_core.tools import tool
 from ticket_summarizer import summarize_ticket
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_SUMMARY_MODEL = "claude-sonnet-4-6"
 
@@ -71,10 +74,11 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_na
                     state=issue.get("state", ""),
                     account_name=account_name,
                 )
-                if issue_id and latest_msg_time:
+                if issue_id:
                     await asyncio.to_thread(cache_mod.set_ticket_summary, issue_id, latest_msg_time, summary)
                 return number, summary
             except Exception:
+                _log.exception("Failed to summarise ticket #%s (id=%s)", number, issue_id)
                 return number, ""
 
         results = await asyncio.gather(*[_one(i) for i in open_issues])
@@ -96,14 +100,15 @@ def create_summary_agent(model: str | None = None, tools: list | None = None):
     )
 
 
-_STATE_LABELS = {
-    "new": "New",
-    "waiting_on_you": "Waiting on LangChain",
-    "waiting_on_customer": "Waiting on Customer",
-    "on_hold": "On Hold",
-    "closed": "Closed",
-    "resolved": "Resolved",
-}
+def _state_labels(account_name: str = "") -> dict[str, str]:
+    return {
+        "new": "New",
+        "waiting_on_you": "Waiting on LangChain",
+        "waiting_on_customer": f"Waiting on {account_name}" if account_name else "Waiting on Customer",
+        "on_hold": "On Hold",
+        "closed": "Closed",
+        "resolved": "Resolved",
+    }
 
 _PRIORITY_LABELS = {
     "urgent": "Sev 1",
@@ -118,7 +123,7 @@ def _format_ticket(issue: dict) -> str:
     number = issue.get("number", "?")
     title = issue.get("title", "No title")
     raw_state = issue.get("state", "unknown")
-    state = _STATE_LABELS.get(raw_state, raw_state.replace("_", " ").title())
+    state = _state_labels().get(raw_state, raw_state.replace("_", " ").title())
     raw_priority = issue.get("priority", "none")
     priority = _PRIORITY_LABELS.get(raw_priority, "No Priority")
     disposition = issue.get("disposition", "")
@@ -169,6 +174,7 @@ def _format_key_metrics(
     priority_breakdown: dict,
     state_breakdown: dict,
     disposition_breakdown: dict,
+    account_name: str = "",
 ) -> str:
     lines = []
     if avg_response_time is not None:
@@ -183,8 +189,9 @@ def _format_key_metrics(
         )
         lines.append(f"Priority breakdown: {parts}")
     if state_breakdown:
+        labels = _state_labels(account_name)
         parts = ", ".join(
-            f"{_STATE_LABELS.get(s, s)}: {state_breakdown[s]}"
+            f"{labels.get(s, s)}: {state_breakdown[s]}"
             for s in _STATE_ORDER
             if s in state_breakdown
         )
@@ -232,6 +239,7 @@ async def generate_account_summary(
         priority_breakdown or {},
         state_breakdown or {},
         disposition_breakdown or {},
+        account_name=account_name,
     )
 
     prompt = f"""Please generate an executive support highlights summary for account: **{account_name}**

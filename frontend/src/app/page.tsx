@@ -530,7 +530,7 @@ export default function Home() {
                   {selectedAccount.name}
                 </h1>
                 <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>
-                  {selectedTier} account overview
+                  Support Highlights
                 </p>
               </div>
               {accountData && (
