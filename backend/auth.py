@@ -13,6 +13,7 @@ from dataclasses import dataclass
 OTP_TTL = 900        # 15 minutes
 SESSION_TTL = 28800  # 8 hours
 _MAX_OTP_REQUESTS = 3  # per email per OTP_TTL window
+STATE_TTL = 600      # 10 minutes
 
 
 @dataclass
@@ -36,6 +37,7 @@ class _RateEntry:
 _otps: dict[str, _OTPEntry] = {}
 _sessions: dict[str, _SessionEntry] = {}
 _rate: dict[str, _RateEntry] = {}
+_states: dict[str, float] = {}  # state_token -> expires_at
 
 
 def is_rate_limited(email: str) -> bool:
@@ -96,3 +98,16 @@ def validate_session(token: str) -> str | None:
 def revoke_session(token: str) -> None:
     """Delete a session token, effectively signing the user out."""
     _sessions.pop(token, None)
+
+
+def generate_state() -> str:
+    """Generate a single-use CSRF state token for OAuth flows."""
+    token = secrets.token_urlsafe(32)
+    _states[token] = time.monotonic() + STATE_TTL
+    return token
+
+
+def consume_state(token: str) -> bool:
+    """Return True and invalidate the token if valid and unexpired."""
+    exp = _states.pop(token, None)
+    return exp is not None and time.monotonic() < exp

@@ -17,6 +17,7 @@ Caching strategy (all in-memory, 5-minute TTL):
   open:{id}             -current open issues for the polled /cached-ticket-summaries
 """
 
+import base64
 import hashlib
 import hmac
 import os
@@ -28,7 +29,9 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
+
+import httpx
 
 from dotenv import load_dotenv
 
@@ -125,6 +128,11 @@ class SlackReportRequest(BaseModel):
     channel_id: str | None = None  # Override the default channel for this post
 
 
+class GoogleCallbackBody(BaseModel):
+    code: str
+    state: str
+
+
 class AuthRequestBody(BaseModel):
     email: str
 
@@ -159,6 +167,19 @@ async def require_auth(request: Request) -> str:
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return email
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth constants
+# ---------------------------------------------------------------------------
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+def _google_redirect_uri() -> str:
+    base = os.environ.get("DASHBOARD_URL", "http://localhost:3000").rstrip("/")
+    return f"{base}/auth/google/callback"
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +448,96 @@ async def _get_or_regenerate_account_summary(
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.get("/api/auth/google/start")
+async def auth_google_start():
+    """Return a Google OAuth URL. The frontend redirects the user there."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured")
+    state = auth_mod.generate_state()
+    params = urlencode({
+        "client_id": client_id,
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email",
+        "hd": "langchain.dev",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+    return {"url": f"{_GOOGLE_AUTH_URL}?{params}"}
+
+
+@app.post("/api/auth/google/callback")
+async def auth_google_callback(body: GoogleCallbackBody):
+    """Exchange a Google auth code for a session cookie."""
+    if not auth_mod.consume_state(body.state):
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(_GOOGLE_TOKEN_URL, data={
+            "code": body.code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": _google_redirect_uri(),
+            "grant_type": "authorization_code",
+        })
+
+    if not token_resp.is_success:
+        raise HTTPException(status_code=401, detail="Failed to exchange code with Google")
+
+    token_data = token_resp.json()
+    id_token = token_data.get("id_token", "")
+    if not id_token:
+        raise HTTPException(status_code=401, detail="No ID token in Google response")
+
+    # Decode JWT payload — token received directly from Google over HTTPS, no sig verify needed
+    try:
+        payload_b64 = id_token.split(".")[1]
+        padding = (4 - len(payload_b64) % 4) % 4
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * padding))
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Failed to parse ID token") from exc
+
+    email = (claims.get("email") or "").lower().strip()
+    hd = claims.get("hd", "")
+    email_verified = claims.get("email_verified", False)
+
+    # Belt-and-suspenders: validate domain even though hd= restricts at Google level
+    if not email_verified or not email.endswith("@langchain.dev") or hd != "langchain.dev":
+        raise HTTPException(status_code=403, detail="Access restricted to @langchain.dev accounts")
+
+    try:
+        members = await asyncio.to_thread(pylon_client.get_team_members)
+        member_emails = {(m.get("email") or "").lower() for m in members}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to verify membership: {exc}") from exc
+
+    if email not in member_emails:
+        raise HTTPException(status_code=403, detail="Not an active Pylon team member")
+
+    token = auth_mod.create_session(email)
+    is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        key="psh_session",
+        value=token,
+        max_age=28800,  # 8 hours
+        httponly=True,
+        secure=is_https,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
 @app.post("/api/auth/request")
 async def auth_request(body: AuthRequestBody):
     """Check eligibility and send a login OTP. Never reveals whether an email
-    exists in Pylon -unauthorized addresses get the same non-error response."""
+    exists in Pylon — unauthorized addresses get the same non-error response."""
     email = body.email.lower().strip()
 
     if not email.endswith("@langchain.dev"):
@@ -464,10 +571,8 @@ async def auth_verify(body: AuthVerifyBody):
     if not auth_mod.verify_otp(email, body.code.strip()):
         raise HTTPException(status_code=401, detail="Invalid or expired code")
     token = auth_mod.create_session(email)
-    response = JSONResponse({"ok": True})
-    # secure=True is required in production (HTTPS) but breaks localhost (HTTP).
-    # LSD always runs over HTTPS; local dev uses http://localhost.
     is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
+    response = JSONResponse({"ok": True})
     response.set_cookie(
         key="psh_session",
         value=token,

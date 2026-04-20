@@ -13,6 +13,9 @@ logs/
 # Customer context
 customer_context/
 
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.pyc

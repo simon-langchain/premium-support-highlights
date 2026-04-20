@@ -36,9 +36,10 @@ cd frontend && npm install
 Copy `.env.example` to `.env`. Required variables:
 - `PYLON_API_TOKEN` — Pylon REST API token
 - `ANTHROPIC_API_KEY` — For Claude summaries
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` — For OTP login emails and report emails (Postmark recommended)
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (Web application type). Add `{DASHBOARD_URL}/auth/google/callback` (and `http://localhost:3000/auth/google/callback` for local dev) to Authorised redirect URIs in Google Cloud Console. The redirect URI is derived automatically from `DASHBOARD_URL`.
 
 Optional variables:
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` — For emailing reports (Postmark recommended)
 - `SMTP_FROM` — From address (defaults to `SMTP_USER`)
 - `REPORT_BANNER_URL` — Banner image URL for emailed/PDF reports
 - `REPORT_LOGO_URL` — Logo PNG URL for email reports (improves Outlook compatibility)
@@ -53,24 +54,25 @@ Optional variables:
 
 ### Authentication
 
-OTP-based login flow:
-1. User enters `@langchain.dev` email on `/login`
-2. Backend checks they are an active member in Pylon (`GET /users`)
-3. A 6-digit code (cryptographically random via `secrets.randbelow`) is emailed, expires in 15 minutes, single-use
-4. Verified code creates a session token stored in-memory with 8-hour TTL
-5. Token is set as an `HttpOnly; Secure; SameSite=Lax` cookie (`psh_session`)
-6. Next.js middleware redirects unauthenticated requests to `/login`
-7. All protected backend routes use `Depends(require_auth)` to validate the session cookie
+Google OAuth login flow (restricted to `@langchain.dev` Google Workspace accounts):
+1. User clicks "Sign in with Google" on `/login`
+2. Frontend calls `GET /api/auth/google/start` → backend generates CSRF state token, returns Google OAuth URL with `hd=langchain.dev`
+3. User is redirected to Google; non-LangChain accounts are blocked at the Google account picker level
+4. Google redirects to `/auth/google/callback?code=...&state=...`
+5. Callback page POSTs `{code, state}` to `POST /api/auth/google/callback`
+6. Backend verifies CSRF state, exchanges code for ID token, validates `hd=langchain.dev` and `@langchain.dev` email domain, checks active Pylon membership
+7. Session token created (in-memory, 8-hour TTL), set as `HttpOnly; Secure; SameSite=Lax` cookie (`psh_session`)
+8. Next.js middleware redirects unauthenticated requests to `/login`; `/auth/google/callback` and `/api/auth/*` are bypassed
 
-Sessions are in-memory — restarting the backend invalidates all sessions. Rate limiting: 3 OTP requests per email per 15-minute window.
+Sessions are in-memory — restarting the backend invalidates all sessions. State tokens expire in 10 minutes and are single-use.
 
 ### Backend (`backend/`)
 
 **`main.py`** — FastAPI app. All routes except `/api/auth/*` require authentication via `Depends(require_auth)`.
 
 Auth routes (unauthenticated):
-- `POST /api/auth/request` — validates email domain + Pylon membership, sends OTP
-- `POST /api/auth/verify` — validates OTP, sets `psh_session` cookie
+- `GET /api/auth/google/start` — returns `{url}` Google OAuth URL with CSRF state token embedded
+- `POST /api/auth/google/callback` — body `{code, state}`, verifies state, exchanges code, validates domain + Pylon membership, sets `psh_session` cookie
 - `POST /api/auth/logout` — revokes session, clears cookie
 
 Protected routes:

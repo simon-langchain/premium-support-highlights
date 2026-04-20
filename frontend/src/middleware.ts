@@ -12,6 +12,7 @@ export function middleware(req: NextRequest) {
   // Auth routes, login page, and Slack callbacks are always accessible
   if (
     pathname === "/login" ||
+    pathname === "/auth/google/callback" ||
     pathname.startsWith("/api/auth/") ||
     pathname.startsWith("/api/slack/") ||
     pathname.startsWith("/_next/")
