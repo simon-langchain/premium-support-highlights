@@ -462,7 +462,7 @@ export default function Home() {
                   if (!setupAccount) return;
                   setSelectedAccount(setupAccount);
                   setConfigured(true);
-                  window.history.replaceState(null, "", `/?account=${encodeURIComponent(setupAccount.name)}`);
+                  window.history.replaceState(null, "", `/?account=${toSlug(setupAccount.name)}`);
                 }}
                 disabled={!setupAccount}
                 className="w-full flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium text-white bg-[#006ddd] hover:bg-[#0058b8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors mt-2"
