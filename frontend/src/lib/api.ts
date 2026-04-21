@@ -18,6 +18,7 @@ export interface Issue {
   tags: string[];
   disposition: string;
   external_issues: ExternalIssue[];
+  portal_url: string | null;
 }
 
 export interface MonthlyMetric {

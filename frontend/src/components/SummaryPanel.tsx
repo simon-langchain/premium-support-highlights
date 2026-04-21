@@ -9,9 +9,17 @@ interface SummaryPanelProps {
   loading: boolean;
   error: string | null;
   onRegenerate: () => void;
+  ticketUrls?: Record<string, string>;
 }
 
-export default function SummaryPanel({ summary, generatedAt, loading, error, onRegenerate }: SummaryPanelProps) {
+function linkifyTickets(text: string, ticketUrls: Record<string, string>): string {
+  return text.replace(/#(\d+)/g, (match, num) => {
+    const url = ticketUrls[num];
+    return url ? `[${match}](${url})` : match;
+  });
+}
+
+export default function SummaryPanel({ summary, generatedAt, loading, error, onRegenerate, ticketUrls = {} }: SummaryPanelProps) {
   return (
     <div
       style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
@@ -55,7 +63,17 @@ export default function SummaryPanel({ summary, generatedAt, loading, error, onR
             [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mb-1
             [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mb-1
             [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mb-1">
-            <ReactMarkdown>{summary}</ReactMarkdown>
+            <ReactMarkdown
+              components={{
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#006ddd] hover:underline">
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {Object.keys(ticketUrls).length > 0 ? linkifyTickets(summary, ticketUrls) : summary}
+            </ReactMarkdown>
           </div>
           {generatedAt && (
             <p style={{ color: "var(--text-caption)" }} className="text-xs mt-2">

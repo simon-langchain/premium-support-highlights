@@ -333,12 +333,13 @@ def _render_tickets(
 
     rows = []
     for issue in issues:
-        number   = issue.get("number", "")
-        title    = issue.get("title", "")
-        state    = issue.get("state", "")
-        priority = issue.get("priority", "")
-        created  = issue.get("created_at", "")
-        disp     = issue.get("disposition", "")
+        number     = issue.get("number", "")
+        title      = issue.get("title", "")
+        state      = issue.get("state", "")
+        priority   = issue.get("priority", "")
+        created    = issue.get("created_at", "")
+        disp       = issue.get("disposition", "")
+        portal_url = issue.get("portal_url")
         entry    = ticket_summaries.get(int(number), {}) if number else {}
         summary  = entry.get("summary", "")
         next_steps = entry.get("next_steps", "")
@@ -363,7 +364,7 @@ def _render_tickets(
         rows.append(f"""
         <tr style="border-top:1px solid #f3f4f6;">
           <td style="padding:12px;vertical-align:top;width:60px;">
-            <span style="font-size:12px;font-weight:600;color:#9ca3af;">#{_e(number)}</span>
+            {"<a href='" + _e(portal_url) + "' style='font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;' target='_blank'>" if portal_url else "<span style='font-size:12px;font-weight:600;color:#9ca3af;'>"}#{_e(number)}{"</a>" if portal_url else "</span>"}
           </td>
           <td style="padding:12px;vertical-align:top;">
             <div style="font-size:13px;font-weight:600;color:#111827;">

@@ -278,7 +278,7 @@ def _format_field_value(slug: str, field_labels: dict[str, dict[str, str]], fiel
     return slug.replace("_", " ").replace("-", " ").title()
 
 
-def _normalise_issue(issue: dict, field_labels: dict) -> dict:
+def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> dict:
     """Convert a raw Pylon issue into the normalised shape used by the frontend.
 
     Pylon stores category/disposition in nested custom_fields dicts with opaque slugs
@@ -311,6 +311,13 @@ def _normalise_issue(issue: dict, field_labels: dict) -> dict:
         ts_no_dot = slack_data["message_ts"].replace(".", "")
         slack_url = f"https://slack.com/archives/{slack_data['channel_id']}/p{ts_no_dot}"
 
+    issue_id = issue.get("id", "")
+    portal_url = (
+        f"https://app.usepylon.com/accounts/{account_id}/customer-portal"
+        f"?tab=issues&conversationID={issue_id}&durationMs=31536000000"
+        if issue_id and account_id else None
+    )
+
     return {
         "number": issue.get("number"),
         "title": issue.get("title", ""),
@@ -321,6 +328,7 @@ def _normalise_issue(issue: dict, field_labels: dict) -> dict:
         "disposition": disposition,
         "external_issues": external_issues,
         "slack_url": slack_url,
+        "portal_url": portal_url,
     }
 
 
@@ -384,11 +392,12 @@ def _build_payload(
     period_issues: list[dict],
     csat_responses: list[dict],
     period: str,
+    account_id: str = "",
 ) -> dict:
     """Compute the full API payload from raw Pylon data."""
     disposition_bd_raw = metrics_mod.get_disposition_breakdown(open_issues)
     return {
-        "open_issues": [_normalise_issue(i, field_labels) for i in open_issues],
+        "open_issues": [_normalise_issue(i, field_labels, account_id) for i in open_issues],
         "monthly_metrics": metrics_mod.compute_period_metrics(period_issues, period),
         "avg_response_time": metrics_mod.compute_avg_response_time(period_issues),
         "csat": _compute_csat(csat_responses),
@@ -634,7 +643,7 @@ async def get_account_data(
         return payload
 
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
-    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     _cache_set(payload_key, payload)
     await asyncio.to_thread(audit.log, "account_loaded", {"account_id": account_id, "account_name": account_name})
     return payload
@@ -681,7 +690,7 @@ async def get_account_summary(account_id: str, body: SummaryRequest, _email: str
     """Generate an AI account summary, streamed as SSE to keep the connection alive."""
     period = body.period if body.period in VALID_PERIODS else "6m"
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
-    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     summarise_tickets = make_summarise_tickets_tool(open_issues, body.force, account_name=body.account_name)
 
     async def event_stream():
@@ -752,7 +761,7 @@ async def get_account_report(
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
         account_id, period
     )
-    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
     # Collect cached per-ticket summaries (same logic as /cached-ticket-summaries)
     def _read_summaries() -> dict[int, dict]:
@@ -812,7 +821,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
         account_id, period
     )
-    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
     def _read_summaries() -> dict[int, str]:
         out: dict[int, str] = {}
@@ -1337,7 +1346,7 @@ async def post_slack_report(
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
         account_id, period
     )
-    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     fallback_text, blocks = _build_metrics_blocks(account_id, body.account_name, payload, period)
 
     try:
@@ -1424,7 +1433,7 @@ async def _handle_slack_action(
     try:
         if action_id == "psh_post_summary":
             field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
-            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
             account_summary = await _get_or_regenerate_account_summary(
                 account_id, account_name, period, payload, open_issues
             )
@@ -1448,7 +1457,7 @@ async def _handle_slack_action(
         elif action_id in ("psh_post_issues", "psh_post_issues_more"):
             offset = kwargs.get("offset", 0) if action_id == "psh_post_issues_more" else 0
             field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
-            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period)
+            payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
             # For the first page, regenerate stale/missing summaries.
             # Subsequent pages skip regeneration -summaries were already warmed on first click.

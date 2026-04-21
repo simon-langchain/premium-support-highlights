@@ -101,14 +101,20 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
       className="hover:border-[#006ddd] rounded-lg px-4 py-3 transition-colors"
     >
       <div className="flex items-start gap-2 mb-2">
-        <a
-          href={`https://app.usepylon.com/issues?issueNumber=${issue.number}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[#006ddd] font-mono text-xs font-semibold hover:underline whitespace-nowrap mt-0.5"
-        >
-          #{issue.number}
-        </a>
+        {issue.portal_url ? (
+          <a
+            href={issue.portal_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#006ddd] font-mono text-xs font-semibold hover:underline whitespace-nowrap mt-0.5"
+          >
+            #{issue.number}
+          </a>
+        ) : (
+          <span className="text-[#006ddd] font-mono text-xs font-semibold whitespace-nowrap mt-0.5">
+            #{issue.number}
+          </span>
+        )}
         <p style={{ color: "var(--text-primary)" }} className="text-sm leading-snug flex-1">
           {issue.title}
         </p>

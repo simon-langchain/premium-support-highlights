@@ -632,6 +632,11 @@ export default function Home() {
                     loading={summaryLoading}
                     error={summaryError}
                     onRegenerate={handleRegenerate}
+                    ticketUrls={Object.fromEntries(
+                      (accountData?.open_issues ?? [])
+                        .filter((i) => i.portal_url)
+                        .map((i) => [String(i.number), i.portal_url!])
+                    )}
                   />
                 </div>
 

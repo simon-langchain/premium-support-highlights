@@ -84,7 +84,7 @@ export function downloadCsv(
   }
 
   rows.push("OPEN TICKETS");
-  rows.push("Number,Title,State,Priority,Disposition,Created,Summary,Next steps");
+  rows.push("Number,Title,State,Priority,Disposition,Created,Summary,Next steps,Portal URL");
   for (const issue of issues) {
     const state = getStateLabels(accountName)[issue.state] ?? issue.state.replace(/_/g, " ");
     const priority = PRIORITY_LABELS[issue.priority] ?? issue.priority;
@@ -98,6 +98,7 @@ export function downloadCsv(
       cell(issue.created_at ? issue.created_at.split("T")[0] : ""),
       cell(entry?.summary ?? ""),
       cell(entry?.next_steps ?? ""),
+      cell(issue.portal_url ?? ""),
     ].join(","));
   }
 
