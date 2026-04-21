@@ -5,6 +5,7 @@ import httpx
 _SLACK_API = "https://slack.com/api"
 _TIMEOUT = 15
 _channel_name_cache: dict[str, str] = {}
+_bot_name_cache: str | None = None
 
 _EXTERNAL_PREFIXES = ("customer-", "eval-", "external-", "ext-", "partner-")
 
@@ -76,6 +77,27 @@ def get_channel_name(token: str, channel_id: str) -> str | None:
             if name:
                 _channel_name_cache[channel_id] = name
                 return name
+    except Exception:
+        pass
+    return None
+
+
+def get_bot_name(token: str) -> str | None:
+    """Return the bot's Slack username via auth.test, cached in-process."""
+    global _bot_name_cache
+    if _bot_name_cache is not None:
+        return _bot_name_cache
+    try:
+        resp = httpx.post(
+            f"{_SLACK_API}/auth.test",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("ok"):
+            _bot_name_cache = data.get("user") or None
+            return _bot_name_cache
     except Exception:
         pass
     return None

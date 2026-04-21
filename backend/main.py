@@ -1365,11 +1365,15 @@ async def post_slack_report(
                 ),
             ) from exc
         if "not_in_channel" in msg:
+            channel_name = slack_client.get_channel_name(slack_token, channel_id)
+            bot_name = slack_client.get_bot_name(slack_token) or "lc-support-highlights"
+            channel_label = f"#{channel_name}" if channel_name else f"'{channel_id}'"
+            invite_cmd = f"/invite @{bot_name}"
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"The bot is not a member of channel '{channel_id}'. "
-                    "Invite it with /invite @BotName in that channel, then try again."
+                    f"The bot is not a member of channel {channel_label}. "
+                    f"Invite it with {invite_cmd} in that channel, then try again."
                 ),
             ) from exc
         raise HTTPException(status_code=502, detail=f"Slack error: {msg}") from exc
