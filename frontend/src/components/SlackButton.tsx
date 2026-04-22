@@ -182,7 +182,7 @@ export default function SlackButton({ onSlackReport, channelName, channelId, ava
                 {status.message}
               </p>
             ) : (() => {
-              const inviteMatch = status.message.match(/(.*?\.).*?(\/invite\s+\S+)/s);
+              const inviteMatch = status.message.match(/(.*?\.).*?(\/invite\s+\S+)/);
               return inviteMatch ? (
                 <div className="mt-2 rounded-md px-2.5 py-2 text-xs" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
                   <div className="flex items-start gap-1.5 mb-1.5" style={{ color: "#ef4444" }}>
