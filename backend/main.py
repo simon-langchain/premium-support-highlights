@@ -1366,7 +1366,7 @@ async def post_slack_report(
             ) from exc
         if "not_in_channel" in msg:
             channel_name = slack_client.get_channel_name(slack_token, channel_id)
-            bot_name = slack_client.get_bot_name(slack_token) or "lc-support-highlights"
+            bot_name = "lc-support-highlights"
             channel_label = f"#{channel_name}" if channel_name else f"'{channel_id}'"
             invite_cmd = f"/invite @{bot_name}"
             raise HTTPException(
