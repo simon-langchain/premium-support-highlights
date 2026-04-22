@@ -542,8 +542,8 @@ export default function Home() {
                     availableChannels={slackAvailableChannels}
                   />
                   <DownloadMenu
-                    onDownloadPdf={() => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder)}
-                    onDownloadCsv={() => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries)}
+                    onDownloadPdf={(sections) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections)}
+                    onDownloadCsv={(sections) => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections)}
                   />
                 </div>
               )}

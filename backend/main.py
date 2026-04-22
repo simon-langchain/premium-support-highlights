@@ -751,6 +751,7 @@ async def get_account_report(
     period: str = Query("6m"),
     sort_by: str = Query("priority"),
     sort_order: str = Query("asc"),
+    sections: list[str] | None = Query(default=None),
     _email: str = Depends(require_auth),
 ):
     """Return a self-contained HTML report for an account.
@@ -796,6 +797,7 @@ async def get_account_report(
         sort_by=sort_by,
         sort_order=sort_order,
         banner_url=os.environ.get("REPORT_BANNER_URL") or None,
+        sections=set(sections) if sections else None,
     )
     return HTMLResponse(content=html)
 

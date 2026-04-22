@@ -81,7 +81,7 @@ Protected routes:
 - `GET /api/accounts/{id}/data?account_name=...&period=` — metrics + open issues, 5-minute in-memory TTL cache
 - `GET /api/accounts/{id}/cached-ticket-summaries` — per-ticket AI summaries from disk cache, keyed by ticket number
 - `POST /api/accounts/{id}/summary` — body `{account_name, model, period, force}`, streams SSE keepalive pings while Claude generates, sends final `result` event
-- `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=` — self-contained HTML report for PDF or email
+- `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=&sections=...` — self-contained HTML report for PDF; `sections` is a repeated query param (e.g. `&sections=key_metrics&sections=open_issues`), omit for all sections
 - `POST /api/accounts/{id}/email-report` — body `{email, account_name, period, sort_by, sort_order, sections?}`, generates and emails report via SMTP; `sections` is an optional list of section IDs to include (omit for all)
 - `GET /api/accounts/{id}/slack-channel` — returns `{channel_id, channel_name, override, available_channels}` for the Slack channel picker in the UI
 - `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?, sections?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; `sections` filters which blocks are included; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
@@ -141,11 +141,11 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/components/ShareButton.tsx`** — Combined share button for Slack and email. Opens a popover with a Slack/Email mode tab, section checkboxes (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all checked by default), a channel picker (Slack, when multiple channels available) or email input, and a send button. Success status clears after 10 seconds; the popover stays open until dismissed by clicking outside.
 
-**`src/components/DownloadMenu.tsx`** — Dropdown with PDF and CSV export options.
+**`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected.
 
 **`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`.
 
-**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab. `downloadCsv` builds and downloads a CSV blob client-side with separate Summary and Next steps columns. `slackReport` and `emailReport` both accept an optional `sections?: string[]` parameter that is forwarded to the backend.
+**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
 
 ## Key Patterns
 
