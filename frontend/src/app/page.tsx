@@ -19,8 +19,7 @@ import {
   type TicketSummary,
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
-import EmailButton from "@/components/EmailButton";
-import SlackButton from "@/components/SlackButton";
+import ShareButton from "@/components/ShareButton";
 import AccountPicker from "@/components/AccountPicker";
 import OptionPicker from "@/components/OptionPicker";
 import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downloads";
@@ -535,14 +534,12 @@ export default function Home() {
               </div>
               {accountData && (
                 <div className="flex items-center gap-2">
-                  <SlackButton
-                    onSlackReport={(channelId) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId)}
+                  <ShareButton
+                    onSlackReport={(channelId, sections) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections)}
+                    onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections)}
                     channelName={slackChannelName}
                     channelId={slackChannelId}
                     availableChannels={slackAvailableChannels}
-                  />
-                  <EmailButton
-                    onEmailReport={(email) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder)}
                   />
                   <DownloadMenu
                     onDownloadPdf={() => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder)}

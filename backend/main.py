@@ -106,6 +106,7 @@ def _cache_set(key: str, data: object) -> None:
 
 OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
 VALID_PERIODS = {"7d", "1m", "3m", "6m", "1y"}
+ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_summary", "open_issues"})
 
 
 class SummaryRequest(BaseModel):
@@ -121,12 +122,14 @@ class EmailReportRequest(BaseModel):
     period: str = "6m"
     sort_by: str = "priority"
     sort_order: str = "asc"
+    sections: list[str] | None = None  # None = all sections
 
 
 class SlackReportRequest(BaseModel):
     account_name: str
     period: str = "6m"
-    channel_id: str | None = None  # Override the default channel for this post
+    channel_id: str | None = None
+    sections: list[str] | None = None  # None = all sections
 
 
 class GoogleCallbackBody(BaseModel):
@@ -823,17 +826,19 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
     )
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
-    def _read_summaries() -> dict[int, str]:
-        out: dict[int, str] = {}
+    def _read_summaries() -> dict[int, dict]:
+        out: dict[int, dict] = {}
         for issue in open_issues:
             issue_id = issue.get("id", "")
             number = issue.get("number")
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            summary = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
-            if summary:
-                out[number] = summary
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            if raw:
+                s, ns = parse_ticket_output(raw)
+                if s or ns:
+                    out[number] = {"summary": s, "next_steps": ns}
         return out
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
@@ -854,6 +859,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         logo_url=logo_url,
         is_email=True,
         banner_url=banner_url,
+        sections=set(body.sections) if body.sections is not None else None,
     )
 
     subject = f"Support Highlights: {body.account_name}"
@@ -944,7 +950,9 @@ def _build_metrics_blocks(
     account_name: str,
     payload: dict,
     period: str,
+    sections: set[str] | None = None,
 ) -> tuple[str, list[dict]]:
+    secs = sections if sections is not None else ALL_SECTIONS
     """Compact metrics snapshot with 2-column field grid and action buttons."""
     period_label = _PERIOD_DISPLAY.get(period, period)
     open_count = len(payload["open_issues"])
@@ -973,26 +981,25 @@ def _build_metrics_blocks(
     blocks: list[dict] = [
         {
             "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": account_name,
-                "emoji": False,
-            },
+            "text": {"type": "plain_text", "text": account_name, "emoji": False},
         },
         {
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": f"*{period_label}*  ·  {_today()}"}],
         },
-        {"type": "divider"},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": ":dart: *KEY METRICS*"}]},
-        {"type": "section", "fields": fields},
     ]
 
-    # Trend chart — daily labels for short periods, monthly abbreviations otherwise
+    if "key_metrics" in secs:
+        blocks += [
+            {"type": "divider"},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": ":dart: *KEY METRICS*"}]},
+            {"type": "section", "fields": fields},
+        ]
+
+    # Trend chart
     monthly = payload.get("monthly_metrics", [])
-    if len(monthly) >= 2:
+    if "ticket_trend" in secs and len(monthly) >= 2:
         is_daily = period in ("7d", "1m")
-        # Daily labels: "Apr 9" / "Apr 10" (max 6 chars); monthly: "Apr" (3 chars)
         label_w = 6 if is_daily else 3
         raised_vals = [m["tickets_raised"] for m in monthly]
         closed_vals = [m["closed_tickets"] for m in monthly]
@@ -1008,57 +1015,61 @@ def _build_metrics_blocks(
             r_bar = "█" * r_len + "░" * (bar_width - r_len)
             c_bar = "█" * c_len + "░" * (bar_width - c_len)
             rows.append(f"`{label:<{label_w}}  {r_bar} {raised:>2}  {c_bar} {closed:>2}`")
-        gap = label_w + 2  # label + 2 spaces before bars
+        gap = label_w + 2
         header_row = f"`{'':{gap}}{'Raised':^18}  {'Closed':^18}`"
-        trend_label = ":calendar: *DAILY TREND*" if is_daily else ":calendar: *MONTHLY TREND*"
+        trend_label = ":calendar: *TICKET TREND*"
         blocks += [
             {"type": "divider"},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": trend_label}]},
             {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join([header_row] + rows)}},
         ]
 
-    state_bd = payload.get("state_breakdown", {})
-    _s_order = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
-    sl = _state_labels(account_name)
-    state_parts = [
-        f"{_STATE_EMOJI.get(s, '')} {sl.get(s, s)}: *{state_bd[s]}*"
-        for s in _s_order if state_bd.get(s, 0) > 0
-    ]
-
-    if priority_parts or state_parts:
-        breakdown_fields = []
-        if priority_parts:
-            breakdown_fields.append(_field("Priority", "\n".join(priority_parts)))
-        if state_parts:
-            breakdown_fields.append(_field("State", "\n".join(state_parts)))
-        blocks += [
-            {"type": "divider"},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": ":mag: *BREAKDOWNS*"}]},
-            {"type": "section", "fields": breakdown_fields},
+    if "breakdowns" in secs:
+        state_bd = payload.get("state_breakdown", {})
+        _s_order = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
+        sl = _state_labels(account_name)
+        state_parts = [
+            f"{_STATE_EMOJI.get(s, '')} {sl.get(s, s)}: *{state_bd[s]}*"
+            for s in _s_order if state_bd.get(s, 0) > 0
         ]
+        if priority_parts or state_parts:
+            breakdown_fields = []
+            if priority_parts:
+                breakdown_fields.append(_field("Priority", "\n".join(priority_parts)))
+            if state_parts:
+                breakdown_fields.append(_field("State", "\n".join(state_parts)))
+            blocks += [
+                {"type": "divider"},
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": ":mag: *BREAKDOWNS*"}]},
+                {"type": "section", "fields": breakdown_fields},
+            ]
+    elif "breakdowns" not in secs:
+        pass  # skip — but we still need state_parts cleared to avoid NameError below
 
     action_value = json.dumps({"account_id": account_id, "account_name": account_name, "period": period})
-    blocks += [
-        {"type": "divider"},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": ":open_book: *MORE DETAILS*"}]},
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Account Summary", "emoji": True},
-                    "action_id": "psh_post_summary",
-                    "value": action_value,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Current Open Issues", "emoji": True},
-                    "action_id": "psh_post_issues",
-                    "value": action_value,
-                },
-            ],
-        },
-    ]
+    action_buttons = []
+    if "account_summary" in secs:
+        action_buttons.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Account Summary", "emoji": True},
+            "action_id": "psh_post_summary",
+            "value": action_value,
+        })
+    if "open_issues" in secs:
+        action_buttons.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Current Open Issues", "emoji": True},
+            "action_id": "psh_post_issues",
+            "value": action_value,
+        })
+    if action_buttons:
+        has_other = any(k in secs for k in ("key_metrics", "ticket_trend", "breakdowns"))
+        details_label = "MORE DETAILS" if has_other else "DETAILS"
+        blocks += [
+            {"type": "divider"},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f":open_book: *{details_label}*"}]},
+            {"type": "actions", "elements": action_buttons},
+        ]
 
     fallback = f"Support Highlights: {account_name} - {open_count} open issues, {total_raised} raised ({period_label})"
     return fallback, blocks
@@ -1347,7 +1358,10 @@ async def post_slack_report(
         account_id, period
     )
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
-    fallback_text, blocks = _build_metrics_blocks(account_id, body.account_name, payload, period)
+    fallback_text, blocks = _build_metrics_blocks(
+        account_id, body.account_name, payload, period,
+        sections=set(body.sections) if body.sections is not None else None,
+    )
 
     try:
         await asyncio.to_thread(

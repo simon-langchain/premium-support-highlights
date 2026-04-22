@@ -82,9 +82,9 @@ Protected routes:
 - `GET /api/accounts/{id}/cached-ticket-summaries` — per-ticket AI summaries from disk cache, keyed by ticket number
 - `POST /api/accounts/{id}/summary` — body `{account_name, model, period, force}`, streams SSE keepalive pings while Claude generates, sends final `result` event
 - `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=` — self-contained HTML report for PDF or email
-- `POST /api/accounts/{id}/email-report` — body `{email, account_name, period, sort_by, sort_order}`, generates and emails report via SMTP
+- `POST /api/accounts/{id}/email-report` — body `{email, account_name, period, sort_by, sort_order, sections?}`, generates and emails report via SMTP; `sections` is an optional list of section IDs to include (omit for all)
 - `GET /api/accounts/{id}/slack-channel` — returns `{channel_id, channel_name, override, available_channels}` for the Slack channel picker in the UI
-- `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
+- `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?, sections?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; `sections` filters which blocks are included; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
 - `POST /api/slack/actions` — Slack interactive callback endpoint; handles `psh_post_summary`, `psh_post_issues`, `psh_post_issues_more` button actions; verifies HMAC-SHA256 signature
 
 **`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
@@ -101,7 +101,9 @@ Protected routes:
 - `make_date_range(period)` — returns (created_after, created_before) for the given period string
 - **Custom fields**: Pylon returns `custom_fields` as a dict keyed by slug, e.g. `{"account.salesforce.Support_Tier__c": {"value": "Premium"}}`. Use `_get_custom_field(account, slug)` for safe extraction.
 
-**`slack_client.py`** — Slack API client. `post_message` posts Block Kit + legacy attachment messages via `chat.postMessage`. `get_channels` lists internal channels the bot can post to (filters Slack Connect and external-prefixed channels). `get_channel_name` resolves a channel ID to its name via `conversations.info`, with in-process caching.
+**`slack_client.py`** — Slack API client. `post_message` posts Block Kit + legacy attachment messages via `chat.postMessage`. `get_channels` lists internal channels the bot can post to (filters Slack Connect and external-prefixed channels). `get_channel_name` resolves a channel ID to its name via `conversations.info`, with in-process caching. `get_bot_name` calls `auth.test` to return the bot's workspace username (used in "not in channel" error messages).
+
+`ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_summary", "open_issues"})` is the canonical set of section IDs used by both Slack and email. `_build_metrics_blocks` accepts `sections: set[str] | None` and conditionally includes each block group; the "More Details" heading becomes "Details" when no metric/trend/breakdown blocks precede the action buttons.
 
 **`metrics.py`** — Pure-Python metric computation. Uses calendar arithmetic (not `timedelta(days=30)`) for monthly bucketing to correctly handle February and short months.
 - `compute_period_metrics(issues, period)` — bucketed ticket counts
@@ -110,9 +112,10 @@ Protected routes:
 
 **`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt.
 
-**`report.py`** — Self-contained HTML report generator. `generate_report_html(..., is_email=False, banner_url=None, logo_url=None)`:
+**`report.py`** — Self-contained HTML report generator. `generate_report_html(..., is_email=False, banner_url=None, logo_url=None, sections=None)`:
 - `is_email=True`: email-safe layout (table-based, no SVG/CSS grid/flex), banner + footer, metric cards 2x2, breakdowns stacked
 - `is_email=False`: browser/PDF layout with full CSS, banner inside max-width container
+- `sections`: optional `set[str]` of section IDs to include — `key_metrics`, `ticket_trend`, `breakdowns`, `account_summary`, `open_issues`; `None` means all sections
 
 **`ticket_summarizer.py`** — Per-ticket AI output via Claude Haiku. `summarize_ticket(title, body_html, messages, state, account_name)` returns structured `"Summary: ...\nNext steps: ..."` text. State labels are context-aware: `waiting_on_customer` tells the model LangChain has responded and is waiting; `waiting_on_you` means LangChain needs to act; `on_hold` means an internal LangChain team (Engineering/Product) is holding it. `parse_ticket_output(text)` parses the two-line output; old plain-text cache entries fall back to displaying as `next_steps`.
 
@@ -136,15 +139,13 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/components/Sidebar.tsx`** — Fixed left sidebar with LangChain logo, support tier selector, account selector, period selector, refresh button, model selector, and Settings menu (light/dark toggle + sign out). Collapsible.
 
-**`src/components/EmailButton.tsx`** — Standalone email button that opens a popover with email input and send status.
-
-**`src/components/SlackButton.tsx`** — One-click Slack send button. Shows spinner while sending, success/error states inline. No input needed — channel is resolved server-side from Pylon account data.
+**`src/components/ShareButton.tsx`** — Combined share button for Slack and email. Opens a popover with a Slack/Email mode tab, section checkboxes (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all checked by default), a channel picker (Slack, when multiple channels available) or email input, and a send button. Success status clears after 10 seconds; the popover stays open until dismissed by clicking outside.
 
 **`src/components/DownloadMenu.tsx`** — Dropdown with PDF and CSV export options.
 
 **`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`.
 
-**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab. `downloadCsv` builds and downloads a CSV blob client-side with separate Summary and Next steps columns. `emailReport` posts to `/email-report`.
+**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab. `downloadCsv` builds and downloads a CSV blob client-side with separate Summary and Next steps columns. `slackReport` and `emailReport` both accept an optional `sections?: string[]` parameter that is forwarded to the backend.
 
 ## Key Patterns
 

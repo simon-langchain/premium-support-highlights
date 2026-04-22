@@ -399,6 +399,9 @@ _LOGO_SVG = (
 )
 
 
+_ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_summary", "open_issues"})
+
+
 def generate_report_html(
     account_name: str,
     period: str,
@@ -410,7 +413,9 @@ def generate_report_html(
     logo_url: str | None = None,
     is_email: bool = False,
     banner_url: str | None = None,
+    sections: set[str] | None = None,
 ) -> str:
+    secs = sections if sections is not None else _ALL_SECTIONS
     period_label = _PERIOD_LABELS.get(period, period)
     generated    = datetime.now().strftime("%-d %B %Y")
     open_issues  = payload.get("open_issues", [])
@@ -419,6 +424,33 @@ def generate_report_html(
         f'<img src="{_e(logo_url)}" width="22" height="22" alt="LangChain" style="display:block;">'
         if logo_url else _LOGO_SVG
     )
+
+    sections_html = ""
+    if "key_metrics" in secs:
+        sections_html += f"""
+    {_section_heading("Key Metrics")}
+    {_render_metrics(payload, period_label, max_cols=2 if is_email else 4)}
+"""
+    if "ticket_trend" in secs:
+        sections_html += f"""
+    {_section_heading("Ticket Trend")}
+    {_render_trend(monthly)}
+"""
+    if "breakdowns" in secs:
+        sections_html += f"""
+    {_section_heading("Breakdowns")}
+    {_render_breakdowns(payload, stacked=is_email, account_name=account_name)}
+"""
+    if "account_summary" in secs and account_summary:
+        sections_html += f"""
+    {_section_heading("Account Summary")}
+    {_render_summary(account_summary)}
+"""
+    if "open_issues" in secs:
+        sections_html += f"""
+    {_section_heading(f"Open Issues ({len(open_issues)})")}
+    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name)}
+"""
 
     # Inner report content — shared by both email and browser/PDF versions
     body_content = f"""
@@ -449,20 +481,7 @@ def generate_report_html(
         </td>
       </tr>
     </table>
-
-    {_section_heading("Key Metrics")}
-    {_render_metrics(payload, period_label, max_cols=2 if is_email else 4)}
-
-    {_section_heading("Monthly Trend")}
-    {_render_trend(monthly)}
-
-    {_section_heading("Breakdowns")}
-    {_render_breakdowns(payload, stacked=is_email, account_name=account_name)}
-
-    {(_section_heading("Account Summary") + _render_summary(account_summary)) if account_summary else ""}
-
-    {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name)}
+    {sections_html}
 """
 
     if is_email:

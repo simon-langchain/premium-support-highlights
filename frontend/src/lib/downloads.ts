@@ -121,11 +121,17 @@ export async function slackReport(
   accountName: string,
   period: string,
   channelId?: string,
+  sections?: string[],
 ): Promise<void> {
   const res = await fetch(`/api/accounts/${accountId}/slack-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ account_name: accountName, period, ...(channelId ? { channel_id: channelId } : {}) }),
+    body: JSON.stringify({
+      account_name: accountName,
+      period,
+      ...(channelId ? { channel_id: channelId } : {}),
+      ...(sections ? { sections } : {}),
+    }),
   });
   if (res.status === 401) {
     if (typeof window !== "undefined") window.location.href = "/login";
@@ -144,11 +150,19 @@ export async function emailReport(
   period: string,
   sortBy: string,
   sortOrder: string,
+  sections?: string[],
 ): Promise<void> {
   const res = await fetch(`/api/accounts/${accountId}/email-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder }),
+    body: JSON.stringify({
+      email,
+      account_name: accountName,
+      period,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+      ...(sections ? { sections } : {}),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
