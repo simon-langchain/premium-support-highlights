@@ -176,13 +176,33 @@ export default function SlackButton({ onSlackReport, channelName, channelId, ava
           </div>
 
           {status && (
-            <p
-              className="text-xs mt-1.5 flex items-center gap-1"
-              style={{ color: status.ok ? "var(--success, #10b981)" : "var(--error, #ef4444)" }}
-            >
-              {status.ok ? <Check size={11} /> : <AlertCircle size={11} />}
-              {status.message}
-            </p>
+            status.ok ? (
+              <p className="text-xs mt-1.5 flex items-center gap-1" style={{ color: "var(--success, #10b981)" }}>
+                <Check size={11} />
+                {status.message}
+              </p>
+            ) : (() => {
+              const inviteMatch = status.message.match(/(.*?\.).*?(\/invite\s+\S+)/s);
+              return inviteMatch ? (
+                <div className="mt-2 rounded-md px-2.5 py-2 text-xs" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                  <div className="flex items-start gap-1.5 mb-1.5" style={{ color: "#ef4444" }}>
+                    <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+                    <span>{inviteMatch[1]}</span>
+                  </div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    Run in that channel:{" "}
+                    <code className="px-1 py-0.5 rounded text-xs" style={{ background: "var(--bg-tertiary)", color: "var(--text-primary)" }}>
+                      {inviteMatch[2]}
+                    </code>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs mt-1.5 flex items-center gap-1" style={{ color: "#ef4444" }}>
+                  <AlertCircle size={11} />
+                  {status.message}
+                </p>
+              );
+            })()
           )}
         </div>
       )}
