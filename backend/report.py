@@ -466,7 +466,7 @@ def generate_report_html(
               </td>
               <td style="vertical-align:middle;font-size:11px;font-weight:600;
                          letter-spacing:0.08em;text-transform:uppercase;color:#006ddd;">
-                Premium Support Highlights
+                Support Highlights
               </td>
             </tr>
           </table>
