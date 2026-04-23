@@ -2,7 +2,8 @@
   "dependencies": ["./backend"],
   "dockerfile_lines": ["ENV PYTHONPATH=/deps/backend:${PYTHONPATH}"],
   "graphs": {
-    "summary_agent": "./backend/summary_agent.py:summary_graph"
+    "summary_agent": "./backend/summary_agent.py:summary_graph",
+    "report_dispatcher": "./backend/report_dispatcher.py:report_dispatcher"
   },
   "http": {
     "app": "./backend/main.py:app"

@@ -17,6 +17,7 @@ An internal dashboard for the LangChain support team that surfaces monthly metri
 - **Per-ticket summaries** — structured Summary + Next steps for every open ticket, powered by Claude Haiku; state-aware (reflects who is waiting on whom using the actual account name), cached between runs
 - **Share** — a single "Share" button combines Slack and email delivery; choose the destination, then select which sections to include (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all on by default)
 - **Downloads** — export as a PDF or CSV with the same section selector as Share (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all on by default); Account Summary is not available in CSV
+- **Scheduled reports** — schedule recurring Slack or email reports from the "Schedule" button; supports weekly, monthly (nth weekday of the month), and quarterly (nth weekday of a specific month within the quarter) cadences; time is specified in any IANA timezone with DST handled natively by LangGraph Platform; schedules persist in LangGraph Platform's Postgres database and survive redeployments
 - **Dark / light theme** — toggled from the Settings menu in the sidebar
 - **Deep links** — every account view has a shareable URL (`/?account=adobe`, `/?account=dicks-sporting-goods`); unauthenticated deep links redirect to login and land back on the original page after sign-in
 
@@ -65,6 +66,10 @@ Copy `.env.example` to `.env` and fill in the required values.
 | `LANGSMITH_TRACING` | No | Set to `true` to enable LangSmith tracing |
 | `LANGSMITH_API_KEY` | No | LangSmith API key |
 | `LANGSMITH_PROJECT` | No | LangSmith project name (default: `premium-support-highlights`) |
+| `SLACK_BOT_TOKEN` | Yes (Slack scheduling) | Slack bot token for scheduled Slack reports |
+| `SLACK_SIGNING_SECRET` | No | Verifies interactive button callbacks from Slack |
+| `SLACK_OVERRIDE_CHANNEL` | No | Redirect all Slack posts to this channel ID (testing) |
+| `LANGGRAPH_API_URL` | No | LangGraph API base URL for schedule CRUD (defaults to `http://localhost:8000`; leave unset in LSD) |
 
 ---
 

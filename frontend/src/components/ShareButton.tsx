@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Share2, Send, X, Check, AlertCircle, ChevronDown, Search } from "lucide-react";
+import { Share2, Send, X, Check, AlertCircle, ChevronDown, Search, Mail } from "lucide-react";
+import SlackIcon from "./SlackIcon";
 
 const SECTIONS = [
   { id: "key_metrics", label: "Key Metrics" },
@@ -143,12 +144,15 @@ export default function ShareButton({
               <button
                 key={m}
                 onClick={() => { setMode(m); setStatus(null); setPickerOpen(false); }}
-                className="flex-1 text-xs rounded py-1 transition-colors"
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs rounded py-1 transition-colors"
                 style={{
                   background: mode === m ? "var(--accent)" : "transparent",
                   color: mode === m ? "#fff" : "var(--text-muted)",
                 }}
               >
+                {m === "slack"
+                  ? <SlackIcon size={12} />
+                  : <Mail size={11} strokeWidth={2} />}
                 {m === "slack" ? "Slack" : "Email"}
               </button>
             ))}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, ArrowUpDown, ChevronRight } from "lucide-react";
+import { Loader2, ArrowUpDown, ChevronRight, Clock } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
 import ShareButton from "@/components/ShareButton";
+import ScheduleModal from "@/components/ScheduleModal";
 import AccountPicker from "@/components/AccountPicker";
 import OptionPicker from "@/components/OptionPicker";
 import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downloads";
@@ -135,6 +136,7 @@ export default function Home() {
   const [slackChannelName, setSlackChannelName] = useState<string | null>(null);
   const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
   const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
 
   // Refs so pipeline callbacks always see current model/period without stale closures
   const modelRef = useRef(selectedModel);
@@ -534,6 +536,14 @@ export default function Home() {
               </div>
               {accountData && (
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setScheduleOpen(true)}
+                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                    className="flex items-center gap-1.5 text-sm rounded px-3 py-1.5 hover:bg-[var(--bg-tertiary)] transition-colors focus:outline-none cursor-pointer print:hidden"
+                  >
+                    <Clock size={14} />
+                    Schedule
+                  </button>
                   <ShareButton
                     onSlackReport={(channelId, sections) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections)}
                     onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections)}
@@ -733,6 +743,17 @@ export default function Home() {
           </>
         )}
       </main>
+
+      {scheduleOpen && selectedAccount && (
+        <ScheduleModal
+          accountId={selectedAccount.id}
+          accountName={selectedAccount.name}
+          defaultPeriod={period}
+          channelId={slackChannelId}
+          availableChannels={slackAvailableChannels}
+          onClose={() => setScheduleOpen(false)}
+        />
+      )}
     </div>
   );
 }

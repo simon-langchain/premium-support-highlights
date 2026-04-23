@@ -134,3 +134,82 @@ export async function generateSummary(
   const data = await res.json();
   return (data as { summary: string }).summary;
 }
+
+// ---------------------------------------------------------------------------
+// Scheduled reports
+// ---------------------------------------------------------------------------
+
+export interface Schedule {
+  cron_id: string;
+  account_id: string;
+  account_name: string;
+  label: string;
+  destination_type: "slack" | "email";
+  channel_id: string | null;
+  email_addresses: string[] | null;
+  sections: string[] | null;
+  period: string;
+  frequency: "weekly" | "monthly" | "quarterly";
+  weekday: number;          // 0=Mon … 6=Sun (Python weekday)
+  nth: number;              // 1–4 or -1 (last); ignored for weekly
+  month_in_quarter: number; // 1–3; which month of the quarter (quarterly only)
+  hour_utc: number;   // actual UTC hour in the cron expression
+  hour_local: number; // display hour in the configured timezone
+  timezone: string;   // IANA timezone name
+  created_by: string | null;
+  schedule: string;
+  next_run_date: string | null;
+  created_at: string;
+}
+
+export interface CreateScheduleRequest {
+  account_id: string;
+  account_name: string;
+  label: string;
+  destination_type: "slack" | "email";
+  channel_id?: string;
+  email_addresses?: string[];
+  sections?: string[];
+  period: string;
+  frequency: "weekly" | "monthly" | "quarterly";
+  weekday: number;
+  nth: number;
+  month_in_quarter: number;
+  hour_local: number;
+  timezone: string;
+}
+
+export async function fetchSchedules(accountId?: string): Promise<Schedule[]> {
+  const params = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+  const res = await fetch(`/api/schedules${params}`);
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) throw new Error(`Failed to fetch schedules: ${res.status}`);
+  return res.json();
+}
+
+export async function createSchedule(req: CreateScheduleRequest): Promise<Schedule> {
+  const res = await fetch("/api/schedules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const detail = (err as { detail?: string | { msg: string }[] }).detail;
+    const message = Array.isArray(detail)
+      ? detail.map((e) => e.msg).join("; ")
+      : detail ?? `Failed to create schedule: ${res.status}`;
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+export async function deleteSchedule(cronId: string): Promise<void> {
+  const res = await fetch(`/api/schedules/${encodeURIComponent(cronId)}`, { method: "DELETE" });
+  if (res.status === 401) { handleUnauthorized(res); return; }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to delete schedule: ${res.status}`);
+  }
+}

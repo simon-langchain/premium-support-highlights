@@ -48,6 +48,7 @@ Optional variables:
 - `SLACK_BOT_TOKEN` — Slack bot token (`xoxb-...`) with `chat:write`, `channels:read`, `groups:read` scopes
 - `SLACK_SIGNING_SECRET` — From Slack app Basic Information page; used to verify interactive button callbacks
 - `SLACK_OVERRIDE_CHANNEL` — When set, ALL Slack posts go to this channel ID (use during testing to avoid sending to real customers)
+- `LANGGRAPH_API_URL` — Set to `http://localhost:8000` for local dev so the schedule CRUD endpoints can reach the LangGraph cron API. Leave unset in LSD — the SDK uses ASGI in-process transport automatically.
 - `DASHBOARD_URL` — Frontend URL linked from the "View Full Report" button in Slack messages
 
 ## Architecture
@@ -86,6 +87,9 @@ Protected routes:
 - `GET /api/accounts/{id}/slack-channel` — returns `{channel_id, channel_name, override, available_channels}` for the Slack channel picker in the UI
 - `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?, sections?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; `sections` filters which blocks are included; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
 - `POST /api/slack/actions` — Slack interactive callback endpoint; handles `psh_post_summary`, `psh_post_issues`, `psh_post_issues_more` button actions; verifies HMAC-SHA256 signature
+- `GET /api/schedules?account_id=` — list all (or account-filtered) LangGraph Platform cron jobs for the `report_dispatcher` graph; looks up the `report_dispatcher` assistant UUID via `client.assistants.search` before querying crons (UUID required by SDK)
+- `POST /api/schedules` — body `{account_id, account_name, label, destination_type, channel_id?, email_addresses?, sections?, period, frequency, weekday, nth, month_in_quarter, hour_local, timezone}`; all fields Pydantic-validated (`destination_type`/`frequency` are `Literal` types, ranges enforced on `weekday`/`nth`/`hour_local`/`month_in_quarter`, `timezone` validated via `zoneinfo.ZoneInfo`, `sections` filtered to `ALL_SECTIONS` allowlist, `email_addresses` checked for `@`); timezone passed natively to `crons.create(timezone=)` so LangGraph Platform handles DST and sub-hour offsets; `created_by` is the authenticated user's email, stored in the cron payload
+- `DELETE /api/schedules/{cron_id}` — delete a scheduled report by LangGraph cron ID
 
 **`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
 
@@ -123,6 +127,20 @@ Protected routes:
 
 **`audit.py`** — JSONL audit log (`.cache/audit.jsonl`).
 
+**`report_dispatcher.py`** — LangGraph graph registered as `"report_dispatcher"` in `langgraph.json`. Single node `send_report` that:
+1. Evaluates `run_condition` (e.g. `{"type": "nth_weekday_of_month", "n": 1, "weekday": 0}` = first Monday of month) — skips if today doesn't match
+2. Fetches fresh Pylon data for the account
+3. Sends a Slack Block Kit message or HTML email, respecting the `sections` filter
+
+`_should_run(condition)` supports three condition types; `n=-1` means "last" in all cases:
+- `nth_weekday_of_month` — monthly; fires on the nth occurrence of the given weekday in the current month
+- `nth_weekday_of_month_in_quarter` — quarterly; fires on the nth weekday of a specific month within the quarter (`month_in_quarter` 1–3); current primary quarterly type
+- `nth_weekday_of_quarter` — legacy quarterly type (counts weekdays through the entire quarter); kept for backwards compatibility with older schedules
+
+Cron expressions fire every week on the given weekday (e.g. `0 9 * * 1` = Mondays at 09:00 in the cron's timezone); the run_condition filters to the correct occurrence. Imports `_build_metrics_blocks`, `_build_payload`, and other helpers directly from `main.py` — safe because `main.py` never imports from `report_dispatcher.py`.
+
+**Scheduling architecture**: cron jobs are stored in LangGraph Platform's Postgres database (not in the app), so they persist across redeployments. `_lg_client()` defaults to `http://localhost:8000` (override with `LANGGRAPH_API_URL`); `url=None` in-process ASGI transport only works from inside a graph node, not from a FastAPI HTTP handler. Timezone is passed natively to `crons.create(timezone=)` — the platform adjusts for DST and sub-hour offsets (e.g. IST +5:30) automatically, so the cron expression always uses the local hour. Weekday conversion: Python weekday 0=Mon → cron weekday 1=Mon (formula: `cron_wd = (python_wd + 1) % 7`). Reverse: `python_wd = (cron_wd - 1) % 7`.
+
 ### Frontend (`frontend/`)
 
 Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backend via a catch-all route handler.
@@ -139,11 +157,21 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/components/Sidebar.tsx`** — Fixed left sidebar with LangChain logo, support tier selector, account selector, period selector, refresh button, model selector, and Settings menu (light/dark toggle + sign out). Collapsible.
 
+**`src/components/ScheduleModal.tsx`** — Two-view modal for managing scheduled reports, opened via the "Schedule" button in the page header.
+- **List view**: active schedules per account, each card showing label + `[Slack/Email]` pill, compact schedule description (e.g. "4th Wed of every month at 08:00 PDT · 6 months"), destination, and next run + created-by metadata. Edit (pencil) and delete (trash) actions per card. "Add Schedule" button pinned at the bottom.
+- **Form view**: create/edit form with back-arrow navigation. Fields: label (optional), destination toggle (Slack channel picker or email chip input), report period, frequency (Weekly/Monthly/Quarterly), occurrence in month (1st–Last; monthly/quarterly), month of quarter (1st/2nd/3rd; quarterly only), day of week, time + timezone picker.
+- **Timezone picker**: 51 IANA timezones ordered west-to-east; UTC at its natural position. Labels show DST-aware abbreviation + offset (e.g. "Los Angeles (PDT · GMT-7)") computed via `Intl.DateTimeFormat` with a `getTzAbbr` lookup table for international zones. `tzShort(tz)` returns just the abbreviation for compact schedule descriptions.
+- **Email chip input** (`EmailTagInput`): emails displayed as removable chips; Enter/comma/space (when input contains `@`) commits a chip; paste of comma- or whitespace-separated lists splits automatically; Backspace removes the last chip.
+- **Quarterly model**: `month_in_quarter` (1–3) selects which month of the quarter, combined with the standard nth-weekday picker. Produces `nth_weekday_of_month_in_quarter` run conditions.
+- On submit success: `setView("list")` returns to list view; edit is implemented as delete + recreate.
+
+**`src/components/SlackIcon.tsx`** — Shared Slack brand mark SVG component (official paths, 270×270 viewBox cropped to 73.6 73.6 122.8 122.8). Used by `ScheduleModal` and `ShareButton`.
+
 **`src/components/ShareButton.tsx`** — Combined share button for Slack and email. Opens a popover with a Slack/Email mode tab, section checkboxes (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all checked by default), a channel picker (Slack, when multiple channels available) or email input, and a send button. Success status clears after 10 seconds; the popover stays open until dismissed by clicking outside.
 
 **`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected.
 
-**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`.
+**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, and `created_by` fields added during the scheduling feature build. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string.
 
 **`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
 
@@ -163,15 +191,16 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 ```
 premium-support-highlights/
 ├── backend/
-│   ├── main.py             # FastAPI app + all routes
-│   ├── auth.py             # OTP + session management
-│   ├── pylon_client.py     # Pylon REST API client
-│   ├── metrics.py          # Metric computation (pure Python)
-│   ├── summary_agent.py    # AI summary + per-ticket tool via deepagents
-│   ├── report.py           # HTML report generator (browser/PDF + email variants)
-│   ├── cache.py            # JSON file cache (ticket + account summaries)
-│   ├── audit.py            # JSONL audit log
-│   └── pyproject.toml      # Python dependencies (uv)
+│   ├── main.py                 # FastAPI app + all routes
+│   ├── report_dispatcher.py    # LangGraph graph for scheduled Slack/email reports
+│   ├── auth.py                 # OTP + session management
+│   ├── pylon_client.py         # Pylon REST API client
+│   ├── metrics.py              # Metric computation (pure Python)
+│   ├── summary_agent.py        # AI summary + per-ticket tool via deepagents
+│   ├── report.py               # HTML report generator (browser/PDF + email variants)
+│   ├── cache.py                # JSON file cache (ticket + account summaries)
+│   ├── audit.py                # JSONL audit log
+│   └── pyproject.toml          # Python dependencies (uv)
 ├── frontend/
 │   ├── src/
 │   │   ├── middleware.ts           # Auth redirect middleware

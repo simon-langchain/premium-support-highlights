@@ -28,7 +28,8 @@ import json
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any
+import zoneinfo
+from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs, urlencode
 
 import httpx
@@ -41,7 +42,7 @@ load_dotenv(os.path.join(_root, ".env"))
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 import auth as auth_mod
 
@@ -954,8 +955,8 @@ def _build_metrics_blocks(
     period: str,
     sections: set[str] | None = None,
 ) -> tuple[str, list[dict]]:
-    secs = sections if sections is not None else ALL_SECTIONS
     """Compact metrics snapshot with 2-column field grid and action buttons."""
+    secs = sections if sections is not None else ALL_SECTIONS
     period_label = _PERIOD_DISPLAY.get(period, period)
     open_count = len(payload["open_issues"])
     total_raised = sum(m["tickets_raised"] for m in payload["monthly_metrics"])
@@ -1565,3 +1566,237 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks):
     )
 
     return Response(status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled reports — CRUD using LangGraph Platform cron jobs
+# ---------------------------------------------------------------------------
+
+class ScheduleRequest(BaseModel):
+    account_id: str
+    account_name: str
+    label: str = ""
+    destination_type: Literal["slack", "email"]
+    channel_id: str | None = None
+    email_addresses: list[str] | None = None
+    sections: list[str] | None = None   # None = all sections; filtered to ALL_SECTIONS
+    period: str = "1m"
+    frequency: Literal["weekly", "monthly", "quarterly"]
+    weekday: Annotated[int, Field(ge=0, le=6)] = 0    # 0=Mon … 6=Sun
+    nth: Annotated[int, Field(ge=-1, le=4)] = 1       # 1–4 or -1 (last); 0 is invalid but excluded by ge=-1
+    month_in_quarter: Annotated[int, Field(ge=1, le=3)] = 1
+    hour_local: Annotated[int, Field(ge=0, le=23)] = 9
+    timezone: str = "UTC"
+
+    @field_validator("nth")
+    @classmethod
+    def validate_nth(cls, v: int) -> int:
+        if v == 0:
+            raise ValueError("nth must be 1–4 or -1 (last)")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        try:
+            zoneinfo.ZoneInfo(v)
+        except (zoneinfo.ZoneInfoNotFoundError, Exception):
+            raise ValueError(f"Unknown timezone: {v!r}")
+        return v
+
+    @field_validator("email_addresses")
+    @classmethod
+    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            for addr in v:
+                if "@" not in addr or not addr.split("@")[-1]:
+                    raise ValueError(f"Invalid email address: {addr!r}")
+        return v
+
+    @field_validator("sections")
+    @classmethod
+    def validate_sections(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            v = [s for s in v if s in ALL_SECTIONS]
+        return v or None
+
+
+def _build_cron_expression(weekday: int, hour_local: int) -> str:
+    """Return a cron expression using the local hour directly.
+
+    The timezone is passed separately to crons.create so the platform handles
+    DST transitions and sub-hour offsets (e.g. IST +5:30) natively.
+    Python weekday 0=Mon → cron weekday 1=Mon (cron uses 0=Sun).
+    """
+    cron_wd = (weekday + 1) % 7
+    return f"0 {hour_local} * * {cron_wd}"
+
+
+def _build_run_condition(frequency: str, nth: int, weekday: int, month_in_quarter: int = 1) -> dict | None:
+    if frequency == "weekly":
+        return None
+    if frequency == "monthly":
+        return {"type": "nth_weekday_of_month", "n": nth, "weekday": weekday}
+    # quarterly: fire on the nth weekday of a specific month within the quarter
+    return {"type": "nth_weekday_of_month_in_quarter", "n": nth, "weekday": weekday, "month_in_quarter": month_in_quarter}
+
+
+def _format_schedule(cron: dict) -> dict:
+    """Flatten a LangGraph cron record into a frontend-friendly dict.
+
+    Handles both nested payload structures ({"input": {...}}) and flat ones,
+    and both "cron_id" and "id" key names, for robustness across SDK versions.
+    """
+    payload = cron.get("payload") or {}
+    # Support both {"input": {...}} and flat payload (different SDK/server versions)
+    raw_inp = payload.get("input")
+    inp = raw_inp if isinstance(raw_inp, dict) else payload
+    run_condition = inp.get("run_condition")
+
+    frequency = "weekly"
+    nth = 1
+    month_in_quarter = 1
+    if run_condition:
+        ctype = run_condition.get("type", "")
+        nth = run_condition.get("n", 1)
+        if ctype == "nth_weekday_of_month":
+            frequency = "monthly"
+        elif ctype in ("nth_weekday_of_quarter", "nth_weekday_of_month_in_quarter"):
+            frequency = "quarterly"
+            month_in_quarter = run_condition.get("month_in_quarter", 1)
+
+    # Parse weekday and hour from the stored cron expression "0 H * * WD"
+    parts = (cron.get("schedule") or "0 9 * * 1").split()
+    hour_utc = int(parts[1]) if len(parts) > 1 else 9
+    cron_wd = int(parts[4]) if len(parts) > 4 else 1
+    weekday = (cron_wd - 1) % 7  # cron 0=Sun → Python 6=Sun; cron 1=Mon → Python 0=Mon
+
+    # For new crons the expression hour IS the local hour (platform handles UTC conversion).
+    # For old crons (no platform timezone) it was UTC; fall back to payload's hour_local.
+    cron_tz = cron.get("timezone")  # set by platform on new crons
+    hour_local = inp.get("hour_local") or (hour_utc if not cron_tz else int(parts[1]))
+    timezone = cron_tz or inp.get("timezone", "UTC")
+
+    return {
+        "cron_id": cron.get("cron_id") or cron.get("id"),
+        "account_id": inp.get("account_id"),
+        "account_name": inp.get("account_name"),
+        "label": inp.get("label", ""),
+        "destination_type": inp.get("destination_type"),
+        "channel_id": inp.get("channel_id"),
+        "email_addresses": inp.get("email_addresses"),
+        "sections": inp.get("sections"),
+        "period": inp.get("period", "1m"),
+        "frequency": frequency,
+        "weekday": weekday,
+        "nth": nth,
+        "month_in_quarter": month_in_quarter,
+        "hour_utc": hour_utc,
+        "hour_local": hour_local,
+        "timezone": timezone,
+        "created_by": inp.get("created_by"),
+        "schedule": cron.get("schedule"),
+        "next_run_date": cron.get("next_run_date"),
+        "created_at": cron.get("created_at"),
+    }
+
+
+def _lg_client():
+    """Return a LangGraph SDK client pointed at the local/deployed server.
+
+    in-process ASGI transport (url=None) only works from within a graph node,
+    not from a FastAPI HTTP handler. Default to http://localhost:8000 — that's
+    the port used by both `langgraph dev` locally and LSD containers in production.
+    Override with LANGGRAPH_API_URL if the server is on a different address.
+    """
+    from langgraph_sdk import get_client as _get_lg_client
+    url = os.environ.get("LANGGRAPH_API_URL") or "http://localhost:8000"
+    return _get_lg_client(url=url)
+
+
+@app.get("/api/schedules")
+async def list_schedules(
+    account_id: str | None = None,
+    _email: str = Depends(require_auth),
+):
+    """List all scheduled reports, optionally filtered to a single account."""
+    try:
+        client = _lg_client()
+        # crons.search requires a UUID; resolve by graph_id rather than fetching all assistants
+        assistants = await client.assistants.search(graph_id="report_dispatcher", limit=1)
+        dispatcher_id = assistants[0]["assistant_id"] if assistants else None
+        crons = await client.crons.search(
+            assistant_id=dispatcher_id if dispatcher_id else None,
+            limit=500,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to list schedules: {exc}") from exc
+
+    result = []
+    for cron in crons:
+        formatted = _format_schedule(cron)
+        if account_id and formatted.get("account_id") != account_id:
+            continue
+        result.append(formatted)
+    return result
+
+
+@app.post("/api/schedules")
+async def create_schedule(body: ScheduleRequest, created_by: str = Depends(require_auth)):
+    """Create a new scheduled report cron job in LangGraph Platform."""
+    period = body.period if body.period in VALID_PERIODS else "1m"
+    cron_expr = _build_cron_expression(body.weekday, body.hour_local)
+    run_condition = _build_run_condition(body.frequency, body.nth, body.weekday, body.month_in_quarter)
+
+    dispatcher_input = {
+        "account_id": body.account_id,
+        "account_name": body.account_name,
+        "period": period,
+        "destination_type": body.destination_type,
+        "channel_id": body.channel_id,
+        "email_addresses": body.email_addresses,
+        "sections": body.sections,
+        "run_condition": run_condition,
+        "label": body.label,
+        "hour_local": body.hour_local,
+        "timezone": body.timezone,
+        "created_by": created_by,
+        "skipped": False,
+        "result": None,
+        "error": None,
+    }
+    try:
+        client = _lg_client()
+        cron = await client.crons.create(
+            assistant_id="report_dispatcher",
+            schedule=cron_expr,
+            timezone=body.timezone,
+            input=dispatcher_input,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to create schedule: {exc}") from exc
+
+    await asyncio.to_thread(
+        audit.log,
+        "schedule_created",
+        {
+            "account_id": body.account_id,
+            "account_name": body.account_name,
+            "destination_type": body.destination_type,
+            "frequency": body.frequency,
+            "schedule": cron_expr,
+        },
+    )
+    return _format_schedule(cron)
+
+
+@app.delete("/api/schedules/{cron_id}")
+async def delete_schedule(cron_id: str, _email: str = Depends(require_auth)):
+    """Delete a scheduled report by its cron ID."""
+    try:
+        client = _lg_client()
+        await client.crons.delete(cron_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to delete schedule: {exc}") from exc
+    await asyncio.to_thread(audit.log, "schedule_deleted", {"cron_id": cron_id})
+    return {"ok": True}

@@ -24,4 +24,5 @@ __pycache__/
 
 # Next.js
 frontend/.next/
+frontend/tsconfig.tsbuildinfo
 node_modules/
