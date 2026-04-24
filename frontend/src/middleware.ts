@@ -9,12 +9,12 @@ export function middleware(req: NextRequest) {
 
   const { pathname } = req.nextUrl;
 
-  // Auth routes, login page, and Slack callbacks are always accessible
+  // API routes are handled by FastAPI which returns 401 JSON on auth failure.
+  // Redirecting them here would send HTML to fetch() callers, breaking JSON parsing.
   if (
     pathname === "/login" ||
     pathname === "/auth/google/callback" ||
-    pathname.startsWith("/api/auth/") ||
-    pathname.startsWith("/api/slack/") ||
+    pathname.startsWith("/api/") ||
     pathname.startsWith("/_next/")
   ) {
     return NextResponse.next();
