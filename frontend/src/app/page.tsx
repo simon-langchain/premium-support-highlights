@@ -171,7 +171,7 @@ export default function Home() {
         account.name,
         (step, _label, status) => setQbrSteps(prev => ({ ...prev, [step]: status })),
       );
-      const updated = await fetchQbrHistory(account.id);
+      const updated = await fetchQbrHistory(account.id, account.name);
       setQbrHistory(updated);
       const newEntry = updated.find(e => e.is_current);
       if (newEntry?.slide?.url) window.open(newEntry.slide.url, "_blank");
@@ -610,7 +610,7 @@ export default function Home() {
                         setQbrOpen(o => !o);
                         if (!qbrHistory && !qbrHistoryLoading) {
                           setQbrHistoryLoading(true);
-                          fetchQbrHistory(selectedAccount.id)
+                          fetchQbrHistory(selectedAccount.id, selectedAccount.name)
                             .then(h => setQbrHistory(h))
                             .catch(() => setQbrHistory([]))
                             .finally(() => setQbrHistoryLoading(false));

@@ -2051,6 +2051,20 @@ async def create_qbr_slides(
             yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "running"})
             _quarter = (_today.month - 1) // 3 + 1
             _month_label = f"Q{_quarter} {_today.strftime('%B %Y')}"
+            _ym = _today.strftime("%Y-%m")
+            _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+            try:
+                existing = await asyncio.to_thread(
+                    slides_mod.list_qbr_slides, account_name, _shared_drive_id
+                )
+                for _s in existing:
+                    if _s["month"] == _ym:
+                        try:
+                            await asyncio.to_thread(slides_mod.delete_file, _s["pres_id"])
+                        except Exception:
+                            _log.warning("Could not delete QBR slide %s — skipping", _s["pres_id"])
+            except Exception:
+                _log.exception("QBR slide listing failed for %s — continuing", account_name)
             try:
                 pres_id, url, customer_folder_id = await asyncio.to_thread(
                     slides_mod.create_slide_deck,
@@ -2106,7 +2120,7 @@ async def create_qbr_slides(
 
 
 @app.get("/api/accounts/{account_id}/qbr-slides/history")
-async def get_qbr_history(account_id: str, _email: str = Depends(require_auth)):
+async def get_qbr_history(account_id: str, account_name: str = "", _email: str = Depends(require_auth)):
     """Return QBR slide history for the last 6 months, newest first.
 
     Uses Google Drive as the authoritative source (survives redeployments),
@@ -2134,20 +2148,19 @@ async def get_qbr_history(account_id: str, _email: str = Depends(require_auth)):
 
     # Drive is authoritative — survives LSD redeployments
     slides_by_month: dict[str, dict] = {}
-    if os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+    if account_name and os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
         try:
-            account = pylon_client.get_account(account_id)
-            account_name = account["name"] if account else None
-            if account_name:
-                shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
-                drive_slides = await asyncio.to_thread(
-                    slides_mod.list_qbr_slides, account_name, shared_drive_id
-                )
-                for s in drive_slides:
-                    if s["month"] in month_keys:
-                        slides_by_month[s["month"]] = s
+            import slides_client as slides_mod
+            shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+            drive_slides = await asyncio.to_thread(
+                slides_mod.list_qbr_slides, account_name, shared_drive_id
+            )
+            for s in drive_slides:
+                # drive_slides is ordered newest-first; first match per month wins
+                if s["month"] in month_keys and s["month"] not in slides_by_month:
+                    slides_by_month[s["month"]] = s
         except Exception:
-            _log.warning("Drive QBR history lookup failed, falling back to local cache")
+            _log.exception("Drive QBR history lookup failed, falling back to local cache")
 
     # Local cache fallback for any months not found in Drive
     for ym in month_keys:

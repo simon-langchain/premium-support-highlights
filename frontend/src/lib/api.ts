@@ -221,8 +221,9 @@ export interface QbrHistoryEntry {
   slide: QbrSlide | null;
 }
 
-export async function fetchQbrHistory(accountId: string): Promise<QbrHistoryEntry[]> {
-  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/history`);
+export async function fetchQbrHistory(accountId: string, accountName: string): Promise<QbrHistoryEntry[]> {
+  const params = new URLSearchParams({ account_name: accountName });
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/history?${params}`);
   if (res.status === 401) { handleUnauthorized(res); return []; }
   if (!res.ok) throw new Error(`Failed to fetch QBR history: ${res.status}`);
   return res.json();

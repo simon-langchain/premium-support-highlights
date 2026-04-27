@@ -297,22 +297,40 @@ def _generate_metrics_chart(
     return buf.read()
 
 
-def _find_folder(drive, name: str, parent_id: str | None) -> str | None:
-    """Return the Drive folder ID for `name`, or None if not found."""
+def _find_folder(
+    drive,
+    name: str,
+    parent_id: str | None,
+    shared_drive_id: str | None = None,
+) -> str | None:
+    """Return the Drive folder ID for `name`, or None if not found.
+
+    shared_drive_id must be the shared drive root ID (not a subfolder) when
+    searching within a shared drive.  driveId scopes the search to that drive;
+    the in-parents clause narrows to the specific parent within it.
+    """
     q = f"name = {json.dumps(name)} and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    kwargs: dict = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
     if parent_id:
         q += f" and '{parent_id}' in parents"
-    results = drive.files().list(
-        q=q, supportsAllDrives=True, includeItemsFromAllDrives=True,
-        fields="files(id)", pageSize=1,
-    ).execute()
+    if shared_drive_id:
+        kwargs["corpora"] = "drive"
+        kwargs["driveId"] = shared_drive_id
+    else:
+        kwargs["corpora"] = "allDrives"
+    results = drive.files().list(q=q, fields="files(id)", pageSize=1, **kwargs).execute()
     files = results.get("files", [])
     return files[0]["id"] if files else None
 
 
-def _get_or_create_folder(drive, name: str, parent_id: str | None) -> str:
+def _get_or_create_folder(
+    drive,
+    name: str,
+    parent_id: str | None,
+    shared_drive_id: str | None = None,
+) -> str:
     """Return the Drive folder ID for `name` under `parent_id`, creating it if absent."""
-    folder_id = _find_folder(drive, name, parent_id)
+    folder_id = _find_folder(drive, name, parent_id, shared_drive_id)
     if folder_id:
         return folder_id
     meta: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
@@ -324,10 +342,14 @@ def _get_or_create_folder(drive, name: str, parent_id: str | None) -> str:
 
 
 def _parse_deck_label(deck_label: str) -> str | None:
-    """Parse 'Q2 April 2026' → '2026-04', or None if unparseable."""
+    """Parse 'Q2 April 2026' or legacy 'April 2026' → '2026-04', or None if unparseable."""
     import re
     from calendar import month_name as _mn
+    # New format: "Q2 April 2026"
     m = re.match(r"Q\d\s+(\w+)\s+(\d{4})$", deck_label.strip())
+    if not m:
+        # Legacy format: "April 2026"
+        m = re.match(r"(\w+)\s+(\d{4})$", deck_label.strip())
     if not m:
         return None
     for i, name in enumerate(_mn):
@@ -339,7 +361,7 @@ def _parse_deck_label(deck_label: str) -> str | None:
 def list_qbr_slides(account_name: str, shared_drive_id: str | None = None) -> list[dict]:
     """Return all QBR slides for account_name from Drive as [{url, pres_id, created_at, month_label, month}]."""
     drive, _ = _services()
-    folder_id = _find_folder(drive, account_name, shared_drive_id)
+    folder_id = _find_folder(drive, account_name, shared_drive_id, shared_drive_id)
     if not folder_id:
         return []
     prefix = f"{account_name} — QBR "
@@ -348,9 +370,15 @@ def list_qbr_slides(account_name: str, shared_drive_id: str | None = None) -> li
         " and mimeType = 'application/vnd.google-apps.presentation'"
         " and trashed = false"
     )
+    list_kwargs: dict = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
+    if shared_drive_id:
+        list_kwargs["corpora"] = "drive"
+        list_kwargs["driveId"] = shared_drive_id
+    else:
+        list_kwargs["corpora"] = "allDrives"
     results = drive.files().list(
-        q=q, supportsAllDrives=True, includeItemsFromAllDrives=True,
-        fields="files(id, name, createdTime)", orderBy="createdTime desc",
+        q=q, fields="files(id, name, createdTime)", orderBy="createdTime desc",
+        **list_kwargs,
     ).execute()
     slides = []
     for f in results.get("files", []):
@@ -359,6 +387,7 @@ def list_qbr_slides(account_name: str, shared_drive_id: str | None = None) -> li
         deck_label = f["name"][len(prefix):]
         year_month = _parse_deck_label(deck_label)
         if not year_month:
+            _log.warning("list_qbr_slides could not parse deck_label=%r", deck_label)
             continue
         slides.append({
             "url": f"https://docs.google.com/presentation/d/{f['id']}/edit",
@@ -370,8 +399,24 @@ def list_qbr_slides(account_name: str, shared_drive_id: str | None = None) -> li
     return slides
 
 
+def delete_file(file_id: str) -> None:
+    """Move a Drive file to the trash.
+
+    Uses trash rather than permanent delete — shared drives require Manager
+    (organizer) role for permanent deletion but only Content Manager
+    (fileOrganizer) for trashing.  Trashed shared-drive files are purged
+    automatically after 30 days.
+    """
+    drive, _ = _services()
+    drive.files().update(
+        fileId=file_id,
+        supportsAllDrives=True,
+        body={"trashed": True},
+    ).execute()
+
+
 def _upload_chart(drive, chart_bytes: bytes, parent_folder_id: str | None) -> str:
-    """Upload chart PNG into `parent_folder_id`, grant anyoneWithLink reader, return URL."""
+    """Upload chart PNG into `parent_folder_id` in the shared drive, grant public reader, return URL."""
     from googleapiclient.http import MediaIoBaseUpload
 
     meta: dict = {"name": "_qbr_metrics_chart.png", "mimeType": "image/png"}
@@ -512,7 +557,7 @@ def create_slide_deck(
     """
     drive, slides = _services()
     shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
-    customer_folder_id = _get_or_create_folder(drive, account_name, shared_drive_id)
+    customer_folder_id = _get_or_create_folder(drive, account_name, shared_drive_id, shared_drive_id)
     deck_label = month_label or quarter_label
 
     for _attempt in range(3):
@@ -692,14 +737,17 @@ def add_metrics_chart(
     quarter_start_iso: str,
     quarter_label: str,
 ) -> None:
-    """Generate the metrics chart, upload to the cache subfolder, and replace the slide image."""
+    """Generate the metrics chart, upload to the shared drive cache folder, and replace the slide image."""
     drive, slides = _services()
-    cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id)
+    shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+    cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id, shared_drive_id)
     chart_bytes = _generate_metrics_chart(quarter_issues, chart_issues, quarter_start_iso, quarter_label)
     chart_url = _upload_chart(drive, chart_bytes, cache_folder_id)
     img_id = _find_image_object_id(slides, pres_id)
     if img_id:
         _replace_chart_image(slides, pres_id, img_id, chart_url)
+    else:
+        _log.warning("add_metrics_chart: no image element found on slide 0 of %s", pres_id)
 
 
 def share_presentation(pres_id: str, user_email: str) -> None:
