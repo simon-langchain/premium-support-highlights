@@ -2049,7 +2049,8 @@ async def create_qbr_slides(
 
             # Step 4: create slide deck (copy template + text replacements)
             yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "running"})
-            _month_label = _today.strftime("%B %Y")
+            _quarter = (_today.month - 1) // 3 + 1
+            _month_label = f"Q{_quarter} {_today.strftime('%B %Y')}"
             try:
                 pres_id, url, customer_folder_id = await asyncio.to_thread(
                     slides_mod.create_slide_deck,
@@ -2114,7 +2115,8 @@ async def get_qbr_history(account_id: str, _email: str = Depends(require_auth)):
     m, y = today.month, today.year
     for _ in range(6):
         year_month = f"{y:04d}-{m:02d}"
-        month_label = f"{_mn[m]} {y}"
+        quarter = (m - 1) // 3 + 1
+        month_label = f"Q{quarter} {_mn[m]} {y}"
         slide = cache_mod.get_qbr_slide(account_id, year_month)
         result.append({
             "month": year_month,
