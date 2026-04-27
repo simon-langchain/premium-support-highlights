@@ -2107,27 +2107,56 @@ async def create_qbr_slides(
 
 @app.get("/api/accounts/{account_id}/qbr-slides/history")
 async def get_qbr_history(account_id: str, _email: str = Depends(require_auth)):
-    """Return QBR slide history for the last 6 months, newest first."""
+    """Return QBR slide history for the last 6 months, newest first.
+
+    Uses Google Drive as the authoritative source (survives redeployments),
+    falling back to the local disk cache when Drive is unavailable.
+    """
     from datetime import date as _date
     from calendar import month_name as _mn
     today = _date.today()
-    result = []
+
+    # Build 6-month window
+    months = []
     m, y = today.month, today.year
     for _ in range(6):
-        year_month = f"{y:04d}-{m:02d}"
         quarter = (m - 1) // 3 + 1
-        month_label = f"Q{quarter} {_mn[m]} {y}"
-        slide = cache_mod.get_qbr_slide(account_id, year_month)
-        result.append({
-            "month": year_month,
-            "month_label": month_label,
+        months.append({
+            "month": f"{y:04d}-{m:02d}",
+            "month_label": f"Q{quarter} {_mn[m]} {y}",
             "is_current": (y == today.year and m == today.month),
-            "slide": slide,
         })
         m -= 1
         if m == 0:
             m, y = 12, y - 1
-    return result
+
+    month_keys = {e["month"] for e in months}
+
+    # Drive is authoritative — survives LSD redeployments
+    slides_by_month: dict[str, dict] = {}
+    if os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        try:
+            account = pylon_client.get_account(account_id)
+            account_name = account["name"] if account else None
+            if account_name:
+                shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+                drive_slides = await asyncio.to_thread(
+                    slides_mod.list_qbr_slides, account_name, shared_drive_id
+                )
+                for s in drive_slides:
+                    if s["month"] in month_keys:
+                        slides_by_month[s["month"]] = s
+        except Exception:
+            _log.warning("Drive QBR history lookup failed, falling back to local cache")
+
+    # Local cache fallback for any months not found in Drive
+    for ym in month_keys:
+        if ym not in slides_by_month:
+            cached = cache_mod.get_qbr_slide(account_id, ym)
+            if cached:
+                slides_by_month[ym] = cached
+
+    return [{**e, "slide": slides_by_month.get(e["month"])} for e in months]
 
 
 @app.delete("/api/schedules/{cron_id}")

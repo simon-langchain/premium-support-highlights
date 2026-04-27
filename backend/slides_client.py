@@ -297,27 +297,77 @@ def _generate_metrics_chart(
     return buf.read()
 
 
-def _get_or_create_folder(drive, name: str, parent_id: str | None) -> str:
-    """Return the Drive folder ID for `name` under `parent_id`, creating it if absent."""
+def _find_folder(drive, name: str, parent_id: str | None) -> str | None:
+    """Return the Drive folder ID for `name`, or None if not found."""
     q = f"name = {json.dumps(name)} and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     if parent_id:
         q += f" and '{parent_id}' in parents"
     results = drive.files().list(
-        q=q,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-        fields="files(id)",
-        pageSize=1,
+        q=q, supportsAllDrives=True, includeItemsFromAllDrives=True,
+        fields="files(id)", pageSize=1,
     ).execute()
-    existing = results.get("files", [])
-    if existing:
-        return existing[0]["id"]
+    files = results.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def _get_or_create_folder(drive, name: str, parent_id: str | None) -> str:
+    """Return the Drive folder ID for `name` under `parent_id`, creating it if absent."""
+    folder_id = _find_folder(drive, name, parent_id)
+    if folder_id:
+        return folder_id
     meta: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
         meta["parents"] = [parent_id]
     return drive.files().create(
         body=meta, supportsAllDrives=True, fields="id",
     ).execute()["id"]
+
+
+def _parse_deck_label(deck_label: str) -> str | None:
+    """Parse 'Q2 April 2026' → '2026-04', or None if unparseable."""
+    import re
+    from calendar import month_name as _mn
+    m = re.match(r"Q\d\s+(\w+)\s+(\d{4})$", deck_label.strip())
+    if not m:
+        return None
+    for i, name in enumerate(_mn):
+        if name == m.group(1):
+            return f"{m.group(2)}-{i:02d}"
+    return None
+
+
+def list_qbr_slides(account_name: str, shared_drive_id: str | None = None) -> list[dict]:
+    """Return all QBR slides for account_name from Drive as [{url, pres_id, created_at, month_label, month}]."""
+    drive, _ = _services()
+    folder_id = _find_folder(drive, account_name, shared_drive_id)
+    if not folder_id:
+        return []
+    prefix = f"{account_name} — QBR "
+    q = (
+        f"'{folder_id}' in parents"
+        " and mimeType = 'application/vnd.google-apps.presentation'"
+        " and trashed = false"
+    )
+    results = drive.files().list(
+        q=q, supportsAllDrives=True, includeItemsFromAllDrives=True,
+        fields="files(id, name, createdTime)", orderBy="createdTime desc",
+    ).execute()
+    slides = []
+    for f in results.get("files", []):
+        if not f["name"].startswith(prefix):
+            continue
+        deck_label = f["name"][len(prefix):]
+        year_month = _parse_deck_label(deck_label)
+        if not year_month:
+            continue
+        slides.append({
+            "url": f"https://docs.google.com/presentation/d/{f['id']}/edit",
+            "pres_id": f["id"],
+            "created_at": f["createdTime"],
+            "month_label": deck_label,
+            "month": year_month,
+        })
+    return slides
 
 
 def _upload_chart(drive, chart_bytes: bytes, parent_folder_id: str | None) -> str:
