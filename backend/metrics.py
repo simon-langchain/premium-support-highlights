@@ -147,6 +147,32 @@ def compute_avg_response_time(issues: list[dict]) -> float | None:
     return (total_seconds / count) / 3600
 
 
+def compute_sla_compliance(issues: list[dict], threshold_hours: float = 24.0) -> int | None:
+    """Percentage of issues with first_response_seconds within threshold_hours.
+
+    Returns an integer 0-100, or None if no issues have response time data.
+    """
+    threshold_secs = threshold_hours * 3600
+    total = 0
+    within = 0
+    for issue in issues:
+        seconds = issue.get("first_response_seconds")
+        if seconds is None:
+            continue
+        try:
+            s = float(seconds)
+        except (TypeError, ValueError):
+            continue
+        if s <= 0:
+            continue
+        total += 1
+        if s <= threshold_secs:
+            within += 1
+    if total == 0:
+        return None
+    return round(within / total * 100)
+
+
 def get_priority(issue: dict) -> str:
     """Extract priority string from a Pylon issue dict.
 

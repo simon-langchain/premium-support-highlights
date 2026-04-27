@@ -13,8 +13,10 @@ definition in the agent layer (here) rather than in the HTTP route handler (main
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
+from langsmith import traceable
 import pylon_client
 import cache as cache_mod
 from langchain_core.tools import tool
@@ -200,6 +202,89 @@ def _format_key_metrics(
         parts = ", ".join(f"{k}: {v}" for k, v in disposition_breakdown.items())
         lines.append(f"Disposition breakdown: {parts}")
     return "\n".join(lines) if lines else "No metrics available."
+
+
+@traceable(name="generate_qbr_insights", run_type="llm")
+async def generate_qbr_insights(
+    account_name: str,
+    quarter_label: str,
+    open_issues: list[dict],
+    sev1: int,
+    sev2: int,
+    waiting_on_you: int,
+    total_open: int,
+    fr_open: int,
+    sla_pct: int | None,
+    avg_response_hours: float | None,
+    tickets_raised_qtr: int,
+    tickets_closed_qtr: int,
+) -> dict[str, list[str]]:
+    """Generate QBR Observations and Opportunities bullet points using Claude."""
+    import json
+    from anthropic import AsyncAnthropic
+
+    _PRIORITY_MAP = {"urgent": "Sev1", "high": "Sev2", "medium": "Sev3", "low": "Sev4"}
+
+    ticket_lines = []
+    for i in open_issues[:20]:
+        cf = i.get("custom_fields") or {}
+        raw_p = (cf.get("priority") or {}).get("value", "low") if isinstance(cf, dict) else "low"
+        p = _PRIORITY_MAP.get(raw_p, "Sev4")
+        title = (i.get("title") or "")[:80]
+        ticket_lines.append(f"  #{i.get('number', '?')} [{p}][{i.get('state', '')}]: {title}")
+
+    metrics_lines = [
+        f"Quarter: {quarter_label}",
+        f"Tickets raised this quarter: {tickets_raised_qtr}",
+        f"Tickets closed this quarter: {tickets_closed_qtr}",
+        f"Currently open: {total_open} total ({sev1} Sev 1, {sev2} Sev 2)",
+        f"Pending LangChain action: {waiting_on_you}",
+        f"Open feature requests: {fr_open}",
+    ]
+    if sla_pct is not None:
+        metrics_lines.append(f"Response time SLA compliance (within 24h): {sla_pct}%")
+    if avg_response_hours is not None:
+        metrics_lines.append(f"Avg first response time: {avg_response_hours:.1f}h")
+
+    prompt = f"""QBR slide bullets for {account_name} {quarter_label} Enterprise Support.
+
+Metrics:
+{chr(10).join(metrics_lines)}
+
+Open tickets:
+{chr(10).join(ticket_lines) if ticket_lines else "  (none)"}
+
+Return ONLY valid JSON (no markdown, no code block):
+{{"observations": ["...", "...", "..."], "opportunities": ["..."]}}
+
+Rules:
+- observations: exactly 3 bullets — factual snapshot, specific numbers, highlight what's going well
+- opportunities: 1–3 bullets — meaningful ways to deepen the support relationship or unlock more value for {account_name}; think things like: expanding usage, unblocking a strategic initiative, reducing a recurring pain point, making integrations more robust. NOT generic operational tasks like "schedule follow-ups" or "clear backlog"
+- Each bullet: 6-12 words MAX, terse slide-style fragment (not a full sentence)
+- Tone: customer-facing, positively framed — this is read by {account_name} in a QBR. Frame as a partnership
+- Only flag serious issues (Sev 1 open, SLA breach) directly; everything else should be constructive and forward-looking
+- No filler words, no "LangChain should", no em dashes"""
+
+    client = AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=600,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = response.content[0].text.strip()
+    # Strip markdown code fences if Claude wraps the JSON
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+    try:
+        data = json.loads(raw)
+        return {
+            "observations": data.get("observations", []),
+            "opportunities": data.get("opportunities", []),
+        }
+    except Exception:
+        _log.warning("Failed to parse QBR insights JSON: %s", raw[:200])
+        return {"observations": [], "opportunities": []}
 
 
 # Module-level compiled graph registered with LSD via langgraph.json.

@@ -211,6 +211,8 @@ def search_issues_for_account(
     states: list[str] | None = None,
     created_after: str | None = None,
     created_before: str | None = None,
+    updated_after: str | None = None,
+    updated_before: str | None = None,
     limit: int = 500,
 ) -> list[dict]:
     """Search issues for a specific account, paginating through all results.
@@ -220,6 +222,8 @@ def search_issues_for_account(
         states: Filter by issue states (e.g. ["new", "waiting_on_you"]).
         created_after: ISO 8601 timestamp — only return issues created after this.
         created_before: ISO 8601 timestamp — only return issues created before this.
+        updated_after: ISO 8601 timestamp — only return issues updated after this.
+        updated_before: ISO 8601 timestamp — only return issues updated before this.
         limit: Max results per page (default 500, capped at 1000).
 
     Returns:
@@ -234,6 +238,10 @@ def search_issues_for_account(
         subfilters.append({"field": "created_at", "operator": "time_is_after", "value": created_after})
     if created_before:
         subfilters.append({"field": "created_at", "operator": "time_is_before", "value": created_before})
+    if updated_after:
+        subfilters.append({"field": "updated_at", "operator": "time_is_after", "value": updated_after})
+    if updated_before:
+        subfilters.append({"field": "updated_at", "operator": "time_is_before", "value": updated_before})
 
     filter_obj = (
         {"operator": "and", "subfilters": subfilters}
