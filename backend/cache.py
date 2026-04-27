@@ -84,3 +84,29 @@ def set_account_summary(account_id: str, period: str, summary: str) -> None:
         "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     _save(cache)
+
+
+def get_qbr_slide(account_id: str, year_month: str) -> dict | None:
+    """Return cached QBR slide info {url, pres_id, created_at, month_label}, or None."""
+    key = f"qbr:{account_id}:{year_month}"
+    entry = _load().get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def set_qbr_slide(
+    account_id: str,
+    year_month: str,
+    url: str,
+    pres_id: str,
+    month_label: str,
+) -> None:
+    """Persist a QBR slide record permanently (no expiry)."""
+    cache = _load()
+    key = f"qbr:{account_id}:{year_month}"
+    cache[key] = {
+        "url": url,
+        "pres_id": pres_id,
+        "month_label": month_label,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(cache)

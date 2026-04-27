@@ -20,6 +20,7 @@ Caching strategy (all in-memory, 5-minute TTL):
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import re
 import time
@@ -39,6 +40,8 @@ from dotenv import load_dotenv
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_root, ".env"))
 
+_log = logging.getLogger(__name__)
+
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Response
@@ -51,7 +54,7 @@ import slack_client
 import metrics as metrics_mod
 import audit
 import cache as cache_mod
-from summary_agent import generate_account_summary, make_summarise_tickets_tool
+from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights
 from report import generate_report_html
 from ticket_summarizer import parse_ticket_output
 
@@ -1788,6 +1791,341 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
         },
     )
     return _format_schedule(cron)
+
+
+# ---------------------------------------------------------------------------
+# QBR slide generation — Google Slides API
+# ---------------------------------------------------------------------------
+
+def _compute_qbr_data(
+    open_issues: list[dict],
+    closed_issues: list[dict],
+    quarter_issues: list[dict],
+    sla_pct: int | None,
+    insights: dict,
+    avg_response_hours: float | None = None,
+) -> tuple[dict, dict]:
+    """Derive slide 14 (Enterprise Support) and slide 15 (Product Feedback) data."""
+    from datetime import datetime, timezone
+
+    def is_fr(issue: dict) -> bool:
+        cf = issue.get("custom_fields") or {}
+        return (cf.get("disposition") or {}).get("value", "") == "feature_request"
+
+    sev1 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "urgent")
+    sev2 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "high")
+    sev3 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "medium")
+    sev4 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "low")
+    waiting = sum(1 for i in open_issues if i.get("state") == "waiting_on_you")
+    open_frs = [i for i in open_issues if is_fr(i)]
+
+    # Median resolution time from closed quarter tickets (days from created to updated/closed)
+    now = datetime.now(timezone.utc)
+    resolution_days = []
+    for i in quarter_issues:
+        if i.get("state") not in {"closed", "resolved"}:
+            continue
+        raw_created = i.get("created_at", "")
+        raw_updated = i.get("updated_at", "")
+        if raw_created and raw_updated:
+            try:
+                created = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+                updated = datetime.fromisoformat(raw_updated.replace("Z", "+00:00"))
+                if updated > created:
+                    resolution_days.append((updated - created).days)
+            except (ValueError, TypeError):
+                pass
+    resolution_days.sort()
+    median_resolution_days: float | None = None
+    if resolution_days:
+        mid = len(resolution_days) // 2
+        median_resolution_days = float(
+            resolution_days[mid] if len(resolution_days) % 2 else (resolution_days[mid - 1] + resolution_days[mid]) / 2
+        )
+
+    slide14 = {
+        "sev1_open": sev1,
+        "sev2_open": sev2,
+        "sev3_open": sev3,
+        "sev4_open": sev4,
+        "waiting_on_you": waiting,
+        "feature_requests_open": len(open_frs),
+        "sla_pct": sla_pct,
+        "avg_response_hours": avg_response_hours,
+        "median_resolution_days": median_resolution_days,
+        "observations": insights.get("observations", []),
+        "opportunities": insights.get("opportunities", []),
+    }
+
+    delivered_frs = sum(1 for i in closed_issues if is_fr(i))
+    fr_titles = [i.get("title", "").strip() for i in open_frs if i.get("title")]
+
+    slide15 = {
+        "feature_requests_open": len(open_frs),
+        "feature_requests_delivered": delivered_frs,
+        "open_feature_request_titles": fr_titles,
+    }
+
+    return slide14, slide15
+
+
+@app.post("/api/accounts/{account_id}/qbr-slides")
+async def create_qbr_slides(
+    account_id: str,
+    request: Request,
+    user_email: str = Depends(require_auth),
+):
+    """Stream QBR slide generation progress via SSE, ending with a result event containing the URL."""
+    if not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        raise HTTPException(
+            status_code=501,
+            detail="QBR slides not configured (GOOGLE_SERVICE_ACCOUNT_JSON missing)",
+        )
+
+    body = await request.json()
+    account_name = (body.get("account_name") or "").strip()
+    if not account_name:
+        raise HTTPException(status_code=422, detail="account_name is required")
+
+    import slides_client as slides_mod
+    import roadmap_client as roadmap_mod
+
+    quarter_start, quarter_end, quarter_label = slides_mod.get_last_quarter()
+    chart_start = slides_mod.get_chart_start(6)
+
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    async def _stream():
+        try:
+            # Step 1: fetch ticket data
+            yield _sse("progress", {"step": "fetch", "label": "Fetching ticket data", "status": "running"})
+            try:
+                open_issues, closed_issues, quarter_issues, chart_issues = await asyncio.gather(
+                    asyncio.to_thread(pylon_client.search_issues_for_account, account_id, OPEN_STATES),
+                    asyncio.to_thread(
+                        pylon_client.search_issues_for_account,
+                        account_id, ["closed", "resolved"], None, None, quarter_start, quarter_end,
+                    ),
+                    asyncio.to_thread(
+                        pylon_client.search_issues_for_account,
+                        account_id, None, quarter_start, quarter_end,
+                    ),
+                    asyncio.to_thread(
+                        pylon_client.search_issues_for_account,
+                        account_id, None, chart_start,
+                    ),
+                )
+            except Exception as exc:
+                yield _sse("error", {"detail": f"Pylon API error: {exc}"})
+                return
+            yield _sse("progress", {"step": "fetch", "label": "Fetching ticket data", "status": "done"})
+
+            # Step 2: AI insights
+            yield _sse("progress", {"step": "insights", "label": "Generating AI insights", "status": "running"})
+            sla_pct = metrics_mod.compute_sla_compliance(quarter_issues)
+            avg_rt = metrics_mod.compute_avg_response_time(quarter_issues)
+
+            def is_fr(i: dict) -> bool:
+                cf = i.get("custom_fields") or {}
+                return (cf.get("disposition") or {}).get("value", "") == "feature_request"
+
+            open_frs = [i for i in open_issues if is_fr(i)]
+            sev1 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "urgent")
+            sev2 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "high")
+            waiting = sum(1 for i in open_issues if i.get("state") == "waiting_on_you")
+            tickets_closed_qtr = sum(1 for i in quarter_issues if i.get("state") in {"closed", "resolved"})
+            try:
+                insights = await generate_qbr_insights(
+                    account_name=account_name,
+                    quarter_label=quarter_label,
+                    open_issues=open_issues,
+                    sev1=sev1,
+                    sev2=sev2,
+                    waiting_on_you=waiting,
+                    total_open=len(open_issues),
+                    fr_open=len(open_frs),
+                    sla_pct=sla_pct,
+                    avg_response_hours=avg_rt,
+                    tickets_raised_qtr=len(quarter_issues),
+                    tickets_closed_qtr=tickets_closed_qtr,
+                )
+            except Exception as exc:
+                yield _sse("error", {"detail": f"AI insights failed: {exc}"})
+                return
+            yield _sse("progress", {"step": "insights", "label": "Generating AI insights", "status": "done"})
+
+            slide14, slide15 = _compute_qbr_data(open_issues, closed_issues, quarter_issues, sla_pct, insights, avg_rt)
+
+            # Step 3: roadmap lookup and AI item selection (non-fatal)
+            yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "running"})
+            roadmap_items: list[dict] = []
+            try:
+                from datetime import date as _date
+                _today = _date.today()
+                _slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+                _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+
+                # Build list of months: current + last 3 (= last quarter)
+                _months: list[_date] = []
+                _m, _y = _today.month, _today.year
+                for _ in range(4):
+                    _months.append(_date(_y, _m, 1))
+                    _m -= 1
+                    if _m == 0:
+                        _m, _y = 12, _y - 1
+
+                def _fetch_all_roadmaps() -> list[tuple[str, _date]]:
+                    from googleapiclient.discovery import build as _build
+                    from google.oauth2 import service_account as _sa
+                    import json as _json
+                    _creds = _sa.Credentials.from_service_account_info(
+                        _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                        scopes=["https://www.googleapis.com/auth/drive"],
+                    )
+                    _drive = _build("drive", "v3", credentials=_creds)
+                    found: list[tuple[str, _date]] = []
+                    seen_ids: set[str] = set()
+                    for month in _months:
+                        pres_id = roadmap_mod.find_roadmap_in_drive(_drive, month)
+                        if not pres_id and _slack_token and month == _months[0]:
+                            url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
+                            if url:
+                                pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                        if pres_id and pres_id not in seen_ids:
+                            seen_ids.add(pres_id)
+                            found.append((pres_id, month))
+                    return found
+
+                def _extract_all(roadmap_list: list[tuple[str, _date]]) -> list[dict]:
+                    from googleapiclient.discovery import build as _build
+                    from google.oauth2 import service_account as _sa
+                    import json as _json
+                    _creds = _sa.Credentials.from_service_account_info(
+                        _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                        scopes=["https://www.googleapis.com/auth/presentations"],
+                    )
+                    _slides = _build("slides", "v1", credentials=_creds)
+                    all_items: list[dict] = []
+                    for pres_id, month in roadmap_list:
+                        try:
+                            all_items.extend(roadmap_mod.extract_roadmap_items(_slides, pres_id, month))
+                        except Exception as exc:
+                            _log.warning("Could not extract roadmap from %s: %s", pres_id, exc)
+                    return all_items
+
+                roadmap_list = await asyncio.to_thread(_fetch_all_roadmaps)
+                if roadmap_list:
+                    raw_items = await asyncio.to_thread(_extract_all, roadmap_list)
+                    # Deduplicate by title — keep only the latest month's version
+                    from datetime import datetime as _dt
+                    _seen: dict[str, dict] = {}
+                    for _item in raw_items:
+                        _title = _item.get("title", "").strip().lower()
+                        _existing = _seen.get(_title)
+                        if not _existing:
+                            _seen[_title] = _item
+                        else:
+                            try:
+                                if _dt.strptime(_item["month"], "%B %Y") > _dt.strptime(_existing["month"], "%B %Y"):
+                                    _seen[_title] = _item
+                            except (ValueError, KeyError):
+                                pass
+                    raw_items = list(_seen.values())
+                    selected = await roadmap_mod.select_roadmap_items(
+                        raw_items, open_issues, account_name, _today
+                    )
+                    # Order selected items oldest-month-first (left→right on slide)
+                    def _month_key(item: dict) -> tuple:
+                        try:
+                            return (_dt.strptime(item["month"], "%B %Y").year,
+                                    _dt.strptime(item["month"], "%B %Y").month)
+                        except (ValueError, KeyError):
+                            return (9999, 99)
+                    roadmap_items = sorted(selected, key=_month_key)
+            except Exception:
+                _log.exception("Roadmap lookup failed — continuing without roadmap items")
+            yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "done"})
+
+            # Step 4: create slide deck (copy template + text replacements)
+            yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "running"})
+            _month_label = _today.strftime("%B %Y")
+            try:
+                pres_id, url, customer_folder_id = await asyncio.to_thread(
+                    slides_mod.create_slide_deck,
+                    account_name, slide14, slide15, quarter_label, _month_label,
+                )
+            except Exception as exc:
+                yield _sse("error", {"detail": f"Slides creation failed: {exc}"})
+                return
+            if roadmap_items:
+                try:
+                    await asyncio.to_thread(slides_mod.add_roadmap_items, pres_id, roadmap_items)
+                except Exception:
+                    _log.exception("Roadmap items insertion failed — continuing")
+            yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "done"})
+
+            # Step 5: metrics chart (non-fatal — slide keeps original image on failure)
+            yield _sse("progress", {"step": "chart", "label": "Generating metrics chart", "status": "running"})
+            try:
+                await asyncio.to_thread(
+                    slides_mod.add_metrics_chart,
+                    pres_id, customer_folder_id,
+                    quarter_issues, chart_issues, chart_start, quarter_label,
+                )
+            except Exception:
+                _log.exception("Chart generation failed — continuing without chart")
+            yield _sse("progress", {"step": "chart", "label": "Generating metrics chart", "status": "done"})
+
+            # Step 6: share with the requesting user
+            yield _sse("progress", {"step": "share", "label": "Sharing with you", "status": "running"})
+            try:
+                await asyncio.to_thread(slides_mod.share_presentation, pres_id, user_email)
+            except Exception as exc:
+                yield _sse("error", {"detail": f"Sharing failed: {exc}"})
+                return
+            yield _sse("progress", {"step": "share", "label": "Sharing with you", "status": "done"})
+
+            await asyncio.to_thread(
+                audit.log,
+                "qbr_slides_generated",
+                {"account_id": account_id, "account_name": account_name, "month": _month_label},
+            )
+            # Persist slide record so history endpoint can surface it
+            await asyncio.to_thread(
+                cache_mod.set_qbr_slide,
+                account_id, _today.strftime("%Y-%m"), url, pres_id, _month_label,
+            )
+            yield _sse("result", {"url": url, "month": _today.strftime("%Y-%m"), "month_label": _month_label})
+
+        except Exception as exc:
+            yield _sse("error", {"detail": str(exc)})
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/accounts/{account_id}/qbr-slides/history")
+async def get_qbr_history(account_id: str, _email: str = Depends(require_auth)):
+    """Return QBR slide history for the last 6 months, newest first."""
+    from datetime import date as _date
+    from calendar import month_name as _mn
+    today = _date.today()
+    result = []
+    m, y = today.month, today.year
+    for _ in range(6):
+        year_month = f"{y:04d}-{m:02d}"
+        month_label = f"{_mn[m]} {y}"
+        slide = cache_mod.get_qbr_slide(account_id, year_month)
+        result.append({
+            "month": year_month,
+            "month_label": month_label,
+            "is_current": (y == today.year and m == today.month),
+            "slide": slide,
+        })
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return result
 
 
 @app.delete("/api/schedules/{cron_id}")

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, ArrowUpDown, ChevronRight, Clock } from "lucide-react";
+import { Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, Circle, ExternalLink, X, RefreshCw } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
@@ -12,7 +12,11 @@ import {
   fetchAccountData,
   fetchCachedTicketSummaries,
   fetchTiers,
+  fetchQbrHistory,
   generateSummary,
+  streamQbrSlides,
+  type QbrStepStatus,
+  type QbrHistoryEntry,
   type Account,
   type AccountData,
   type Issue,
@@ -111,6 +115,15 @@ const Logo = () => (
   </svg>
 );
 
+const QBR_STEPS: { id: string; label: string }[] = [
+  { id: "fetch",    label: "Fetching ticket data" },
+  { id: "insights", label: "Generating AI insights" },
+  { id: "roadmap",  label: "Finding roadmap items" },
+  { id: "slides",   label: "Creating slide deck" },
+  { id: "chart",    label: "Generating metrics chart" },
+  { id: "share",    label: "Sharing with you" },
+];
+
 export default function Home() {
   const [configured, setConfigured] = useState(false);
   const [tiers, setTiers] = useState<string[]>([]);
@@ -137,6 +150,47 @@ export default function Home() {
   const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
   const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [qbrOpen, setQbrOpen] = useState(false);
+  const [qbrHistory, setQbrHistory] = useState<QbrHistoryEntry[] | null>(null);
+  const [qbrHistoryLoading, setQbrHistoryLoading] = useState(false);
+  const [qbrGenerating, setQbrGenerating] = useState(false);
+  const [qbrSteps, setQbrSteps] = useState<Record<string, QbrStepStatus>>({});
+  const [qbrError, setQbrError] = useState<string | null>(null);
+  const [qbrConfirmRegenerate, setQbrConfirmRegenerate] = useState(false);
+
+  const qbrContainerRef = useRef<HTMLDivElement>(null);
+
+  const runQbrGeneration = useCallback(async (account: Account) => {
+    setQbrSteps({});
+    setQbrError(null);
+    setQbrGenerating(true);
+    setQbrOpen(true);
+    try {
+      await streamQbrSlides(
+        account.id,
+        account.name,
+        (step, _label, status) => setQbrSteps(prev => ({ ...prev, [step]: status })),
+      );
+      const updated = await fetchQbrHistory(account.id);
+      setQbrHistory(updated);
+      const newEntry = updated.find(e => e.is_current);
+      if (newEntry?.slide?.url) window.open(newEntry.slide.url, "_blank");
+    } catch (e) {
+      setQbrError(e instanceof Error ? e.message : "Generation failed");
+    } finally {
+      setQbrGenerating(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    function onMouseDown(e: MouseEvent) {
+      if (qbrContainerRef.current && !qbrContainerRef.current.contains(e.target as Node)) {
+        setQbrOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
 
   // Refs so pipeline callbacks always see current model/period without stale closures
   const modelRef = useRef(selectedModel);
@@ -332,6 +386,11 @@ export default function Home() {
     setSearchQuery("");
     setSortBy("priority");
     setSelectedStates(OPEN_STATES);
+    setQbrOpen(false);
+    setQbrGenerating(false);
+    setQbrSteps({});
+    setQbrError(null);
+    setQbrHistory(null);
     window.history.replaceState(null, "", `/?account=${toSlug(account.name)}`);
   }
 
@@ -544,6 +603,121 @@ export default function Home() {
                     <Clock size={14} />
                     Schedule
                   </button>
+                  <div ref={qbrContainerRef} className="relative print:hidden">
+                    <button
+                      onClick={async () => {
+                        if (!selectedAccount) return;
+                        setQbrOpen(o => !o);
+                        if (!qbrHistory && !qbrHistoryLoading) {
+                          setQbrHistoryLoading(true);
+                          fetchQbrHistory(selectedAccount.id)
+                            .then(h => setQbrHistory(h))
+                            .catch(() => setQbrHistory([]))
+                            .finally(() => setQbrHistoryLoading(false));
+                        }
+                      }}
+                      disabled={!selectedAccount}
+                      style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                      className="flex items-center gap-1.5 text-sm rounded px-3 py-1.5 hover:bg-[var(--bg-tertiary)] transition-colors focus:outline-none cursor-pointer disabled:opacity-50"
+                    >
+                      {qbrGenerating ? <Loader2 size={14} className="animate-spin" /> : <Presentation size={14} />}
+                      QBR Slides
+                    </button>
+
+                    {qbrOpen && (
+                      <div
+                        className="absolute right-0 top-[calc(100%+4px)] z-50 rounded-lg p-3 w-72"
+                        style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>QBR Slides</span>
+                          <button onClick={() => setQbrOpen(false)} className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors" style={{ color: "var(--text-muted)" }}>
+                            <X size={11} />
+                          </button>
+                        </div>
+
+                        {/* Generation progress — shown while generating */}
+                        {qbrGenerating && (
+                          <div className="space-y-2 mb-3">
+                            {QBR_STEPS.map(({ id, label }) => {
+                              const status = qbrSteps[id] ?? "pending";
+                              return (
+                                <div key={id} className="flex items-center gap-2.5">
+                                  <div className="shrink-0 w-4">
+                                    {status === "done" ? (
+                                      <CheckCircle2 size={14} className="text-green-500" />
+                                    ) : status === "running" ? (
+                                      <Loader2 size={14} className="animate-spin" style={{ color: "var(--accent)" }} />
+                                    ) : (
+                                      <Circle size={14} style={{ color: "var(--text-muted)", opacity: 0.35 }} />
+                                    )}
+                                  </div>
+                                  <span className="text-xs" style={{ color: status === "pending" ? "var(--text-muted)" : "var(--text-primary)" }}>
+                                    {label}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {qbrError && (
+                          <div className="text-xs mb-3" style={{ color: "#ef4444" }}>{qbrError}</div>
+                        )}
+
+                        {/* Month history list — hidden while generating */}
+                        {!qbrGenerating && <div className="-mx-3">
+                          {qbrHistoryLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <Loader2 size={16} className="animate-spin" style={{ color: "var(--text-muted)" }} />
+                            </div>
+                          ) : (qbrHistory ?? []).filter(entry => entry.is_current || entry.slide).map(entry => (
+                            <div key={entry.month} className="flex items-center justify-between px-3 py-2">
+                              <div>
+                                <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{entry.month_label}</div>
+                                {entry.slide && (
+                                  <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                                    Generated {new Date(entry.slide.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {entry.slide && (
+                                  <a
+                                    href={entry.slide.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80"
+                                    style={{ background: "var(--accent)", color: "white" }}
+                                  >
+                                    <ExternalLink size={11} />
+                                    Open
+                                  </a>
+                                )}
+                                {entry.is_current && (
+                                  <button
+                                    disabled={qbrGenerating}
+                                    onClick={() => {
+                                      if (!selectedAccount) return;
+                                      if (entry.slide) { setQbrConfirmRegenerate(true); return; }
+                                      runQbrGeneration(selectedAccount);
+                                    }}
+                                    className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+                                    style={entry.slide
+                                      ? { background: "var(--bg-secondary)", border: "1px solid var(--text-muted)", color: "var(--text-primary)" }
+                                      : { background: "var(--accent)", color: "white" }}
+                                    title={entry.slide ? "Regenerate" : "Generate"}
+                                  >
+                                    {qbrGenerating ? <Loader2 size={11} className="animate-spin" /> : entry.slide ? <RefreshCw size={13} /> : "Generate"}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>}
+                      </div>
+                    )}
+                  </div>
                   <ShareButton
                     onSlackReport={(channelId, sections) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections)}
                     onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections)}
@@ -743,6 +917,35 @@ export default function Home() {
           </>
         )}
       </main>
+
+      {qbrConfirmRegenerate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setQbrConfirmRegenerate(false)}>
+          <div
+            className="rounded-xl px-6 py-5 w-80 shadow-xl"
+            style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <p className="text-sm font-medium mb-1" style={{ color: "var(--text-primary)" }}>Regenerate slides?</p>
+            <p className="text-sm mb-5" style={{ color: "var(--text-muted)" }}>This will overwrite the existing slides for this month.</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setQbrConfirmRegenerate(false)}
+                className="text-sm px-3 py-1.5 rounded transition-opacity hover:opacity-80 cursor-pointer"
+                style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              >Cancel</button>
+              <button
+                onClick={() => {
+                  if (!selectedAccount) return;
+                  setQbrConfirmRegenerate(false);
+                  runQbrGeneration(selectedAccount);
+                }}
+                className="text-sm px-3 py-1.5 rounded transition-opacity hover:opacity-80 cursor-pointer"
+                style={{ background: "var(--accent)", color: "white" }}
+              >Regenerate</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {scheduleOpen && selectedAccount && (
         <ScheduleModal

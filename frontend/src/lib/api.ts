@@ -205,6 +205,78 @@ export async function createSchedule(req: CreateScheduleRequest): Promise<Schedu
   return res.json();
 }
 
+export type QbrStepStatus = "pending" | "running" | "done";
+
+export interface QbrSlide {
+  url: string;
+  pres_id: string;
+  created_at: string;
+  month_label: string;
+}
+
+export interface QbrHistoryEntry {
+  month: string;        // "2026-04"
+  month_label: string;  // "April 2026"
+  is_current: boolean;
+  slide: QbrSlide | null;
+}
+
+export async function fetchQbrHistory(accountId: string): Promise<QbrHistoryEntry[]> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/history`);
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) throw new Error(`Failed to fetch QBR history: ${res.status}`);
+  return res.json();
+}
+
+export async function streamQbrSlides(
+  accountId: string,
+  accountName: string,
+  onProgress: (step: string, label: string, status: "running" | "done") => void,
+): Promise<string> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_name: accountName }),
+  });
+  if (res.status === 401) { handleUnauthorized(res); return ""; }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to generate QBR slides: ${res.status}`);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let url = "";
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      let eventName = "";
+      let dataStr = "";
+      for (const line of part.split("\n")) {
+        if (line.startsWith("event: ")) eventName = line.slice(7).trim();
+        else if (line.startsWith("data: ")) dataStr = line.slice(6).trim();
+      }
+      if (!eventName || !dataStr) continue;
+      const data = JSON.parse(dataStr);
+      if (eventName === "progress") {
+        onProgress(data.step, data.label, data.status);
+      } else if (eventName === "result") {
+        url = data.url;
+        break outer;
+      } else if (eventName === "error") {
+        throw new Error(data.detail ?? "QBR generation failed");
+      }
+    }
+  }
+  return url;
+}
+
 export async function deleteSchedule(cronId: string): Promise<void> {
   const res = await fetch(`/api/schedules/${encodeURIComponent(cronId)}`, { method: "DELETE" });
   if (res.status === 401) { handleUnauthorized(res); return; }

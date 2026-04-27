@@ -90,6 +90,8 @@ Protected routes:
 - `GET /api/schedules?account_id=` — list all (or account-filtered) LangGraph Platform cron jobs for the `report_dispatcher` graph; looks up the `report_dispatcher` assistant UUID via `client.assistants.search` before querying crons (UUID required by SDK)
 - `POST /api/schedules` — body `{account_id, account_name, label, destination_type, channel_id?, email_addresses?, sections?, period, frequency, weekday, nth, month_in_quarter, hour_local, timezone}`; all fields Pydantic-validated (`destination_type`/`frequency` are `Literal` types, ranges enforced on `weekday`/`nth`/`hour_local`/`month_in_quarter`, `timezone` validated via `zoneinfo.ZoneInfo`, `sections` filtered to `ALL_SECTIONS` allowlist, `email_addresses` checked for `@`); timezone passed natively to `crons.create(timezone=)` so LangGraph Platform handles DST and sub-hour offsets; `created_by` is the authenticated user's email, stored in the cron payload
 - `DELETE /api/schedules/{cron_id}` — delete a scheduled report by LangGraph cron ID
+- `POST /api/accounts/{id}/qbr-slides` — streams SSE progress events while generating a QBR Google Slides deck; fetches the last 4 months of roadmap items from Google Drive, deduplicates by title (latest month wins), uses Claude to select the 3 most relevant items matching the account's open feature requests, inserts them into a template slide deck, saves the result to disk cache, and sends a final `result` event with `{url, month, month_label}`
+- `GET /api/accounts/{id}/qbr-slides/history` — returns last 6 months as `[{month, month_label, is_current, slide}]`; `slide` is `{url, pres_id, created_at, month_label}` or null; newest first
 
 **`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
 
@@ -123,7 +125,11 @@ Protected routes:
 
 **`ticket_summarizer.py`** — Per-ticket AI output via Claude Haiku. `summarize_ticket(title, body_html, messages, state, account_name)` returns structured `"Summary: ...\nNext steps: ..."` text. State labels are context-aware: `waiting_on_customer` tells the model LangChain has responded and is waiting; `waiting_on_you` means LangChain needs to act; `on_hold` means an internal LangChain team (Engineering/Product) is holding it. `parse_ticket_output(text)` parses the two-line output; old plain-text cache entries fall back to displaying as `next_steps`.
 
-**`cache.py`** — JSON file cache (`.cache/analysis_cache.json`). Per-ticket summaries keyed by `sha256(issue_id:latest_message_time)`; account summaries keyed by `as:{account_id}:{period}`.
+**`cache.py`** — JSON file cache (`.cache/analysis_cache.json`). Per-ticket summaries keyed by `sha256(issue_id:latest_message_time)`; account summaries keyed by `as:{account_id}:{period}`; QBR slide records keyed by `qbr:{account_id}:{YYYY-MM}` (no expiry — permanent).
+
+**`roadmap_client.py`** — Google Slides roadmap parser. `extract_roadmap_items(slides_service, pres_id, month)` parses a roadmap presentation into a list of `{title, description, month, image_url}` items. Handles two multi-feature slide patterns: Pattern A (next text fragment starts with `:`), Pattern B (bullet ends with `:`). Single-feature title extraction joins fragments with `": "`, strips trailing colons, limits to 45 chars. `select_roadmap_items(items, open_issues, account_name, today)` uses Claude Haiku to pick the 3 most relevant items; tags items UPCOMING/DELIVERED relative to `today` and prioritises delivered items that match open feature requests.
+
+**`slides_client.py`** — Google Slides deck builder. `create_slide_deck(account_name, slide14, slide15, quarter_label, month_label)` copies the template presentation into the customer's Drive folder and applies text replacements. `add_roadmap_items(pres_id, items)` inserts up to 3 roadmap items into the roadmap slide using three isolated `batchUpdate` calls (text, image replace with `CENTER_CROP`, white border outline). Uses `image_url` (embedded product screenshot) as the image source, falling back to `getThumbnail` for slides without embedded images.
 
 **`audit.py`** — JSONL audit log (`.cache/audit.jsonl`).
 
@@ -151,6 +157,8 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/app/page.tsx`** — Main dashboard. Loads available tiers on mount; re-fetches accounts when the selected tier changes. Fetches account data on account selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`. Shows a centered empty state when no account is selected.
 
+The **QBR Slides** popover (header button) lazily fetches history on first open and shows the last 6 months filtered to months that have slides plus the current month. Each row shows month name, generation date, an Open link (if slides exist), and a Generate/refresh-icon button (current month only). Generate runs immediately; the refresh icon shows a custom confirm modal before overwriting. Progress steps are shown inline while generating; the month list is hidden during generation. Switching accounts resets all QBR state. `runQbrGeneration(account)` is a shared `useCallback` used by both the generate button and the confirm modal.
+
 **`src/app/api/[...path]/route.ts`** — Catch-all proxy. Forwards all headers (including `cookie` and `authorization`) to the backend. Injects `x-api-key` for LSD authentication server-side.
 
 **`src/app/api/accounts/[accountId]/summary/route.ts`** — Custom route handler for the summary SSE stream. Buffers the stream and returns plain JSON once the `result` event arrives. Explicitly forwards `cookie` and `authorization` headers (the catch-all does this automatically; this handler has its own header dict).
@@ -171,7 +179,7 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected.
 
-**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, and `created_by` fields added during the scheduling feature build. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string.
+**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, and `created_by` fields. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string. `QbrSlide`, `QbrHistoryEntry` interfaces and `fetchQbrHistory`, `streamQbrSlides` functions support the QBR slides feature; `streamQbrSlides` reads an SSE stream of `progress`/`result`/`error` events.
 
 **`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
 
@@ -198,7 +206,9 @@ premium-support-highlights/
 │   ├── metrics.py              # Metric computation (pure Python)
 │   ├── summary_agent.py        # AI summary + per-ticket tool via deepagents
 │   ├── report.py               # HTML report generator (browser/PDF + email variants)
-│   ├── cache.py                # JSON file cache (ticket + account summaries)
+│   ├── roadmap_client.py       # Google Slides roadmap parser + AI item selector
+│   ├── slides_client.py        # Google Slides QBR deck builder
+│   ├── cache.py                # JSON file cache (ticket summaries, account summaries, QBR slides)
 │   ├── audit.py                # JSONL audit log
 │   └── pyproject.toml          # Python dependencies (uv)
 ├── frontend/
