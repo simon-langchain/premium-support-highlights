@@ -755,12 +755,17 @@ def share_presentation(pres_id: str, user_email: str) -> None:
     drive, _ = _services()
     # Files in a Shared Drive have no individual owner, so no transferOwnership
     # needed — writer access is sufficient.
-    drive.permissions().create(
-        fileId=pres_id,
-        supportsAllDrives=True,
-        sendNotificationEmail=False,
-        body={"type": "user", "role": "writer", "emailAddress": user_email},
-    ).execute()
+    try:
+        drive.permissions().create(
+            fileId=pres_id,
+            supportsAllDrives=True,
+            sendNotificationEmail=False,
+            body={"type": "user", "role": "writer", "emailAddress": user_email},
+        ).execute()
+    except Exception as exc:
+        # Ignore duplicate-permission errors (user already has access)
+        if "already exists" not in str(exc).lower():
+            raise
 
 
 # Object IDs of the 5 indicator dots, left to right.

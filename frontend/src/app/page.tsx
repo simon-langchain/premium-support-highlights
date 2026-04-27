@@ -14,6 +14,7 @@ import {
   fetchTiers,
   fetchQbrHistory,
   generateSummary,
+  shareQbrSlide,
   streamQbrSlides,
   type QbrStepStatus,
   type QbrHistoryEntry,
@@ -683,16 +684,18 @@ export default function Home() {
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
                                 {entry.slide && (
-                                  <a
-                                    href={entry.slide.url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80"
+                                  <button
+                                    onClick={() => {
+                                      if (!selectedAccount || !entry.slide) return;
+                                      shareQbrSlide(selectedAccount.id, entry.slide.pres_id).catch(() => {});
+                                      window.open(entry.slide.url, "_blank");
+                                    }}
+                                    className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80 cursor-pointer"
                                     style={{ background: "var(--accent)", color: "white" }}
                                   >
                                     <ExternalLink size={11} />
                                     Open
-                                  </a>
+                                  </button>
                                 )}
                                 {entry.is_current && (
                                   <button

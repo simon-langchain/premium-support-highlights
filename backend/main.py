@@ -2119,6 +2119,14 @@ async def create_qbr_slides(
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/accounts/{account_id}/qbr-slides/{pres_id}/share")
+async def share_qbr_slide(account_id: str, pres_id: str, user_email: str = Depends(require_auth)):
+    """Grant the requesting user writer access to a previously generated QBR slide."""
+    import slides_client as slides_mod
+    await asyncio.to_thread(slides_mod.share_presentation, pres_id, user_email)
+    return {}
+
+
 @app.get("/api/accounts/{account_id}/qbr-slides/history")
 async def get_qbr_history(account_id: str, account_name: str = "", _email: str = Depends(require_auth)):
     """Return QBR slide history for the last 6 months, newest first.

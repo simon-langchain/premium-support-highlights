@@ -221,6 +221,15 @@ export interface QbrHistoryEntry {
   slide: QbrSlide | null;
 }
 
+/** Ensure the current user has writer access to a previously generated QBR slide. */
+export async function shareQbrSlide(accountId: string, presId: string): Promise<void> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/${encodeURIComponent(presId)}/share`, {
+    method: "POST",
+  });
+  if (res.status === 401) { handleUnauthorized(res); return; }
+  // Non-fatal: user may already have access
+}
+
 export async function fetchQbrHistory(accountId: string, accountName: string): Promise<QbrHistoryEntry[]> {
   const params = new URLSearchParams({ account_name: accountName });
   const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/history?${params}`);
