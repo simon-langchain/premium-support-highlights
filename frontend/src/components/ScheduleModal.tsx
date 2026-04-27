@@ -515,6 +515,12 @@ export default function ScheduleModal({
   onClose,
   openToNewQbr = false,
 }: ScheduleModalProps) {
+  // Channels safe for internal-only notifications (excludes customer-facing channels)
+  const EXTERNAL_PREFIXES = ["customer-", "eval-", "external-", "ext-", "partner-"];
+  const internalChannels = availableChannels.filter(
+    c => !EXTERNAL_PREFIXES.some(p => c.name.startsWith(p))
+  );
+
   // Navigation
   const [view, setView] = useState<"list" | "form">(openToNewQbr ? "form" : "list");
 
@@ -932,8 +938,8 @@ export default function ScheduleModal({
                       ))}
                     </div>
                     {qbrNotifyType === "slack" ? (
-                      availableChannels.length > 0
-                        ? <ChannelPicker channels={availableChannels} selected={qbrNotifyChannel} onSelect={setQbrNotifyChannel} />
+                      internalChannels.length > 0
+                        ? <ChannelPicker channels={internalChannels} selected={qbrNotifyChannel} onSelect={setQbrNotifyChannel} />
                         : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>
                     ) : (
                       <>
