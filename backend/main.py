@@ -1579,9 +1579,13 @@ class ScheduleRequest(BaseModel):
     account_id: str
     account_name: str
     label: str = ""
-    destination_type: Literal["slack", "email"]
+    destination_type: Literal["slack", "email", "qbr"]
     channel_id: str | None = None
     email_addresses: list[str] | None = None
+    # QBR-specific: how to notify when slides are ready
+    qbr_notify_type: Literal["slack", "email"] | None = None
+    qbr_notify_channel_id: str | None = None
+    qbr_notify_emails: list[str] | None = None
     sections: list[str] | None = None   # None = all sections; filtered to ALL_SECTIONS
     period: str = "1m"
     frequency: Literal["weekly", "monthly", "quarterly"]
@@ -1616,6 +1620,20 @@ class ScheduleRequest(BaseModel):
                     raise ValueError(f"Invalid email address: {addr!r}")
         return v
 
+    @field_validator("qbr_notify_emails")
+    @classmethod
+    def validate_qbr_notify_emails(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            for addr in v:
+                if "@" not in addr or not addr.split("@")[-1]:
+                    raise ValueError(f"Invalid email address: {addr!r}")
+                domain = addr.split("@")[-1].lower()
+                if domain != "langchain.dev":
+                    raise ValueError(
+                        f"QBR notifications can only be sent to @langchain.dev addresses, got: {addr!r}"
+                    )
+        return v
+
     @field_validator("sections")
     @classmethod
     def validate_sections(cls, v: list[str] | None) -> list[str] | None:
@@ -1642,6 +1660,64 @@ def _build_run_condition(frequency: str, nth: int, weekday: int, month_in_quarte
         return {"type": "nth_weekday_of_month", "n": nth, "weekday": weekday}
     # quarterly: fire on the nth weekday of a specific month within the quarter
     return {"type": "nth_weekday_of_month_in_quarter", "n": nth, "weekday": weekday, "month_in_quarter": month_in_quarter}
+
+
+def _next_run_date_from_condition(
+    condition: dict | None,
+    cron_next: str | None,
+    weekday: int,
+    hour_local: int,
+    tz_name: str,
+) -> str | None:
+    """Return the next ISO datetime string when this condition will actually fire.
+
+    For weekly schedules (condition=None) the raw cron next_run_date is correct.
+    For monthly/quarterly we walk forward week-by-week until we hit a matching date,
+    so the displayed "next run" reflects the real run rather than every Monday.
+    """
+    if condition is None:
+        return cron_next
+
+    from datetime import date as _d, timedelta as _td, datetime as _dt, timezone as _tz
+    from zoneinfo import ZoneInfo as _ZI
+
+    ctype = condition.get("type", "")
+    n = int(condition.get("n", 1))
+    miq = int(condition.get("month_in_quarter", 1))
+
+    today = _dt.now(_tz.utc).date()
+    start = today + _td(days=1)
+    days_ahead = (weekday - start.weekday()) % 7
+    d = start + _td(days=days_ahead)
+
+    for _ in range(60):  # scan up to ~14 months
+        if ctype == "nth_weekday_of_month":
+            if n > 0:
+                count = sum(1 for x in range(1, d.day + 1) if _d(d.year, d.month, x).weekday() == weekday)
+                hit = count == n
+            else:
+                hit = (d + _td(days=7)).month != d.month
+        elif ctype == "nth_weekday_of_month_in_quarter":
+            q = (d.month - 1) // 3
+            tgt = q * 3 + miq
+            if d.month != tgt:
+                hit = False
+            elif n > 0:
+                count = sum(1 for x in range(1, d.day + 1) if _d(d.year, d.month, x).weekday() == weekday)
+                hit = count == n
+            else:
+                hit = (d + _td(days=7)).month != d.month
+        else:
+            return cron_next  # legacy type — leave as-is
+        if hit:
+            try:
+                local_dt = _dt(d.year, d.month, d.day, hour_local, 0, 0, tzinfo=_ZI(tz_name))
+            except Exception:
+                local_dt = _dt(d.year, d.month, d.day, hour_local, 0, 0, tzinfo=_tz.utc)
+            return local_dt.astimezone(_tz.utc).isoformat()
+        d += _td(days=7)
+
+    return cron_next
 
 
 def _format_schedule(cron: dict) -> dict:
@@ -1688,6 +1764,9 @@ def _format_schedule(cron: dict) -> dict:
         "destination_type": inp.get("destination_type"),
         "channel_id": inp.get("channel_id"),
         "email_addresses": inp.get("email_addresses"),
+        "qbr_notify_type": inp.get("qbr_notify_type"),
+        "qbr_notify_channel_id": inp.get("qbr_notify_channel_id"),
+        "qbr_notify_emails": inp.get("qbr_notify_emails"),
         "sections": inp.get("sections"),
         "period": inp.get("period", "1m"),
         "frequency": frequency,
@@ -1699,7 +1778,7 @@ def _format_schedule(cron: dict) -> dict:
         "timezone": timezone,
         "created_by": inp.get("created_by"),
         "schedule": cron.get("schedule"),
-        "next_run_date": cron.get("next_run_date"),
+        "next_run_date": _next_run_date_from_condition(run_condition, cron.get("next_run_date"), weekday, hour_local, timezone),
         "created_at": cron.get("created_at"),
     }
 
@@ -1758,6 +1837,9 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
         "destination_type": body.destination_type,
         "channel_id": body.channel_id,
         "email_addresses": body.email_addresses,
+        "qbr_notify_type": body.qbr_notify_type,
+        "qbr_notify_channel_id": body.qbr_notify_channel_id,
+        "qbr_notify_emails": body.qbr_notify_emails,
         "sections": body.sections,
         "run_condition": run_condition,
         "label": body.label,
@@ -1867,6 +1949,198 @@ def _compute_qbr_data(
     }
 
     return slide14, slide15
+
+
+async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, str, str]:
+    """Generate QBR slides and share with the langchain.dev domain.
+
+    Called by the scheduled dispatcher. Returns (pres_id, url, month_label).
+    Raises on unrecoverable failures; roadmap/chart steps are non-fatal.
+    """
+    from datetime import date as _date, datetime as _dt
+    import slides_client as slides_mod
+    import roadmap_client as roadmap_mod
+
+    # If a slide for this month already exists (e.g. a parallel schedule triggered
+    # simultaneously), return it immediately without regenerating.
+    _now_ym = _date.today().strftime("%Y-%m")
+    _cached = await asyncio.to_thread(cache_mod.get_qbr_slide, account_id, _now_ym)
+    if _cached:
+        return _cached["pres_id"], _cached["url"], _cached["month_label"]
+
+    quarter_start, quarter_end, quarter_label = slides_mod.get_last_quarter()
+    chart_start = slides_mod.get_chart_start(6)
+
+    open_issues, closed_issues, quarter_issues, chart_issues = await asyncio.gather(
+        asyncio.to_thread(pylon_client.search_issues_for_account, account_id, OPEN_STATES),
+        asyncio.to_thread(
+            pylon_client.search_issues_for_account,
+            account_id, ["closed", "resolved"], None, None, quarter_start, quarter_end,
+        ),
+        asyncio.to_thread(
+            pylon_client.search_issues_for_account,
+            account_id, None, quarter_start, quarter_end,
+        ),
+        asyncio.to_thread(pylon_client.search_issues_for_account, account_id, None, chart_start),
+    )
+
+    sla_pct = metrics_mod.compute_sla_compliance(quarter_issues)
+    avg_rt = metrics_mod.compute_avg_response_time(quarter_issues)
+
+    def _is_fr(i: dict) -> bool:
+        cf = i.get("custom_fields") or {}
+        return (cf.get("disposition") or {}).get("value", "") == "feature_request"
+
+    open_frs = [i for i in open_issues if _is_fr(i)]
+    sev1 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "urgent")
+    sev2 = sum(1 for i in open_issues if metrics_mod.get_priority(i) == "high")
+    waiting = sum(1 for i in open_issues if i.get("state") == "waiting_on_you")
+    tickets_closed_qtr = sum(1 for i in quarter_issues if i.get("state") in {"closed", "resolved"})
+
+    insights = await generate_qbr_insights(
+        account_name=account_name,
+        quarter_label=quarter_label,
+        open_issues=open_issues,
+        sev1=sev1,
+        sev2=sev2,
+        waiting_on_you=waiting,
+        total_open=len(open_issues),
+        fr_open=len(open_frs),
+        sla_pct=sla_pct,
+        avg_response_hours=avg_rt,
+        tickets_raised_qtr=len(quarter_issues),
+        tickets_closed_qtr=tickets_closed_qtr,
+    )
+
+    slide14, slide15 = _compute_qbr_data(
+        open_issues, closed_issues, quarter_issues, sla_pct, insights, avg_rt
+    )
+
+    # Roadmap items (non-fatal)
+    roadmap_items: list[dict] = []
+    try:
+        _today = _date.today()
+        _slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+        _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+
+        _months: list[_date] = []
+        _m, _y = _today.month, _today.year
+        for _ in range(4):
+            _months.append(_date(_y, _m, 1))
+            _m -= 1
+            if _m == 0:
+                _m, _y = 12, _y - 1
+
+        def _fetch_all_roadmaps() -> list[tuple[str, _date]]:
+            from googleapiclient.discovery import build as _build
+            from google.oauth2 import service_account as _sa
+            import json as _json
+            _creds = _sa.Credentials.from_service_account_info(
+                _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                scopes=["https://www.googleapis.com/auth/drive"],
+            )
+            _drive = _build("drive", "v3", credentials=_creds)
+            found: list[tuple[str, _date]] = []
+            seen_ids: set[str] = set()
+            for month in _months:
+                pres_id = roadmap_mod.find_roadmap_in_drive(_drive, month)
+                if not pres_id and _slack_token and month == _months[0]:
+                    url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
+                    if url:
+                        pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                if pres_id and pres_id not in seen_ids:
+                    seen_ids.add(pres_id)
+                    found.append((pres_id, month))
+            return found
+
+        def _extract_all(roadmap_list: list[tuple[str, _date]]) -> list[dict]:
+            from googleapiclient.discovery import build as _build
+            from google.oauth2 import service_account as _sa
+            import json as _json
+            _creds = _sa.Credentials.from_service_account_info(
+                _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                scopes=["https://www.googleapis.com/auth/presentations"],
+            )
+            _slides = _build("slides", "v1", credentials=_creds)
+            all_items: list[dict] = []
+            for pres_id, month in roadmap_list:
+                try:
+                    all_items.extend(roadmap_mod.extract_roadmap_items(_slides, pres_id, month))
+                except Exception as exc:
+                    _log.warning("Could not extract roadmap from %s: %s", pres_id, exc)
+            return all_items
+
+        roadmap_list = await asyncio.to_thread(_fetch_all_roadmaps)
+        if roadmap_list:
+            raw_items = await asyncio.to_thread(_extract_all, roadmap_list)
+            _seen: dict[str, dict] = {}
+            for _item in raw_items:
+                _title = _item.get("title", "").strip().lower()
+                _existing = _seen.get(_title)
+                if not _existing:
+                    _seen[_title] = _item
+                else:
+                    try:
+                        if _dt.strptime(_item["month"], "%B %Y") > _dt.strptime(_existing["month"], "%B %Y"):
+                            _seen[_title] = _item
+                    except (ValueError, KeyError):
+                        pass
+            raw_items = list(_seen.values())
+            selected = await roadmap_mod.select_roadmap_items(raw_items, open_issues, account_name, _today)
+
+            def _month_key(item: dict) -> tuple:
+                try:
+                    return (_dt.strptime(item["month"], "%B %Y").year,
+                            _dt.strptime(item["month"], "%B %Y").month)
+                except (ValueError, KeyError):
+                    return (9999, 99)
+            roadmap_items = sorted(selected, key=_month_key)
+    except Exception:
+        _log.exception("Roadmap lookup failed in scheduled QBR — continuing without roadmap items")
+
+    _today = _date.today()
+    _quarter = (_today.month - 1) // 3 + 1
+    _month_label = f"Q{_quarter} {_today.strftime('%B %Y')}"
+    _ym = _today.strftime("%Y-%m")
+    _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+
+    try:
+        existing = await asyncio.to_thread(slides_mod.list_qbr_slides, account_name, _shared_drive_id)
+        for _s in existing:
+            if _s["month"] == _ym:
+                try:
+                    await asyncio.to_thread(slides_mod.delete_file, _s["pres_id"])
+                except Exception:
+                    _log.warning("Could not delete QBR slide %s — skipping", _s["pres_id"])
+    except Exception:
+        _log.exception("QBR slide listing failed for %s — continuing", account_name)
+
+    pres_id, url, customer_folder_id = await asyncio.to_thread(
+        slides_mod.create_slide_deck, account_name, slide14, slide15, quarter_label, _month_label,
+    )
+
+    if roadmap_items:
+        try:
+            await asyncio.to_thread(slides_mod.add_roadmap_items, pres_id, roadmap_items)
+        except Exception:
+            _log.exception("Roadmap items insertion failed in scheduled QBR — continuing")
+
+    try:
+        await asyncio.to_thread(
+            slides_mod.add_metrics_chart,
+            pres_id, customer_folder_id, quarter_issues, chart_issues, chart_start, quarter_label,
+        )
+    except Exception:
+        _log.exception("Chart generation failed in scheduled QBR — continuing")
+
+    # Share with the whole langchain.dev domain so any team member can open the link
+    await asyncio.to_thread(slides_mod.share_with_domain, pres_id, "langchain.dev")
+
+    await asyncio.to_thread(
+        cache_mod.set_qbr_slide, account_id, _ym, url, pres_id, _month_label,
+    )
+
+    return pres_id, url, _month_label
 
 
 @app.post("/api/accounts/{account_id}/qbr-slides")

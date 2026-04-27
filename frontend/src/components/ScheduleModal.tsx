@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Trash2, Pencil, Plus, Check, ChevronDown, Search, AlertCircle, RefreshCw, ArrowLeft, Mail } from "lucide-react";
+import { X, Trash2, Pencil, Plus, Check, ChevronDown, Search, AlertCircle, RefreshCw, ArrowLeft, Mail, Presentation } from "lucide-react";
 import SlackIcon from "./SlackIcon";
 import {
   fetchSchedules,
@@ -210,6 +210,9 @@ function describeSchedule(s: Schedule): string {
     const mqLabel = MONTH_IN_QUARTER_OPTIONS.find((o) => o.value === (s.month_in_quarter ?? 1))?.label ?? "1st month";
     when = `${nthLabel} ${day}, ${mqLabel} of every quarter`;
   }
+  if (s.destination_type === "qbr") {
+    return `${when} at ${time}`;
+  }
   return `${when} at ${time} · ${period}`;
 }
 
@@ -232,9 +235,10 @@ function formatNextRun(iso: string | null, tz: string = "UTC"): string {
 interface EmailTagInputProps {
   emails: string[];
   onChange: (emails: string[]) => void;
+  placeholder?: string;
 }
 
-function EmailTagInput({ emails, onChange }: EmailTagInputProps) {
+function EmailTagInput({ emails, onChange, placeholder = "email@example.com" }: EmailTagInputProps) {
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -303,7 +307,7 @@ function EmailTagInput({ emails, onChange }: EmailTagInputProps) {
         onKeyDown={handleKeyDown}
         onBlur={() => commitMany(inputVal)}
         onPaste={handlePaste}
-        placeholder={emails.length === 0 ? "email@example.com" : ""}
+        placeholder={emails.length === 0 ? placeholder : ""}
         className="text-xs bg-transparent border-none outline-none flex-1"
         style={{ color: "var(--text-primary)", minWidth: "8rem" }}
       />
@@ -499,6 +503,7 @@ interface ScheduleModalProps {
   channelId: string | null;
   availableChannels: { id: string; name: string }[];
   onClose: () => void;
+  openToNewQbr?: boolean;
 }
 
 export default function ScheduleModal({
@@ -508,9 +513,10 @@ export default function ScheduleModal({
   channelId,
   availableChannels,
   onClose,
+  openToNewQbr = false,
 }: ScheduleModalProps) {
   // Navigation
-  const [view, setView] = useState<"list" | "form">("list");
+  const [view, setView] = useState<"list" | "form">(openToNewQbr ? "form" : "list");
 
   // List state
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -521,11 +527,15 @@ export default function ScheduleModal({
   // Form state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
-  const [mode, setMode] = useState<"slack" | "email">("slack");
+  const [mode, setMode] = useState<"slack" | "email" | "qbr">(openToNewQbr ? "qbr" : "slack");
   const [selectedChannel, setSelectedChannel] = useState<string | null>(channelId);
   const [emails, setEmails] = useState<string[]>([]);
+  // QBR notification sub-fields
+  const [qbrNotifyType, setQbrNotifyType] = useState<"slack" | "email">("slack");
+  const [qbrNotifyChannel, setQbrNotifyChannel] = useState<string | null>(channelId);
+  const [qbrNotifyEmails, setQbrNotifyEmails] = useState<string[]>([]);
   const [period, setPeriod] = useState(["1m", "3m", "6m", "1y"].includes(defaultPeriod) ? defaultPeriod : "1m");
-  const [frequency, setFrequency] = useState<"weekly" | "monthly" | "quarterly">("monthly");
+  const [frequency, setFrequency] = useState<"weekly" | "monthly" | "quarterly">(openToNewQbr ? "quarterly" : "monthly");
   const [weekday, setWeekday] = useState(0);
   const [nth, setNth] = useState(1);
   const [monthInQuarter, setMonthInQuarter] = useState(1);
@@ -555,6 +565,9 @@ export default function ScheduleModal({
     setMode("slack");
     setSelectedChannel(channelId);
     setEmails([]);
+    setQbrNotifyType("slack");
+    setQbrNotifyChannel(channelId);
+    setQbrNotifyEmails([]);
     setPeriod(["1m", "3m", "6m", "1y"].includes(defaultPeriod) ? defaultPeriod : "1m");
     setFrequency("monthly");
     setWeekday(0);
@@ -570,9 +583,12 @@ export default function ScheduleModal({
   function openEditForm(s: Schedule) {
     setEditingId(s.cron_id);
     setLabel(s.label ?? "");
-    setMode((s.destination_type ?? "slack") as "slack" | "email");
+    setMode((s.destination_type ?? "slack") as "slack" | "email" | "qbr");
     setSelectedChannel(s.channel_id ?? channelId);
     setEmails(s.email_addresses ?? []);
+    setQbrNotifyType((s.qbr_notify_type ?? "slack") as "slack" | "email");
+    setQbrNotifyChannel(s.qbr_notify_channel_id ?? channelId);
+    setQbrNotifyEmails(s.qbr_notify_emails ?? []);
     setPeriod(s.period ?? "1m");
     setFrequency(s.frequency ?? "monthly");
     setWeekday(s.weekday ?? 0);
@@ -609,7 +625,18 @@ export default function ScheduleModal({
 
     if (mode === "email" && emails.length === 0) { setCreateError("Enter at least one email address."); return; }
     if (mode === "slack" && !selectedChannel) { setCreateError("Choose a Slack channel."); return; }
-    if (selectedSections.size === 0) { setCreateError("Select at least one section."); return; }
+    if (mode === "qbr" && qbrNotifyType === "email" && qbrNotifyEmails.length === 0) { setCreateError("Enter at least one @langchain.dev email for QBR notifications."); return; }
+    if (mode === "qbr" && qbrNotifyType === "slack" && !qbrNotifyChannel) { setCreateError("Choose a Slack channel for QBR notifications."); return; }
+    if (mode !== "qbr" && selectedSections.size === 0) { setCreateError("Select at least one section."); return; }
+
+    // Validate @langchain.dev constraint for QBR email notifications
+    if (mode === "qbr" && qbrNotifyType === "email") {
+      const invalid = qbrNotifyEmails.filter((e) => !e.toLowerCase().endsWith("@langchain.dev"));
+      if (invalid.length > 0) {
+        setCreateError(`QBR notifications can only go to @langchain.dev addresses: ${invalid.join(", ")}`);
+        return;
+      }
+    }
 
     setCreating(true);
     try {
@@ -624,7 +651,10 @@ export default function ScheduleModal({
         destination_type: mode,
         channel_id: mode === "slack" ? (selectedChannel ?? undefined) : undefined,
         email_addresses: mode === "email" ? emails : undefined,
-        sections: [...selectedSections],
+        qbr_notify_type: mode === "qbr" ? qbrNotifyType : undefined,
+        qbr_notify_channel_id: mode === "qbr" && qbrNotifyType === "slack" ? (qbrNotifyChannel ?? undefined) : undefined,
+        qbr_notify_emails: mode === "qbr" && qbrNotifyType === "email" ? qbrNotifyEmails : undefined,
+        sections: mode !== "qbr" ? [...selectedSections] : undefined,
         period,
         frequency,
         weekday,
@@ -746,11 +776,23 @@ export default function ScheduleModal({
                   <div className="space-y-1.5">
                     {schedules.map((s) => {
                       const addrs = s.email_addresses ?? [];
-                      const destLine = s.destination_type === "slack"
-                        ? `#${getChannelName(s.channel_id)}`
-                        : addrs.length === 0 ? "—"
-                        : addrs.length <= 2 ? addrs.join(", ")
-                        : `${addrs.slice(0, 2).join(", ")} +${addrs.length - 2} more`;
+                      let destLine: string;
+                      if (s.destination_type === "slack") {
+                        destLine = `#${getChannelName(s.channel_id)}`;
+                      } else if (s.destination_type === "qbr") {
+                        if (s.qbr_notify_type === "slack") {
+                          destLine = `Notify: #${getChannelName(s.qbr_notify_channel_id)}`;
+                        } else {
+                          const ne = s.qbr_notify_emails ?? [];
+                          destLine = ne.length === 0 ? "Notify: —"
+                            : ne.length <= 2 ? `Notify: ${ne.join(", ")}`
+                            : `Notify: ${ne.slice(0, 2).join(", ")} +${ne.length - 2} more`;
+                        }
+                      } else {
+                        destLine = addrs.length === 0 ? "—"
+                          : addrs.length <= 2 ? addrs.join(", ")
+                          : `${addrs.slice(0, 2).join(", ")} +${addrs.length - 2} more`;
+                      }
                       return (
                         <div
                           key={s.cron_id}
@@ -763,10 +805,14 @@ export default function ScheduleModal({
                               <span className="text-xs font-medium truncate" style={{ color: s.label ? "var(--text-primary)" : "var(--text-muted)", fontStyle: s.label ? "normal" : "italic" }}>
                                 {s.label || "Untitled"}
                               </span>
-                              {s.destination_type === "slack"
-                                ? <SlackIcon size={16} />
-                                : <Mail size={16} strokeWidth={1.75} style={{ color: "var(--accent)" }} />
-                              }
+                              {s.destination_type === "slack" && <SlackIcon size={16} />}
+                              {s.destination_type === "email" && <Mail size={16} strokeWidth={1.75} style={{ color: "var(--accent)" }} />}
+                              {s.destination_type === "qbr" && <>
+                                <Presentation size={16} strokeWidth={1.75} style={{ color: "var(--accent)" }} />
+                                {s.qbr_notify_type === "slack"
+                                  ? <SlackIcon size={14} />
+                                  : <Mail size={14} strokeWidth={1.75} style={{ color: "var(--accent)" }} />}
+                              </>}
                             </div>
                             <div className="flex items-center gap-0.5 flex-shrink-0">
                               <button
@@ -843,32 +889,64 @@ export default function ScheduleModal({
 
               {/* Destination */}
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Destination</label>
+                <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Schedule type</label>
                 <div className="flex rounded mb-2 p-0.5 gap-0.5" style={{ background: "var(--bg-primary)", border: "1px solid var(--border)" }}>
-                  {(["slack", "email"] as const).map((m) => (
+                  {(["slack", "email", "qbr"] as const).map((m) => (
                     <button
-                      key={m} type="button" onClick={() => setMode(m)}
+                      key={m} type="button"
+                      onClick={() => {
+                        setMode(m);
+                        if (m === "qbr") setFrequency("quarterly");
+                      }}
                       className="flex-1 flex items-center justify-center gap-1.5 text-xs rounded py-1 transition-colors"
                       style={{ background: mode === m ? "var(--accent)" : "transparent", color: mode === m ? "#fff" : "var(--text-muted)" }}
                     >
-                      {m === "slack"
-                        ? <SlackIcon size={12} />
-                        : <Mail size={11} strokeWidth={2} />}
-                      {m === "slack" ? "Slack" : "Email"}
+                      {m === "slack" ? <SlackIcon size={12} /> : m === "email" ? <Mail size={11} strokeWidth={2} /> : <Presentation size={11} strokeWidth={2} />}
+                      {m === "slack" ? "Slack" : m === "email" ? "Email" : "QBR Slides"}
                     </button>
                   ))}
                 </div>
-                {mode === "slack" ? (
+                {mode === "slack" && (
                   availableChannels.length > 0
                     ? <ChannelPicker channels={availableChannels} selected={selectedChannel} onSelect={setSelectedChannel} />
                     : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>
-                ) : (
+                )}
+                {mode === "email" && (
                   <EmailTagInput emails={emails} onChange={setEmails} />
+                )}
+                {mode === "qbr" && (
+                  <div className="space-y-2">
+                    <p className="text-xs italic" style={{ color: "var(--text-muted)" }}>
+                      Slides are generated and shared with the @langchain.dev domain. Choose how to be notified when ready.
+                    </p>
+                    <div className="flex rounded p-0.5 gap-0.5" style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)" }}>
+                      {(["slack", "email"] as const).map((t) => (
+                        <button
+                          key={t} type="button" onClick={() => setQbrNotifyType(t)}
+                          className="flex-1 flex items-center justify-center gap-1.5 text-xs rounded py-1 transition-colors"
+                          style={{ background: qbrNotifyType === t ? "var(--bg-secondary)" : "transparent", color: qbrNotifyType === t ? "var(--text-primary)" : "var(--text-muted)", border: qbrNotifyType === t ? "1px solid var(--border)" : "1px solid transparent" }}
+                        >
+                          {t === "slack" ? <SlackIcon size={11} /> : <Mail size={10} strokeWidth={2} />}
+                          {t === "slack" ? "Slack" : "Email"}
+                        </button>
+                      ))}
+                    </div>
+                    {qbrNotifyType === "slack" ? (
+                      availableChannels.length > 0
+                        ? <ChannelPicker channels={availableChannels} selected={qbrNotifyChannel} onSelect={setQbrNotifyChannel} />
+                        : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>
+                    ) : (
+                      <>
+                        <EmailTagInput emails={qbrNotifyEmails} onChange={setQbrNotifyEmails} placeholder="name@langchain.dev" />
+                        <p className="text-xs italic" style={{ color: "var(--text-muted)" }}>Only @langchain.dev addresses allowed.</p>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
 
-              {/* Period */}
-              <div>
+              {/* Period — not applicable for QBR (always current quarter) */}
+              {mode !== "qbr" && <div>
                 <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Report period</label>
                 <div className="flex gap-1 flex-wrap">
                   {PERIODS.map((p) => (
@@ -882,14 +960,14 @@ export default function ScheduleModal({
                     >{p.label}</button>
                   ))}
                 </div>
-              </div>
+              </div>}
 
               {/* Frequency */}
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Frequency</label>
                 <div className="flex gap-1">
-                  {(["weekly", "monthly", "quarterly"] as const).map((f) => (
-                    <button key={f} type="button" onClick={() => setFrequency(f)}
+                  {(mode === "qbr" ? ["monthly", "quarterly"] : ["weekly", "monthly", "quarterly"] as const).map((f) => (
+                    <button key={f} type="button" onClick={() => setFrequency(f as typeof frequency)}
                       className="text-xs rounded px-2.5 py-1 capitalize transition-colors"
                       style={{
                         background: frequency === f ? "var(--accent)" : "var(--bg-primary)",
@@ -995,8 +1073,8 @@ export default function ScheduleModal({
                 </div>
               </div>
 
-              {/* Sections */}
-              <div>
+              {/* Sections — not applicable for QBR */}
+              {mode !== "qbr" && <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs" style={{ color: "var(--text-muted)" }}>Sections</label>
                   <button
@@ -1031,7 +1109,7 @@ export default function ScheduleModal({
                     );
                   })}
                 </div>
-              </div>
+              </div>}
 
               {/* Error */}
               {createError && (

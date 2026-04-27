@@ -40,6 +40,7 @@ from main import (
     _build_metrics_blocks,
     _build_payload,
     _compute_csat,
+    _do_qbr_generation,
     _format_field_value,
     _normalise_issue,
 )
@@ -53,9 +54,13 @@ class ReportState(TypedDict):
     account_id: str
     account_name: str
     period: str                          # "7d" | "1m" | "3m" | "6m" | "1y"
-    destination_type: str                # "slack" | "email"
+    destination_type: str                # "slack" | "email" | "qbr"
     channel_id: Optional[str]           # Slack channel ID
     email_addresses: Optional[list[str]]
+    # QBR notification fields
+    qbr_notify_type: Optional[str]       # "slack" | "email"
+    qbr_notify_channel_id: Optional[str]
+    qbr_notify_emails: Optional[list[str]]
     sections: Optional[list[str]]        # None = all sections
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
@@ -269,6 +274,137 @@ async def send_report(state: ReportState) -> dict:
             "result": f"Sent to {', '.join(email_addresses)}",
             "error": None,
         }
+
+    # --- QBR Slides ---
+    elif destination_type == "qbr":
+        if not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+            return {"skipped": False, "result": None, "error": "QBR slides not configured (GOOGLE_SERVICE_ACCOUNT_JSON missing)"}
+
+        qbr_notify_type = state.get("qbr_notify_type")
+        qbr_notify_channel_id = state.get("qbr_notify_channel_id")
+        qbr_notify_emails = state.get("qbr_notify_emails") or []
+
+        try:
+            _pres_id, slide_url, month_label = await _do_qbr_generation(account_id, account_name)
+        except Exception as exc:
+            return {"skipped": False, "result": None, "error": f"QBR generation failed: {exc}"}
+
+        # Send notification with slide link
+        if qbr_notify_type == "slack":
+            slack_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+            if not slack_token:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": "SLACK_BOT_TOKEN not configured for notification"}
+            override_channel = os.environ.get("SLACK_OVERRIDE_CHANNEL", "").strip()
+            notify_channel = override_channel or qbr_notify_channel_id
+            if not notify_channel:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": "No Slack channel configured for QBR notification"}
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*QBR Slides ready — {account_name}*\n{month_label} · <{slide_url}|Open slides>"}},
+            ]
+            try:
+                await asyncio.to_thread(
+                    slack_client.post_message, slack_token, notify_channel,
+                    f"QBR Slides ready for {account_name}: {slide_url}", blocks,
+                )
+            except Exception as exc:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": f"Slack notification failed: {exc}"}
+            return {"skipped": False, "result": f"QBR slides generated and notification sent to #{notify_channel}: {slide_url}", "error": None}
+
+        elif qbr_notify_type == "email":
+            if not qbr_notify_emails:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": "No email addresses configured for QBR notification"}
+            smtp_host = os.environ.get("SMTP_HOST", "")
+            smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+            smtp_user = os.environ.get("SMTP_USER", "")
+            smtp_password = os.environ.get("SMTP_PASSWORD", "")
+            smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+            if not smtp_host or not smtp_user or not smtp_password:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": "SMTP not configured for QBR notification"}
+
+            banner_url = os.environ.get("REPORT_BANNER_URL") or None
+            logo_url   = os.environ.get("REPORT_LOGO_URL") or None
+            year       = date.today().year
+            logo_html  = (
+                f'<img src="{logo_url}" width="22" height="22" alt="LangChain" style="display:block;">'
+                if logo_url else
+                '<svg width="22" height="22" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">'
+                '<path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd"/>'
+                '<path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="#006ddd"/></svg>'
+            )
+            banner_html = (
+                f'<tr><td style="padding:0;"><img src="{banner_url}" alt="LangChain" width="660"'
+                f' style="display:block;width:100%;max-width:660px;height:auto;border:0;"></td></tr>'
+                if banner_url else ""
+            )
+            html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>QBR Slides ready: {account_name}</title></head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f8f7ff;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f8f7ff;">
+    <tr><td align="center">
+      <table border="0" cellpadding="0" cellspacing="0" width="660" style="max-width:660px;width:100%;background:#ffffff;">
+        {banner_html}
+        <tr>
+          <td style="padding:24px 28px;font-size:14px;line-height:1.5;color:#111827;">
+            <!-- Header -->
+            <table style="width:100%;border-collapse:collapse;padding-bottom:24px;border-bottom:2px solid #006ddd;margin-bottom:28px;">
+              <tr>
+                <td style="vertical-align:middle;padding-bottom:20px;">
+                  <table style="border-collapse:collapse;margin-bottom:10px;">
+                    <tr>
+                      <td style="vertical-align:middle;padding-right:8px;">{logo_html}</td>
+                      <td style="vertical-align:middle;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#006ddd;">QBR Slides</td>
+                    </tr>
+                  </table>
+                  <div style="font-size:24px;font-weight:700;color:#111827;line-height:1.2;">{account_name}</div>
+                  <div style="font-size:13px;color:#6b7280;margin-top:4px;">{month_label}</div>
+                </td>
+              </tr>
+            </table>
+            <!-- Body -->
+            <p style="font-size:14px;color:#374151;margin:0 0 24px;">Your QBR slides are ready. Click below to open them in Google Slides.</p>
+            <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+              <tr>
+                <td style="border-radius:6px;background:#006ddd;">
+                  <a href="{slide_url}" style="display:inline-block;padding:10px 22px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:6px;">Open slides &rarr;</a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr><td style="padding:10px 20px;"><hr style="border:0;border-top:2px solid #000;"></td></tr>
+        <tr>
+          <td align="center" style="padding:10px;font-size:12px;background-color:#f8f7ff;color:#333;">
+            <em>Copyright &copy; {year} LangChain. All rights reserved.</em>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+            def _send_qbr_email():
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"QBR Slides ready: {account_name} — {month_label}"
+                msg["From"] = smtp_from
+                msg["To"] = ", ".join(qbr_notify_emails)
+                msg["X-PM-Message-Stream"] = "support-highlights"
+                msg.attach(MIMEText(html, "html"))
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                    server.sendmail(smtp_from, qbr_notify_emails, msg.as_string())
+
+            try:
+                await asyncio.to_thread(_send_qbr_email)
+            except Exception as exc:
+                return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": f"Email notification failed: {exc}"}
+            return {"skipped": False, "result": f"QBR slides generated and notification sent to {', '.join(qbr_notify_emails)}: {slide_url}", "error": None}
+
+        # No notification configured — slides generated, no notification sent
+        return {"skipped": False, "result": f"QBR slides generated: {slide_url}", "error": None}
 
     return {"skipped": False, "result": None, "error": f"Unknown destination type: {destination_type}"}
 

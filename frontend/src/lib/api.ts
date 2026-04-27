@@ -144,9 +144,12 @@ export interface Schedule {
   account_id: string;
   account_name: string;
   label: string;
-  destination_type: "slack" | "email";
+  destination_type: "slack" | "email" | "qbr";
   channel_id: string | null;
   email_addresses: string[] | null;
+  qbr_notify_type: "slack" | "email" | null;
+  qbr_notify_channel_id: string | null;
+  qbr_notify_emails: string[] | null;
   sections: string[] | null;
   period: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -166,9 +169,12 @@ export interface CreateScheduleRequest {
   account_id: string;
   account_name: string;
   label: string;
-  destination_type: "slack" | "email";
+  destination_type: "slack" | "email" | "qbr";
   channel_id?: string;
   email_addresses?: string[];
+  qbr_notify_type?: "slack" | "email";
+  qbr_notify_channel_id?: string;
+  qbr_notify_emails?: string[];
   sections?: string[];
   period: string;
   frequency: "weekly" | "monthly" | "quarterly";

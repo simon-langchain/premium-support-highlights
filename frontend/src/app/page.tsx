@@ -13,6 +13,7 @@ import {
   fetchCachedTicketSummaries,
   fetchTiers,
   fetchQbrHistory,
+  fetchSchedules,
   generateSummary,
   shareQbrSlide,
   streamQbrSlides,
@@ -151,7 +152,9 @@ export default function Home() {
   const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
   const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleOpenToNewQbr, setScheduleOpenToNewQbr] = useState(false);
   const [qbrOpen, setQbrOpen] = useState(false);
+  const [qbrScheduleCount, setQbrScheduleCount] = useState<number | null>(null);
   const [qbrHistory, setQbrHistory] = useState<QbrHistoryEntry[] | null>(null);
   const [qbrHistoryLoading, setQbrHistoryLoading] = useState(false);
   const [qbrGenerating, setQbrGenerating] = useState(false);
@@ -392,6 +395,7 @@ export default function Home() {
     setQbrSteps({});
     setQbrError(null);
     setQbrHistory(null);
+    setQbrScheduleCount(null);
     window.history.replaceState(null, "", `/?account=${toSlug(account.name)}`);
   }
 
@@ -616,6 +620,11 @@ export default function Home() {
                             .catch(() => setQbrHistory([]))
                             .finally(() => setQbrHistoryLoading(false));
                         }
+                        if (qbrScheduleCount === null) {
+                          fetchSchedules(selectedAccount.id)
+                            .then(ss => setQbrScheduleCount(ss.filter(s => s.destination_type === "qbr").length))
+                            .catch(() => setQbrScheduleCount(0));
+                        }
                       }}
                       disabled={!selectedAccount}
                       style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -664,6 +673,28 @@ export default function Home() {
 
                         {qbrError && (
                           <div className="text-xs mb-3" style={{ color: "#ef4444" }}>{qbrError}</div>
+                        )}
+
+                        {/* QBR schedule indicator */}
+                        {qbrScheduleCount !== null && (
+                          <div
+                            className="flex items-center justify-between mb-3 px-2 py-1.5 rounded cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
+                            style={{ border: "1px solid var(--border)" }}
+                            onClick={() => {
+                              setQbrOpen(false);
+                              setScheduleOpenToNewQbr(qbrScheduleCount === 0);
+                              setScheduleOpen(true);
+                            }}
+                          >
+                            <span className="text-xs italic" style={{ color: "var(--text-muted)" }}>
+                              {qbrScheduleCount === 0
+                                ? "No active QBR schedules"
+                                : `${qbrScheduleCount} active QBR schedule${qbrScheduleCount > 1 ? "s" : ""}`}
+                            </span>
+                            <span className="text-xs font-medium" style={{ color: "var(--accent)" }}>
+                              {qbrScheduleCount === 0 ? "Set up" : "View"} →
+                            </span>
+                          </div>
                         )}
 
                         {/* Month history list — hidden while generating */}
@@ -957,7 +988,8 @@ export default function Home() {
           defaultPeriod={period}
           channelId={slackChannelId}
           availableChannels={slackAvailableChannels}
-          onClose={() => setScheduleOpen(false)}
+          openToNewQbr={scheduleOpenToNewQbr}
+          onClose={() => { setScheduleOpen(false); setScheduleOpenToNewQbr(false); }}
         />
       )}
     </div>

@@ -768,6 +768,25 @@ def share_presentation(pres_id: str, user_email: str) -> None:
             raise
 
 
+def share_with_domain(pres_id: str, domain: str = "langchain.dev") -> None:
+    """Grant everyone in the domain reader access to the presentation.
+
+    Used when slides are generated via a schedule so any @langchain.dev team
+    member who receives the link can open it without needing individual sharing.
+    """
+    drive, _ = _services()
+    try:
+        drive.permissions().create(
+            fileId=pres_id,
+            supportsAllDrives=True,
+            sendNotificationEmail=False,
+            body={"type": "domain", "role": "reader", "domain": domain},
+        ).execute()
+    except Exception as exc:
+        if "already exists" not in str(exc).lower():
+            raise
+
+
 # Object IDs of the 5 indicator dots, left to right.
 _DOT_IDS = [          # slide 1 — health score
     "g3e618779947_0_12",

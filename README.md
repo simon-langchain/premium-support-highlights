@@ -19,6 +19,7 @@ An internal dashboard for the LangChain support team that surfaces monthly metri
 - **Downloads** — export as a PDF or CSV with the same section selector as Share (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all on by default); Account Summary is not available in CSV
 - **QBR slides** — generate a Google Slides QBR deck for any account from the "QBR Slides" button; AI selects up to 3 relevant roadmap items (from the last 4 months of roadmap presentations) matched against open feature requests, inserts them with screenshots into a template slide deck, and opens the result in Google Slides; previously generated decks are accessible from a 6-month history panel; the current month can be regenerated (with confirmation) at any time
 - **Scheduled reports** — schedule recurring Slack or email reports from the "Schedule" button; supports weekly, monthly (nth weekday of the month), and quarterly (nth weekday of a specific month within the quarter) cadences; time is specified in any IANA timezone with DST handled natively by LangGraph Platform; schedules persist in LangGraph Platform's Postgres database and survive redeployments
+- **Scheduled QBR slides** — schedule recurring QBR slide generation from the same "Schedule" menu (QBR destination type); monthly or quarterly cadence; when generated, the deck is shared with the whole langchain.dev domain and a notification is sent to a configured Slack channel or @langchain.dev email address; active QBR schedules are indicated in the QBR Slides popover
 - **Dark / light theme** — toggled from the Settings menu in the sidebar
 - **Deep links** — every account view has a shareable URL (`/?account=adobe`, `/?account=dicks-sporting-goods`); unauthenticated deep links redirect to login and land back on the original page after sign-in
 
@@ -71,6 +72,8 @@ Copy `.env.example` to `.env` and fill in the required values.
 | `SLACK_SIGNING_SECRET` | No | Verifies interactive button callbacks from Slack |
 | `SLACK_OVERRIDE_CHANNEL` | No | Redirect all Slack posts to this channel ID (testing) |
 | `LANGGRAPH_API_URL` | No | LangGraph API base URL for schedule CRUD (defaults to `http://localhost:8000`; leave unset in LSD) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes (QBR slides) | Service account JSON for Google Drive/Slides access |
+| `QBR_SHARED_DRIVE_ID` | No | Shared Drive ID to store QBR decks (uses My Drive if unset) |
 
 ---
 
