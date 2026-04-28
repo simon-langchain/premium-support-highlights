@@ -118,19 +118,20 @@ def compute_period_metrics(issues: list[dict], period: str) -> list[dict]:
 
 
 def compute_avg_response_time(issues: list[dict]) -> float | None:
-    """Compute average first-response time in hours from issue data.
+    """Compute average first-response time in business hours from issue data.
 
-    Uses the `first_response_seconds` field returned directly by Pylon for all
-    issues that have received a response.
+    Uses Pylon's `business_hours_first_response_seconds` field (Mon–Fri 9–5
+    in the account's configured timezone) for all issues that have received
+    a response.
 
     Returns:
-        Average response time in hours, or None if no data is available.
+        Average response time in business hours, or None if no data is available.
     """
     total_seconds = 0.0
     count = 0
 
     for issue in issues:
-        seconds = issue.get("first_response_seconds")
+        seconds = issue.get("business_hours_first_response_seconds")
         if seconds is None:
             continue
         try:
@@ -148,7 +149,7 @@ def compute_avg_response_time(issues: list[dict]) -> float | None:
 
 
 def compute_sla_compliance(issues: list[dict], threshold_hours: float = 24.0) -> int | None:
-    """Percentage of issues with first_response_seconds within threshold_hours.
+    """Percentage of issues with business_hours_first_response_seconds within threshold_hours.
 
     Returns an integer 0-100, or None if no issues have response time data.
     """
@@ -156,7 +157,7 @@ def compute_sla_compliance(issues: list[dict], threshold_hours: float = 24.0) ->
     total = 0
     within = 0
     for issue in issues:
-        seconds = issue.get("first_response_seconds")
+        seconds = issue.get("business_hours_first_response_seconds")
         if seconds is None:
             continue
         try:

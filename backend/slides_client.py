@@ -87,6 +87,7 @@ def _parse_dt_local(s: str | None) -> datetime | None:
         return None
 
 
+
 def _format_duration(hours: float) -> str:
     if hours < 1:
         return f"{round(hours * 60)}m"
@@ -155,7 +156,7 @@ def _generate_metrics_chart(
 
     resp_hrs: list[float] = []
     for i in quarter_issues:
-        s = i.get("first_response_seconds")
+        s = i.get("business_hours_first_response_seconds")
         if s is None:
             continue
         try:
@@ -169,10 +170,15 @@ def _generate_metrics_chart(
     for i in quarter_issues:
         if i.get("state") not in {"closed", "resolved"}:
             continue
-        created = _parse_dt_local(i.get("created_at"))
-        updated = _parse_dt_local(i.get("updated_at"))
-        if created and updated and updated > created:
-            res_hrs.append((updated - created).total_seconds() / 3600)
+        s = i.get("business_hours_resolution_seconds")
+        if s is None:
+            continue
+        try:
+            s = float(s)
+        except (TypeError, ValueError):
+            continue
+        if s > 0:
+            res_hrs.append(s / 3600)
 
     # Monthly chart buckets: chart_start_iso → now (spans last + current quarter)
     from calendar import month_abbr as _month_abbr
@@ -203,7 +209,7 @@ def _generate_metrics_chart(
         idx = bucket_idx.get((created.year, created.month))
         if idx is None:
             continue
-        s = issue.get("first_response_seconds")
+        s = issue.get("business_hours_first_response_seconds")
         if s is not None:
             try:
                 s = float(s)
@@ -212,9 +218,14 @@ def _generate_metrics_chart(
             except (TypeError, ValueError):
                 pass
         if issue.get("state") in {"closed", "resolved"}:
-            updated = _parse_dt_local(issue.get("updated_at"))
-            if updated and updated > created:
-                monthly_res[idx].append((updated - created).total_seconds() / 3600)
+            s = issue.get("business_hours_resolution_seconds")
+            if s is not None:
+                try:
+                    s = float(s)
+                    if s > 0:
+                        monthly_res[idx].append(s / 3600)
+                except (TypeError, ValueError):
+                    pass
 
     monthly_resp_med = [_percentile(w, 50) for w in monthly_resp]
     monthly_res_med = [_percentile(w, 50) for w in monthly_res]
