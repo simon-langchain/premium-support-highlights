@@ -174,6 +174,38 @@ def compute_sla_compliance(issues: list[dict], threshold_hours: float = 24.0) ->
     return round(within / total * 100)
 
 
+def compute_avg_resolution_time(issues: list[dict]) -> float | None:
+    """Compute average resolution time in business hours from closed issue data.
+
+    Uses Pylon's `business_hours_resolution_seconds` field for all closed/resolved
+    issues that have a resolution time recorded.
+
+    Returns:
+        Average resolution time in business hours, or None if no data is available.
+    """
+    total_seconds = 0.0
+    count = 0
+
+    for issue in issues:
+        if issue.get("state") not in {"closed", "resolved"}:
+            continue
+        seconds = issue.get("business_hours_resolution_seconds")
+        if seconds is None:
+            continue
+        try:
+            s = float(seconds)
+        except (TypeError, ValueError):
+            continue
+        if s <= 0:
+            continue
+        total_seconds += s
+        count += 1
+
+    if count == 0:
+        return None
+    return (total_seconds / count) / 3600
+
+
 def get_priority(issue: dict) -> str:
     """Extract priority string from a Pylon issue dict.
 

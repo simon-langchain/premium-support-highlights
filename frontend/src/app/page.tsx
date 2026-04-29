@@ -86,6 +86,16 @@ const PERIOD_LABELS: Record<string, string> = {
   "7d": "7d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1yr",
 };
 
+function formatResolutionTime(hours: number): string {
+  const weeks = Math.floor(hours / 40);
+  const afterWeeks = hours - weeks * 40;
+  const days = Math.floor(afterWeeks / 8);
+  const remainingHours = Math.round(afterWeeks - days * 8);
+  if (weeks > 0) return days > 0 ? `${weeks}w ${days}d` : `${weeks}w`;
+  if (days > 0) return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+  return `${remainingHours}h`;
+}
+
 function sortIssues(issues: Issue[], sortBy: string, sortOrder: "asc" | "desc"): Issue[] {
   const dir = sortOrder === "desc" ? -1 : 1;
   return [...issues].sort((a, b) => {
@@ -781,22 +791,35 @@ export default function Home() {
             ) : accountData ? (
               <>
                 {/* Metric cards */}
-                <div className={`grid grid-cols-2 gap-3 mb-5 ${accountData.csat !== null ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
-                  <MetricCard label="Open Issues" value={accountData.open_issues.length} />
-                  <MetricCard label={`Tickets Raised (${PERIOD_LABELS[period] ?? period})`} value={totalRaised} />
-                  <MetricCard label={`Tickets Closed (${PERIOD_LABELS[period] ?? period})`} value={totalClosed} />
-                  <MetricCard
-                    label="Avg Response"
-                    value={accountData.avg_response_time !== null ? accountData.avg_response_time.toFixed(1) : null}
-                    unit="hrs"
-                  />
-                  {accountData.csat !== null && (
+                <div className="flex flex-col gap-3 mb-5">
+                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                    <MetricCard label="Open Issues (Current)" value={accountData.open_issues.length} />
+                    <MetricCard label={`Tickets Raised (${PERIOD_LABELS[period] ?? period})`} value={totalRaised} />
+                    <MetricCard label={`Tickets Closed (${PERIOD_LABELS[period] ?? period})`} value={totalClosed} />
+                  </div>
+                  <div className={`grid grid-cols-2 gap-3 ${accountData.csat !== null ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
                     <MetricCard
-                      label="CSAT"
-                      value={accountData.csat % 1 === 0 ? String(accountData.csat) : accountData.csat.toFixed(1)}
-                      unit="/ 5"
+                      label={`Avg Time to First Response (${PERIOD_LABELS[period] ?? period})`}
+                      value={accountData.avg_response_time !== null ? accountData.avg_response_time.toFixed(1) : null}
+                      unit="hrs"
                     />
-                  )}
+                    <MetricCard
+                      label={`Avg Resolution Time (${PERIOD_LABELS[period] ?? period})`}
+                      value={accountData.avg_resolution_time !== null ? formatResolutionTime(accountData.avg_resolution_time) : null}
+                    />
+                    <MetricCard
+                      label={`SLA Compliance (${PERIOD_LABELS[period] ?? period})`}
+                      value={accountData.sla_compliance_pct !== null ? String(accountData.sla_compliance_pct) : null}
+                      unit="%"
+                    />
+                    {accountData.csat !== null && (
+                      <MetricCard
+                        label="CSAT"
+                        value={accountData.csat % 1 === 0 ? String(accountData.csat) : accountData.csat.toFixed(1)}
+                        unit="/ 5"
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {/* Trend chart */}

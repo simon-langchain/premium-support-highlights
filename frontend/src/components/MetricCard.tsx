@@ -3,15 +3,16 @@ interface MetricCardProps {
   value: string | number | null;
   delta?: number;
   unit?: string;
+  sub?: string;
 }
 
-export default function MetricCard({ label, value, delta, unit }: MetricCardProps) {
+export default function MetricCard({ label, value, delta, unit, sub }: MetricCardProps) {
   const displayValue = value === null || value === undefined ? "—" : value;
 
   return (
     <div
       style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
-      className="rounded-lg px-4 py-4"
+      className="rounded-lg px-4 py-4 flex flex-col items-center text-center"
     >
       <p style={{ color: "var(--text-muted)" }} className="text-xs uppercase tracking-wider font-medium mb-2">
         {label}
@@ -24,6 +25,9 @@ export default function MetricCard({ label, value, delta, unit }: MetricCardProp
           <span style={{ color: "var(--text-muted)" }} className="text-sm mb-0.5">{unit}</span>
         )}
       </div>
+      {sub && (
+        <p style={{ color: "var(--text-muted)" }} className="text-xs mt-1.5">{sub}</p>
+      )}
       {delta !== undefined && (
         <p
           className={`text-xs mt-1.5 font-medium ${

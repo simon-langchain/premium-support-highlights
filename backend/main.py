@@ -403,10 +403,13 @@ def _build_payload(
 ) -> dict:
     """Compute the full API payload from raw Pylon data."""
     disposition_bd_raw = metrics_mod.get_disposition_breakdown(open_issues)
+    _sla_compliance = metrics_mod.compute_sla_compliance(period_issues)
     return {
         "open_issues": [_normalise_issue(i, field_labels, account_id) for i in open_issues],
         "monthly_metrics": metrics_mod.compute_period_metrics(period_issues, period),
         "avg_response_time": metrics_mod.compute_avg_response_time(period_issues),
+        "avg_resolution_time": metrics_mod.compute_avg_resolution_time(period_issues),
+        "sla_compliance_pct": _sla_compliance,
         "csat": _compute_csat(csat_responses),
         "priority_breakdown": metrics_mod.get_priority_breakdown(open_issues),
         "state_breakdown": metrics_mod.get_state_breakdown(open_issues),
@@ -965,6 +968,8 @@ def _build_metrics_blocks(
     total_raised = sum(m["tickets_raised"] for m in payload["monthly_metrics"])
     total_closed = sum(m["closed_tickets"] for m in payload["monthly_metrics"])
     avg_rt: float | None = payload.get("avg_response_time")
+    avg_res: float | None = payload.get("avg_resolution_time")
+    sla_pct: int | None = payload.get("sla_compliance_pct")
     csat: float | None = payload.get("csat")
 
     # Priority breakdown as a compact string, e.g. "Sev 1: 2  Sev 2: 5  Sev 3: 3"
@@ -975,14 +980,27 @@ def _build_metrics_blocks(
         for p in _p_order if priority_bd.get(p, 0) > 0
     ]
 
+    def _fmt_res(h: float) -> str:
+        weeks = int(h // 40)
+        after = h - weeks * 40
+        days = int(after // 8)
+        hrs = round(after - days * 8)
+        if weeks > 0:
+            return f"{weeks}w {days}d" if days > 0 else f"{weeks}w"
+        if days > 0:
+            return f"{days}d {hrs}h" if hrs > 0 else f"{days}d"
+        return f"{hrs}h"
+
     fields = [
-        _field("Current Open Issues", str(open_count)),
+        _field("Open Issues (Current)", str(open_count)),
         _field(f"Raised ({period_label})", str(total_raised)),
         _field(f"Closed ({period_label})", str(total_closed)),
-        _field("Avg Response", f"{avg_rt:.1f} hrs" if avg_rt is not None else "—"),
+        _field(f"Avg Time to First Response ({period_label})", f"{avg_rt:.1f} hrs" if avg_rt is not None else "—"),
+        _field(f"Avg Resolution Time ({period_label})", _fmt_res(avg_res) if avg_res is not None else "—"),
+        _field(f"SLA Compliance ({period_label})", f"{sla_pct}%" if sla_pct is not None else "—"),
     ]
     if csat is not None:
-        fields.append(_field("CSAT", f"{_fmt_csat(csat)} / 5"))
+        fields.append(_field(f"CSAT ({period_label})", f"{_fmt_csat(csat)} / 5"))
 
     blocks: list[dict] = [
         {

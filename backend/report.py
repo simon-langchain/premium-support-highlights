@@ -96,15 +96,28 @@ def _state_badge(state: str, account_name: str = "") -> str:
     return _badge(label, bg, color)
 
 
-def _metric_card(label: str, value: str, sub: str = "") -> str:
+def _fmt_resolution(hours: float) -> str:
+    weeks = int(hours // 40)
+    after_weeks = hours - weeks * 40
+    days = int(after_weeks // 8)
+    remaining_hours = round(after_weeks - days * 8)
+    if weeks > 0:
+        return f"{weeks}w {days}d" if days > 0 else f"{weeks}w"
+    if days > 0:
+        return f"{days}d {remaining_hours}h" if remaining_hours > 0 else f"{days}d"
+    return f"{remaining_hours}h"
+
+
+def _metric_card(label: str, value: str, sub: str = "", unit: str = "") -> str:
     sub_html = f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{_e(sub)}</div>' if sub else ""
+    unit_html = f'<span style="font-size:14px;font-weight:400;color:#6b7280;margin-left:3px;">{_e(unit)}</span>' if unit else ""
     return f"""
-    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px;">
-      <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;
+    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;">
+      <div style="font-size:10px;font-weight:600;letter-spacing:0.05em;
                   text-transform:uppercase;color:#6b7280;margin-bottom:6px;">
         {_e(label)}
       </div>
-      <div style="font-size:26px;font-weight:700;color:#111827;">{_e(value)}</div>
+      <div style="font-size:24px;font-weight:700;color:#111827;white-space:nowrap;">{_e(value)}{unit_html}</div>
       {sub_html}
     </div>"""
 
@@ -131,47 +144,41 @@ def _days_open(created_at: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
-    open_count   = len(payload.get("open_issues", []))
-    monthly      = payload.get("monthly_metrics", [])
-    total_raised = sum(m["tickets_raised"] for m in monthly)
-    total_closed = sum(m["closed_tickets"] for m in monthly)
-    avg_rt       = payload.get("avg_response_time")
-    csat         = payload.get("csat")
+    open_count    = len(payload.get("open_issues", []))
+    monthly       = payload.get("monthly_metrics", [])
+    total_raised  = sum(m["tickets_raised"] for m in monthly)
+    total_closed  = sum(m["closed_tickets"] for m in monthly)
+    avg_rt        = payload.get("avg_response_time")
+    avg_res       = payload.get("avg_resolution_time")
+    sla_pct       = payload.get("sla_compliance_pct")
+    csat          = payload.get("csat")
 
-    card_open   = _metric_card("Open Issues", str(open_count))
-    card_raised = _metric_card("Tickets Raised", str(total_raised), period_label)
-    card_closed = _metric_card("Tickets Closed", str(total_closed), period_label)
-    card_rt     = _metric_card("Avg Response Time", f"{avg_rt:.1f} hrs") if avg_rt is not None else None
-    card_csat   = _metric_card("CSAT", f"{int(csat) if csat == int(csat) else f'{csat:.1f}'} / 5") if csat is not None else None
+    card_open    = _metric_card("Open Issues", str(open_count), "Current")
+    card_raised  = _metric_card("Tickets Raised", str(total_raised), period_label)
+    card_closed  = _metric_card("Tickets Closed", str(total_closed), period_label)
+    card_rt      = _metric_card("Avg Time to First Response", f"{avg_rt:.1f} hrs", period_label) if avg_rt is not None else None
+    card_res     = _metric_card("Avg Resolution Time", _fmt_resolution(avg_res), period_label) if avg_res is not None else None
+    card_sla     = _metric_card("SLA Compliance", f"{sla_pct}%", period_label) if sla_pct is not None else None
+    card_csat    = _metric_card("CSAT", f"{int(csat) if csat == int(csat) else f'{csat:.1f}'}", period_label, "/ 5") if csat is not None else None
 
-    if max_cols == 2 and card_rt is not None:
-        # Row 1: Open Issues | Avg Response Time
-        # Row 2: Tickets Raised | Tickets Closed
-        cards = [card_open, card_rt, card_raised, card_closed]
-    else:
-        cards = [card_open, card_raised, card_closed]
-        if card_rt is not None:
-            cards.append(card_rt)
-    if card_csat is not None:
-        cards.append(card_csat)
+    # Top row: always the three volume metrics
+    top_row = [card_open, card_raised, card_closed]
+    # Bottom row: timing/SLA metrics + optional CSAT
+    bottom_row = [c for c in [card_rt, card_res, card_sla, card_csat] if c is not None]
 
-    cols = min(len(cards), max_cols)
-    pct = f"{100 // cols}%"
-
-    # Split cards into rows of `cols`
-    rows_html = ""
-    for i in range(0, len(cards), cols):
-        row_cards = cards[i:i + cols]
-        # Pad the last row so columns stay consistent width
-        while len(row_cards) < cols:
-            row_cards.append('<div style="border:1px solid transparent;border-radius:8px;padding:16px 20px;"></div>')
+    def _render_row(cards: list[str]) -> str:
+        cols = len(cards)
+        pct = f"{100 // cols}%"
         cells = "".join(
             f'<td style="width:{pct};padding:6px;vertical-align:top;">{card}</td>'
-            for card in row_cards
+            for card in cards
         )
-        rows_html += f"<tr>{cells}</tr>"
+        return f'<table style="width:100%;border-collapse:collapse;"><tr>{cells}</tr></table>'
 
-    return f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
+    html = _render_row(top_row)
+    if bottom_row:
+        html += f'<div style="height:6px;"></div>{_render_row(bottom_row)}'
+    return html
 
 
 def _render_trend(monthly: list[dict]) -> str:

@@ -53,14 +53,20 @@ export function downloadCsv(
 
   if (secs.has("key_metrics")) {
     rows.push("KEY METRICS");
-    rows.push(`Open Issues,${data.open_issues.length}`);
+    rows.push(`Open Issues (Current),${data.open_issues.length}`);
     rows.push(`Tickets Raised (${periodLabel}),${totalRaised}`);
     rows.push(`Tickets Closed (${periodLabel}),${totalClosed}`);
     if (data.avg_response_time !== null) {
-      rows.push(`Avg Response Time (hrs),${data.avg_response_time.toFixed(1)}`);
+      rows.push(`Avg Time to First Response (${periodLabel}) hrs,${data.avg_response_time.toFixed(1)}`);
+    }
+    if (data.avg_resolution_time !== null) {
+      rows.push(`Avg Resolution Time (${periodLabel}) hrs,${data.avg_resolution_time.toFixed(1)}`);
+    }
+    if (data.sla_compliance_pct !== null) {
+      rows.push(`SLA Compliance (${periodLabel}),${data.sla_compliance_pct}%`);
     }
     if (data.csat !== null) {
-      rows.push(`CSAT,${data.csat % 1 === 0 ? data.csat : data.csat.toFixed(1)}`);
+      rows.push(`CSAT (${periodLabel}),${data.csat % 1 === 0 ? data.csat : data.csat.toFixed(1)}`);
     }
     rows.push("");
   }

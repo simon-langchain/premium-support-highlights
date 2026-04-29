@@ -31,6 +31,8 @@ export interface AccountData {
   open_issues: Issue[];
   monthly_metrics: MonthlyMetric[];
   avg_response_time: number | null;
+  avg_resolution_time: number | null;
+  sla_compliance_pct: number | null;
   csat: number | null;
   priority_breakdown: Record<string, number>;
   state_breakdown: Record<string, number>;
