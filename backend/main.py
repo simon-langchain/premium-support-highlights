@@ -642,6 +642,7 @@ async def get_account_data(
     account_id: str,
     account_name: str = Query(...),
     period: str = Query("6m"),
+    force: bool = Query(False),
     _email: str = Depends(require_auth),
 ):
     """Fetch issues and compute all metrics for an account."""
@@ -649,12 +650,27 @@ async def get_account_data(
         period = "6m"
 
     payload_key = f"payload:{account_id}:{period}"
-    if (payload := _cache_get(payload_key)) is not None:
-        return payload
+    raw_key = f"raw:{account_id}:{period}"
 
+    if not force:
+        # 1. In-memory cache (hot path — same process, sub-5-min)
+        if (payload := _cache_get(payload_key)) is not None:
+            return payload
+
+        # 2. Disk cache (cold start / post-redeployment path)
+        if (payload := await asyncio.to_thread(cache_mod.get_payload_cache, account_id, period)) is not None:
+            _cache_set(payload_key, payload)
+            return payload
+    else:
+        # Force refresh: evict both in-memory caches so _fetch_raw_data also hits Pylon
+        _data_cache.pop(payload_key, None)
+        _data_cache.pop(raw_key, None)
+
+    # Fresh fetch from Pylon
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     _cache_set(payload_key, payload)
+    await asyncio.to_thread(cache_mod.set_payload_cache, account_id, period, payload)
     await asyncio.to_thread(audit.log, "account_loaded", {"account_id": account_id, "account_name": account_name})
     return payload
 

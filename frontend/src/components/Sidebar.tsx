@@ -13,6 +13,7 @@ interface SidebarProps {
   selected: Account | null;
   onSelect: (account: Account) => void;
   onRefresh: () => void;
+  dataUpdatedAt: Date | null;
   selectedModel: string;
   onModelChange: (model: string) => void;
   period: string;
@@ -59,6 +60,7 @@ export default function Sidebar({
   selected,
   onSelect,
   onRefresh,
+  dataUpdatedAt,
   selectedModel,
   onModelChange,
   period,
@@ -186,6 +188,11 @@ export default function Sidebar({
                 <RefreshCw size={14} />
                 Refresh Data
               </button>
+              {dataUpdatedAt && (
+                <p className="text-xs mt-1.5 pl-0.5" style={{ color: "var(--text-muted)" }}>
+                  Updated {dataUpdatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}
+                </p>
+              )}
             </div>
 
             <div className="flex-1" />

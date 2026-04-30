@@ -86,6 +86,31 @@ def set_account_summary(account_id: str, period: str, summary: str) -> None:
     _save(cache)
 
 
+PAYLOAD_MAX_AGE_SECONDS = 8 * 3600  # 8 hours — matches session expiry
+
+
+def get_payload_cache(account_id: str, period: str) -> dict | None:
+    """Return the cached computed payload for an account, or None if missing or stale."""
+    key = f"payload:{account_id}:{period}"
+    entry = _load().get(key)
+    if not isinstance(entry, dict):
+        return None
+    if _is_stale(entry, PAYLOAD_MAX_AGE_SECONDS):
+        return None
+    return entry.get("payload")
+
+
+def set_payload_cache(account_id: str, period: str, payload: dict) -> None:
+    """Persist the computed account payload to disk so it survives restarts."""
+    cache = _load()
+    key = f"payload:{account_id}:{period}"
+    cache[key] = {
+        "payload": payload,
+        "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(cache)
+
+
 def get_qbr_slide(account_id: str, year_month: str) -> dict | None:
     """Return cached QBR slide info {url, pres_id, created_at, month_label}, or None."""
     key = f"qbr:{account_id}:{year_month}"

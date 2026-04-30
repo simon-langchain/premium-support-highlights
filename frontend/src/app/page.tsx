@@ -143,6 +143,7 @@ export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [accountData, setAccountData] = useState<AccountData | null>(null);
+  const [dataUpdatedAt, setDataUpdatedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -152,7 +153,6 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("priority");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [selectedStates, setSelectedStates] = useState<string[]>(OPEN_STATES);
-  const [forceRefresh, setForceRefresh] = useState(0);
   const [ticketSummaries, setTicketSummaries] = useState<Record<number, TicketSummary | null>>({});
   const [accountSummary, setAccountSummary] = useState<string | null>(null);
   const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<Date | null>(null);
@@ -319,7 +319,7 @@ export default function Home() {
 
   // Load account data when selection changes or refresh is triggered
   const loadAccountData = useCallback(
-    (account: Account) => {
+    (account: Account, force = false) => {
       summaryAbortRef.current?.abort();
       const abortCtrl = new AbortController();
       summaryAbortRef.current = abortCtrl;
@@ -327,14 +327,16 @@ export default function Home() {
       setLoading(true);
       setError(null);
       setAccountData(null);
+      setDataUpdatedAt(null);
       setTicketSummaries({});
       setAccountSummary(null);
       setSummaryLoading(false);
       setSummaryError(null);
 
-      fetchAccountData(account.id, account.name, period)
+      fetchAccountData(account.id, account.name, period, force)
         .then((data) => {
           setAccountData(data);
+          setDataUpdatedAt(new Date());
           const openNumbers = data.open_issues.map((i) => i.number);
 
           // Initialise all tickets as loading (null), then immediately show
@@ -365,7 +367,7 @@ export default function Home() {
       return () => abortCtrl.abort();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [forceRefresh, period, runSummaryPipeline]
+    [period, runSummaryPipeline]
   );
 
   useEffect(() => {
@@ -392,7 +394,7 @@ export default function Home() {
   }, [selectedAccount]);
 
   function handleRefresh() {
-    setForceRefresh((n) => n + 1);
+    if (selectedAccount) loadAccountData(selectedAccount, true);
   }
 
   function handleAccountSelect(account: Account) {
@@ -560,6 +562,7 @@ export default function Home() {
         selected={selectedAccount}
         onSelect={handleAccountSelect}
         onRefresh={handleRefresh}
+        dataUpdatedAt={dataUpdatedAt}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
         period={period}

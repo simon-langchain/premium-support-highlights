@@ -69,9 +69,11 @@ export async function fetchAccounts(tier: string = "Premium"): Promise<Account[]
 export async function fetchAccountData(
   accountId: string,
   accountName: string,
-  period: string = "6m"
+  period: string = "6m",
+  force = false,
 ): Promise<AccountData> {
   const params = new URLSearchParams({ account_name: accountName, period });
+  if (force) params.set("force", "true");
   const res = await fetch(`/api/accounts/${accountId}/data?${params}`);
   if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
   if (!res.ok) {
