@@ -1,14 +1,18 @@
-"""Google Slides client for generating QBR support slide decks.
+"""Google Slides client for generating QBR slide decks.
 
-Copies a fixed template presentation, populates it with live Pylon data via
-replaceAllText, shares the copy with the requesting user, and returns the URL.
+Copies a template presentation, populates it with live Pylon data via
+replaceAllText and targeted shape updates, then returns the URL.
 
-Template: https://docs.google.com/presentation/d/1cPn6jsC4Sc3HcRJEOAaYcuo8nDVozRe5c8PStgnm-WM
-Slide 1 — Enterprise Support (sample text strings are the replacement keys)
-Slide 2 — Product Feedback ({{FEATURE_REQUEST_LIST}} is the only non-sample key)
+Active template is controlled by QBR_TEMPLATE_ID env var.
+
+Production template (2-slide support deck):
+  https://docs.google.com/presentation/d/1cPn6jsC4Sc3HcRJEOAaYcuo8nDVozRe5c8PStgnm-WM
+Full QBR deck template (testing):
+  https://docs.google.com/presentation/d/1REIEBgXCje0glCCzxuRMVyfDbps9kG9h92ld4N9sEaQ
 """
 
 import calendar
+import contextvars
 import json
 import logging
 import os
@@ -18,9 +22,227 @@ from io import BytesIO
 
 _log = logging.getLogger(__name__)
 
-TEMPLATE_PRESENTATION_ID = "1cPn6jsC4Sc3HcRJEOAaYcuo8nDVozRe5c8PStgnm-WM"
-_SLIDE2_ID = "g3d006d5f096_0_141"
-_FR_BOX_ID = "g3d006d5f096_0_147"
+# Fallback template IDs (used when Drive lookup fails or no shared drive is configured).
+_PRODUCTION_TEMPLATE_ID = "1cPn6jsC4Sc3HcRJEOAaYcuo8nDVozRe5c8PStgnm-WM"
+_FULL_DECK_TEMPLATE_ID  = "1REIEBgXCje0glCCzxuRMVyfDbps9kG9h92ld4N9sEaQ"
+
+# Display names of the two templates in the shared drive's Template folder.
+TEMPLATE_NAMES = {
+    "support_highlights": "LangChain QBR Template - Support Highlights",
+    "full_deck":          "LangChain QBR Template",
+}
+# Fallback IDs when Drive lookup fails.
+_TEMPLATE_FALLBACK_IDS = {
+    "support_highlights": _PRODUCTION_TEMPLATE_ID,
+    "full_deck":          _FULL_DECK_TEMPLATE_ID,
+}
+# In-process cache: template_type → presentation ID discovered from Drive.
+_discovered_template_ids: dict[str, str] = {}
+
+# Per-request context var so each QBR generation can use a different template
+# without mutating global state.  Set via resolve_template_id() in main.py.
+_template_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "qbr_template_id", default=None
+)
+
+
+def _template_id() -> str:
+    """Return the active template ID: context var > env > production fallback."""
+    return (
+        _template_ctx.get()
+        or os.environ.get("QBR_TEMPLATE_ID", "").strip()
+        or _PRODUCTION_TEMPLATE_ID
+    )
+
+
+def resolve_template_id(template_type: str) -> str:
+    """Look up the presentation ID for the given template_type from the shared Drive.
+
+    Falls back to hardcoded IDs if Drive is unavailable or the file isn't found.
+    Results are cached in-process.
+    """
+    if template_type in _discovered_template_ids:
+        return _discovered_template_ids[template_type]
+
+    name = TEMPLATE_NAMES.get(template_type)
+    shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+
+    if name and shared_drive_id:
+        try:
+            drive, _ = _services()
+            common = {
+                "corpora": "drive",
+                "driveId": shared_drive_id,
+                "includeItemsFromAllDrives": True,
+                "supportsAllDrives": True,
+            }
+            # Find the Template folder in the shared drive.
+            folders = drive.files().list(
+                q="name = 'Template' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                fields="files(id)",
+                **common,
+            ).execute().get("files", [])
+
+            for folder in folders:
+                results = drive.files().list(
+                    q=(
+                        f"name = '{name}' and '{folder['id']}' in parents"
+                        " and mimeType = 'application/vnd.google-apps.presentation'"
+                        " and trashed = false"
+                    ),
+                    fields="files(id)",
+                    **common,
+                ).execute().get("files", [])
+                if results:
+                    pres_id = results[0]["id"]
+                    _discovered_template_ids[template_type] = pres_id
+                    _log.info("resolve_template_id: found %s → %s", template_type, pres_id)
+                    return pres_id
+        except Exception as exc:
+            _log.warning("resolve_template_id: Drive lookup failed for %s: %s", template_type, exc)
+
+    fallback = _TEMPLATE_FALLBACK_IDS.get(template_type, _PRODUCTION_TEMPLATE_ID)
+    _log.info("resolve_template_id: using fallback for %s → %s", template_type, fallback)
+    return fallback
+
+# ---------------------------------------------------------------------------
+# Per-template object ID configs
+# Object IDs are presentation-specific; run scripts/discover_qbr_template_ids.py
+# against a new template to populate its entry here.
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_CONFIGS: dict[str, dict] = {
+    _PRODUCTION_TEMPLATE_ID: {
+        "slide2_id":    "g3d006d5f096_0_141",
+        "fr_box_id":    "g3d006d5f096_0_147",
+        "dot_ids": [
+            "g3e618779947_0_12",
+            "g3e618779947_0_13",
+            "g3e618779947_0_14",
+            "g3e618779947_0_15",
+            "g3e618779947_0_16",
+        ],
+        "slide2_dot_ids": [
+            "g3d006d5f096_0_151",
+            "g3d006d5f096_0_152",
+            "g3d006d5f096_0_153",
+            "g3d006d5f096_0_154",
+            "g3d006d5f096_0_155",
+        ],
+        "roadmap_text_ids": [
+            "g3d006d5f096_0_144",
+            "g3d006d5f096_0_145",
+            "g3d006d5f096_0_149",
+        ],
+        "roadmap_img_ids": [
+            "g3d006d5f096_0_142",
+            "g3d006d5f096_0_143",
+            "g3d006d5f096_0_148",
+        ],
+        "scorecard_support_dot_ids": [],
+        "scorecard_fr_dot_ids":      [],
+        # Production 2-slide deck: Enterprise Support is slide 1 (index 0)
+        "metrics_chart_slide_index":  0,
+        # Production 2-slide deck has no maturity, commit, usage, or feature slides
+        "hex_chart_slide_index":          None,
+        "maturity_bar_slide_index":       None,
+        "commit_usage_slide_index":       None,
+        "usage_chart_slide_index":        None,
+        "feature_usage_slide_index":      None,
+        "maturity_journey_slide_index":   None,
+    },
+    # Full QBR deck (test template)
+    # IDs discovered by running discover_template_ids.py
+    _FULL_DECK_TEMPLATE_ID: {
+        "slide2_id":    None,
+        "fr_box_id":    "g3db0c53a0fe_0_21",
+        # Enterprise Support slide (slide 27) — health score dots
+        "dot_ids": [
+            "g3db0c53a0fe_0_6",
+            "g3db0c53a0fe_0_7",
+            "g3db0c53a0fe_0_8",
+            "g3db0c53a0fe_0_9",
+            "g3db0c53a0fe_0_10",
+        ],
+        # Product Feedback slide (slide 28) — FR delivery score dots
+        "slide2_dot_ids": [
+            "g3db0c53a0fe_0_25",
+            "g3db0c53a0fe_0_26",
+            "g3db0c53a0fe_0_27",
+            "g3db0c53a0fe_0_28",
+            "g3db0c53a0fe_0_29",
+        ],
+        # Engagement Scorecard (slide 15) — Technical Support row (row 3)
+        "scorecard_support_dot_ids": [
+            "g3c5483549f8_0_3331",
+            "g3c5483549f8_0_3332",
+            "g3c5483549f8_0_3333",
+            "g3c5483549f8_0_3334",
+            "g3c5483549f8_0_3335",
+        ],
+        # Engagement Scorecard (slide 15) — Product Feedback row (row 4)
+        "scorecard_fr_dot_ids": [
+            "g3c5483549f8_0_3337",
+            "g3c5483549f8_0_3338",
+            "g3c5483549f8_0_3339",
+            "g3c5483549f8_0_3340",
+            "g3c5483549f8_0_3341",
+        ],
+        # Roadmap slide (slide 11) — title-only placeholder; items inserted separately
+        # Product Feedback slide (slide 28) — 3 roadmap item labels (left→right)
+        "roadmap_text_ids": [
+            "g3db0c53a0fe_0_18",   # left  label
+            "g3db0c53a0fe_0_19",   # center label
+            "g3db0c53a0fe_0_23",   # right  label
+        ],
+        # Product Feedback slide (slide 28) — 3 roadmap screenshot images (left→right)
+        "roadmap_img_ids": [
+            "g3db0c53a0fe_0_16",   # left  image
+            "g3db0c53a0fe_0_17",   # center image
+            "g3db0c53a0fe_0_22",   # right  image
+        ],
+        # Enterprise Support slide (slide 26) — metrics chart image
+        "metrics_chart_slide_index": 25,  # 0-based index: slide 26 = index 25
+        # Agent Maturity slide (slide 33) — Hex radar chart replaces existing chart image
+        "hex_chart_slide_index":     32,  # slide 33 = index 32 (Option 2: radar)
+        # Agent Maturity slide (slide 32) — Hex bar chart (Option 1)
+        "maturity_bar_slide_index":  31,  # slide 32 = index 31 (Option 1: bar)
+        # Contract commit usage slide (slide 22) — single Hex chart
+        "commit_usage_slide_index":       21,  # slide 22 = index 21
+        # LangSmith Usage composite slide (slide 23) — up to 2×2 tiled charts
+        "usage_chart_slide_index":        22,  # slide 23 = index 22
+        # Feature usage composite slide (slide 24) — 3+2 tiled charts
+        "feature_usage_slide_index":      23,  # slide 24 = index 23
+        # Enablement & Training slide (slide 25) — Academy sign-ups table
+        "enablement_slide_index":         24,  # slide 25 = index 24
+        # Agent Engineering Maturity journey slide (slide 31) — arrow picker
+        "maturity_journey_slide_index":   30,  # slide 31 = index 30
+        # Product Usage slides (slides 23-25) — one 5-dot row per slide, same score
+        "usage_dot_id_rows": [
+            ["g3d006d5f096_0_60", "g3d006d5f096_0_61", "g3d006d5f096_0_62", "g3d006d5f096_0_63", "g3d006d5f096_0_64"],  # slide 23
+            ["g3d006d5f096_0_75", "g3d006d5f096_0_76", "g3d006d5f096_0_77", "g3d006d5f096_0_78", "g3d006d5f096_0_79"],  # slide 24
+            ["g3d006d5f096_0_90", "g3d006d5f096_0_91", "g3d006d5f096_0_92", "g3d006d5f096_0_93", "g3d006d5f096_0_94"],  # slide 25
+        ],
+        # Customer logo placeholders — slide 2 (text rect) and slide 14 (text rect + image)
+        "logo_slide2_shape_id":  "g3c5483549f8_0_2553",  # RECTANGLE "CUSTOMER LOGO" to swap for image
+        "logo_slide2_page_id":   "g3bec9bcb565_0_0",     # slide 2 objectId (needed for createImage)
+        "logo_slide14_shape_id": "g3d006d5f096_0_219",   # RECTANGLE "CUSTOMER LOGO" to delete
+        "logo_slide14_img_id":   "g3d006d5f096_0_220",   # existing IMAGE element to replace
+        # Engagement Scorecard (slide 15) — LangSmith Usage row (1st dot row)
+        "scorecard_usage_dot_ids": [
+            "g3c5483549f8_0_2999",
+            "g3c5483549f8_0_3000",
+            "g3c5483549f8_0_3001",
+            "g3c5483549f8_0_3002",
+            "g3c5483549f8_0_3003",
+        ],
+    },
+}
+
+def _cfg() -> dict:
+    """Return the object-ID config for the active template."""
+    return _TEMPLATE_CONFIGS.get(_template_id(), _TEMPLATE_CONFIGS[_PRODUCTION_TEMPLATE_ID])
+
 _FR_COL_MAX = 4  # max items per column before spawning a second column
 _SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -43,7 +265,10 @@ def _services():
     from googleapiclient.discovery import build
 
     creds = _creds()
-    return build("drive", "v3", credentials=creds), build("slides", "v1", credentials=creds)
+    return (
+        build("drive", "v3", credentials=creds, cache_discovery=False),
+        build("slides", "v1", credentials=creds, cache_discovery=False),
+    )
 
 
 def get_chart_start(months: int = 6) -> str:
@@ -235,7 +460,7 @@ def _generate_metrics_chart(
     BLUE = "#4fa3ff"
     PURPLE = "#a78bfa"
     TEXT = "#e2e8f0"
-    MUTED = "#718096"
+    MUTED = "#94a3b8"
     BORDER = "#2d3148"
 
     fig = plt.figure(figsize=(16, 11), facecolor=BG)
@@ -274,7 +499,7 @@ def _generate_metrics_chart(
         for spine in ax.spines.values():
             spine.set_edgecolor(BORDER)
             spine.set_linewidth(0.8)
-        ax.tick_params(colors=MUTED, labelsize=9)
+        ax.tick_params(colors=MUTED, labelsize=11)
         ax.set_title(title_str, color=TEXT, fontsize=13, pad=6)
         x = list(range(len(values)))
         valid = [(xi, v) for xi, v in zip(x, values) if v is not None]
@@ -288,12 +513,12 @@ def _generate_metrics_chart(
             ax.tick_params(axis="y", colors=MUTED)
         else:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                    color=MUTED, transform=ax.transAxes, fontsize=12)
+                    color=MUTED, transform=ax.transAxes, fontsize=14)
         step = max(1, len(labels) // 6)
         shown = sorted(set(list(range(0, len(labels), step)) + [len(labels) - 1]))
         ax.set_xticks([i for i in shown if i < len(labels)])
         ax.set_xticklabels([labels[i] for i in shown if i < len(labels)],
-                           rotation=30, ha="right", color=MUTED, fontsize=9)
+                           rotation=30, ha="right", color=MUTED, fontsize=11)
         ax.set_xlim(-0.5, len(labels) - 0.5)
 
     _draw_line(fig.add_subplot(gs[2, :2]), monthly_resp_med, month_labels,
@@ -445,13 +670,16 @@ def _upload_chart(drive, chart_bytes: bytes, parent_folder_id: str | None) -> st
         body={"type": "anyone", "role": "reader"},
     ).execute()
 
-    return f"https://drive.google.com/uc?id={file_id}"
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
-def _find_image_object_id(slides_svc, pres_id: str) -> str | None:
-    """Return the objectId of the first image on slide 0."""
+def _find_image_object_id(slides_svc, pres_id: str, slide_index: int = 0) -> str | None:
+    """Return the objectId of the first image on the given slide (0-based index)."""
     pres = slides_svc.presentations().get(presentationId=pres_id).execute()
-    for elem in pres.get("slides", [{}])[0].get("pageElements", []):
+    slides_list = pres.get("slides", [])
+    if slide_index >= len(slides_list):
+        return None
+    for elem in slides_list[slide_index].get("pageElements", []):
         if "image" in elem:
             return elem["objectId"]
     return None
@@ -477,6 +705,11 @@ def _add_fr_second_column(slides_svc, pres_id: str, col2_titles: list[str]) -> N
     content-alignment from col 1 — avoiding manual re-application of those
     properties, which don't reliably apply to freshly created TEXT_BOX shapes.
     """
+    fr_box_id = _cfg()["fr_box_id"]
+    if not fr_box_id:
+        _log.warning("_add_fr_second_column: fr_box_id not configured for template %s", _template_id())
+        return
+
     _NAT   = 3_000_000   # natural size of the FR box (both axes, EMU)
     _ORIG_H = 787_500    # rendered height
     _ORIG_X = 561_500    # left edge (kept symmetric)
@@ -500,7 +733,7 @@ def _add_fr_second_column(slides_svc, pres_id: str, col2_titles: list[str]) -> N
         # 1. Shrink col 1 to half-width (symmetric margins)
         {
             "updatePageElementTransform": {
-                "objectId": _FR_BOX_ID,
+                "objectId": fr_box_id,
                 "transform": {
                     "scaleX": col_w / _NAT,
                     "scaleY": _ORIG_H / _NAT,
@@ -514,8 +747,8 @@ def _add_fr_second_column(slides_svc, pres_id: str, col2_titles: list[str]) -> N
         # 2. Duplicate col 1 — inherits all styling, autofit, alignment
         {
             "duplicateObject": {
-                "objectId": _FR_BOX_ID,
-                "objectIds": {_FR_BOX_ID: col2_obj},
+                "objectId": fr_box_id,
+                "objectIds": {fr_box_id: col2_obj},
             }
         },
         # 3. Move duplicate to col 2 position
@@ -574,7 +807,7 @@ def create_slide_deck(
     for _attempt in range(3):
         try:
             copy = drive.files().copy(
-                fileId=TEMPLATE_PRESENTATION_ID,
+                fileId=_template_id(),
                 supportsAllDrives=True,
                 body={
                     "name": f"{account_name} — QBR {deck_label}",
@@ -590,11 +823,27 @@ def create_slide_deck(
     pres_id = copy["id"]
 
     replace_requests = _build_requests(account_name, slide14, slide15)
-    if replace_requests:
-        slides.presentations().batchUpdate(
-            presentationId=pres_id,
-            body={"requests": replace_requests},
-        ).execute()
+    # Extract "Month YYYY" from deck_label (strips any leading quarter prefix).
+    import re as _re
+    _m = _re.search(r'([A-Z][a-z]+ \d{4})$', deck_label)
+    _date_str = _m.group(1) if _m else deck_label
+    # Replace [Customer][date] as a unit (injects newline) and [Date] standalone.
+    replace_requests.insert(0, {
+        "replaceAllText": {
+            "containsText": {"text": "[Date]", "matchCase": False},
+            "replaceText": _date_str,
+        }
+    })
+    replace_requests.insert(0, {
+        "replaceAllText": {
+            "containsText": {"text": "[Customer][date]", "matchCase": False},
+            "replaceText": f"{account_name}\n{_date_str}",
+        }
+    })
+    slides.presentations().batchUpdate(
+        presentationId=pres_id,
+        body={"requests": replace_requests},
+    ).execute()
 
     fr_titles = slide15.get("open_feature_request_titles", [])
     if len(fr_titles) > _FR_COL_MAX:
@@ -615,14 +864,22 @@ def add_roadmap_items(pres_id: str, items: list[dict]) -> None:
 
     _, slides_svc = _services()
 
+    cfg = _cfg()
+    roadmap_text_ids = cfg["roadmap_text_ids"]
+    roadmap_img_ids  = cfg["roadmap_img_ids"]
+
+    if not roadmap_text_ids or not roadmap_img_ids:
+        _log.warning("add_roadmap_items: roadmap IDs not configured for template %s", _template_id())
+        return
+
     text_requests: list[dict] = []
     img_replace_requests: list[dict] = []   # replaceImage — isolated batch
     img_border_requests: list[dict] = []    # outline border — fully isolated
     _replaced_img_ids: set[str] = set()
 
     for i, item in enumerate(items[:3]):
-        text_id = _ROADMAP_TEXT_IDS[i]
-        img_id  = _ROADMAP_IMG_IDS[i]
+        text_id = roadmap_text_ids[i]
+        img_id  = roadmap_img_ids[i]
 
         # Build prefix: "April'26: " using curly apostrophe to match template
         month_str = item.get("month", "")
@@ -754,11 +1011,486 @@ def add_metrics_chart(
     cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id, shared_drive_id)
     chart_bytes = _generate_metrics_chart(quarter_issues, chart_issues, quarter_start_iso, quarter_label)
     chart_url = _upload_chart(drive, chart_bytes, cache_folder_id)
-    img_id = _find_image_object_id(slides, pres_id)
+    slide_index = _cfg().get("metrics_chart_slide_index", 0)
+    img_id = _find_image_object_id(slides, pres_id, slide_index)
     if img_id:
         _replace_chart_image(slides, pres_id, img_id, chart_url)
     else:
-        _log.warning("add_metrics_chart: no image element found on slide 0 of %s", pres_id)
+        _log.warning("add_metrics_chart: no image element found on slide %d of %s", slide_index, pres_id)
+
+
+def _insert_chart_at_slide(
+    pres_id: str,
+    customer_folder_id: str,
+    chart_bytes: bytes,
+    slide_index: int,
+) -> None:
+    """Upload chart PNG to Drive and replace (or create) the image on the given slide (0-based)."""
+    drive, slides = _services()
+    shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+    cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id, shared_drive_id)
+    chart_url = _upload_chart(drive, chart_bytes, cache_folder_id)
+
+    pres = slides.presentations().get(presentationId=pres_id).execute()
+    slides_list = pres.get("slides", [])
+    if slide_index >= len(slides_list):
+        _log.warning("_insert_chart_at_slide: slide index %d not found in %s", slide_index, pres_id)
+        return
+    slide = slides_list[slide_index]
+    slide_id = slide["objectId"]
+
+    existing_img_id = next(
+        (e["objectId"] for e in slide.get("pageElements", []) if "image" in e),
+        None,
+    )
+    if existing_img_id:
+        slides.presentations().batchUpdate(
+            presentationId=pres_id,
+            body={"requests": [{
+                "replaceImage": {
+                    "imageObjectId": existing_img_id,
+                    "url": chart_url,
+                    "imageReplaceMethod": "CENTER_INSIDE",
+                }
+            }]},
+        ).execute()
+    else:
+        page_size = pres.get("pageSize", {})
+        w = page_size.get("width", {}).get("magnitude", 9_144_000)
+        h = page_size.get("height", {}).get("magnitude", 5_143_500)
+        img_w, img_h = w * 0.6, h * 0.6
+        slides.presentations().batchUpdate(
+            presentationId=pres_id,
+            body={"requests": [{
+                "createImage": {
+                    "url": chart_url,
+                    "elementProperties": {
+                        "pageObjectId": slide_id,
+                        "size": {
+                            "width": {"magnitude": img_w, "unit": "EMU"},
+                            "height": {"magnitude": img_h, "unit": "EMU"},
+                        },
+                        "transform": {
+                            "scaleX": 1, "scaleY": 1,
+                            "translateX": (w - img_w) / 2,
+                            "translateY": (h - img_h) / 2,
+                            "unit": "EMU",
+                        },
+                    },
+                }
+            }]},
+        ).execute()
+    _log.info("_insert_chart_at_slide: inserted chart into slide %d of %s", slide_index, pres_id)
+
+
+def add_hex_chart(
+    pres_id: str,
+    customer_folder_id: str,
+    chart_bytes: bytes,
+    slide_index: int | None = None,
+) -> None:
+    """Upload the maturity radar PNG and replace the image on the radar slide (Option 2)."""
+    if slide_index is None:
+        slide_index = _cfg().get("hex_chart_slide_index")
+    if slide_index is None:
+        _log.info("add_hex_chart: hex_chart_slide_index not configured for template %s — skipping", _template_id())
+        return
+    _insert_chart_at_slide(pres_id, customer_folder_id, chart_bytes, slide_index)
+
+
+def add_maturity_bar_chart(pres_id: str, customer_folder_id: str, chart_bytes: bytes) -> None:
+    """Upload the Hex maturity bar chart PNG and replace the image on the bar chart slide (Option 1)."""
+    slide_index = _cfg().get("maturity_bar_slide_index")
+    if slide_index is None:
+        _log.info("add_maturity_bar_chart: maturity_bar_slide_index not configured for template %s — skipping", _template_id())
+        return
+    _insert_chart_at_slide(pres_id, customer_folder_id, chart_bytes, slide_index)
+
+
+def add_commit_usage_chart(pres_id: str, customer_folder_id: str, chart_bytes: bytes) -> None:
+    """Upload the Hex commit usage PNG and replace the image on the contract usage slide."""
+    slide_index = _cfg().get("commit_usage_slide_index")
+    if slide_index is None:
+        _log.info("add_commit_usage_chart: commit_usage_slide_index not configured for template %s — skipping", _template_id())
+        return
+    _insert_chart_at_slide(pres_id, customer_folder_id, chart_bytes, slide_index)
+
+
+def add_usage_chart(pres_id: str, customer_folder_id: str, chart_bytes: bytes) -> None:
+    """Upload the LangSmith usage composite PNG and replace the image on the usage slide."""
+    slide_index = _cfg().get("usage_chart_slide_index")
+    if slide_index is None:
+        _log.info("add_usage_chart: usage_chart_slide_index not configured for template %s — skipping", _template_id())
+        return
+    _insert_chart_at_slide(pres_id, customer_folder_id, chart_bytes, slide_index)
+
+
+def add_feature_usage_chart(pres_id: str, customer_folder_id: str, chart_bytes: bytes) -> None:
+    """Upload the feature usage 3+2 composite PNG and replace the image on the feature usage slide."""
+    slide_index = _cfg().get("feature_usage_slide_index")
+    if slide_index is None:
+        _log.info("add_feature_usage_chart: feature_usage_slide_index not configured for template %s — skipping", _template_id())
+        return
+    _insert_chart_at_slide(pres_id, customer_folder_id, chart_bytes, slide_index)
+
+
+def add_academy_table(pres_id: str, customer_folder_id: str, chart_bytes: bytes) -> None:
+    """Upload the Academy sign-ups table PNG to the enablement slide.
+
+    Deletes any existing image placeholder on the slide, then creates a new image
+    spanning the lower portion of the slide at full width so the table is readable.
+    """
+    slide_index = _cfg().get("enablement_slide_index")
+    if slide_index is None:
+        _log.info("add_academy_table: enablement_slide_index not configured for template %s — skipping", _template_id())
+        return
+
+    drive, slides = _services()
+    shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+    cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id, shared_drive_id)
+    chart_url = _upload_chart(drive, chart_bytes, cache_folder_id)
+
+    pres = slides.presentations().get(presentationId=pres_id).execute()
+    slides_list = pres.get("slides", [])
+    if slide_index >= len(slides_list):
+        _log.warning("add_academy_table: slide index %d not found in %s", slide_index, pres_id)
+        return
+    slide = slides_list[slide_index]
+    slide_id = slide["objectId"]
+
+    page_size = pres.get("pageSize", {})
+    page_w = page_size.get("width", {}).get("magnitude", 9_144_000)
+    page_h = page_size.get("height", {}).get("magnitude", 5_143_500)
+
+    requests = []
+    # Delete any existing image placeholders on this slide
+    for el in slide.get("pageElements", []):
+        if "image" in el:
+            requests.append({"deleteObject": {"objectId": el["objectId"]}})
+
+    # Place table in the Academy section, aligned with the Format/Audience/Scope columns
+    # and clear of the "Academy" label + sign-ups text on the left.
+    margin_x = int(page_w * 0.38)   # right of the Academy label/text (~38% in)
+    top_y    = int(page_h * 0.57)   # below the Workshop section (~57% down)
+    img_w    = int(page_w * 0.55)   # 55% wide (right-side column area only)
+    img_h    = int(page_h * 0.33)   # 33% tall
+
+    requests.append({
+        "createImage": {
+            "url": chart_url,
+            "elementProperties": {
+                "pageObjectId": slide_id,
+                "size": {
+                    "width":  {"magnitude": img_w, "unit": "EMU"},
+                    "height": {"magnitude": img_h, "unit": "EMU"},
+                },
+                "transform": {
+                    "scaleX": 1, "scaleY": 1,
+                    "translateX": margin_x,
+                    "translateY": top_y,
+                    "unit": "EMU",
+                },
+            },
+        }
+    })
+
+    slides.presentations().batchUpdate(
+        presentationId=pres_id,
+        body={"requests": requests},
+    ).execute()
+    _log.info("add_academy_table: inserted table into slide %d of %s", slide_index, pres_id)
+
+
+def add_customer_logo(pres_id: str, logo_url: str, customer_folder_id: str | None = None) -> None:
+    """Replace the CUSTOMER LOGO placeholders on slides 2 and 14 with the customer's logo.
+
+    Slide 2:  deletes the text rectangle and creates an image at the same bounding box.
+    Slide 14: deletes the text rectangle, then replaces the existing image element.
+
+    logo_url is fetched locally and re-uploaded to Drive so the Slides API can access it
+    (external URLs like logo.dev are often blocked by Google's image fetcher).
+    Silently skips if the config has no logo IDs (production 2-slide template).
+    """
+    import httpx
+
+    cfg = _cfg()
+    shape2_id  = cfg.get("logo_slide2_shape_id")
+    page2_id   = cfg.get("logo_slide2_page_id")
+    shape14_id = cfg.get("logo_slide14_shape_id")
+    img14_id   = cfg.get("logo_slide14_img_id")
+
+    if not any([shape2_id, shape14_id, img14_id]):
+        return
+
+    # Fetch the logo bytes and re-host on Drive so Google Slides can access them.
+    with httpx.Client(timeout=15, follow_redirects=True) as client:
+        resp = client.get(logo_url)
+        resp.raise_for_status()
+        logo_bytes = resp.content
+
+    drive, slides_svc = _services()
+    shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
+    if customer_folder_id:
+        cache_folder_id = _get_or_create_folder(drive, "cache", customer_folder_id, shared_drive_id)
+    else:
+        cache_folder_id = None
+    drive_logo_url = _upload_chart(drive, logo_bytes, cache_folder_id)
+
+    # Read just enough of the presentation to get the slide 2 shape transform.
+    pres = slides_svc.presentations().get(presentationId=pres_id).execute()
+
+    requests: list[dict] = []
+
+    if shape2_id and page2_id:
+        slide2 = next((s for s in pres.get("slides", []) if s["objectId"] == page2_id), None)
+        if slide2:
+            shape2 = next(
+                (e for e in slide2.get("pageElements", []) if e["objectId"] == shape2_id),
+                None,
+            )
+            if shape2:
+                t  = shape2.get("transform", {})
+                sz = shape2.get("size", {})
+                eff_w = sz.get("width",  {}).get("magnitude", 3_000_000) * t.get("scaleX", 1)
+                eff_h = sz.get("height", {}).get("magnitude", 3_000_000) * t.get("scaleY", 1)
+
+                # Compute aspect-ratio-preserving display size within the placeholder.
+                try:
+                    from PIL import Image as _PILImage
+                    import io as _io
+                    _img = _PILImage.open(_io.BytesIO(logo_bytes))
+                    img_w_px, img_h_px = _img.size
+                except Exception:
+                    img_w_px, img_h_px = 1, 1  # fallback: treat as square
+
+                img_ratio = img_w_px / img_h_px
+                box_ratio = eff_w / eff_h
+                if img_ratio > box_ratio:
+                    display_w = eff_w
+                    display_h = eff_w / img_ratio
+                else:
+                    display_h = eff_h
+                    display_w = eff_h * img_ratio
+
+                offset_x = t.get("translateX", 0) + (eff_w - display_w) / 2
+                offset_y = t.get("translateY", 0) + (eff_h - display_h) / 2
+
+                requests.append({"deleteObject": {"objectId": shape2_id}})
+                requests.append({
+                    "createImage": {
+                        "url": drive_logo_url,
+                        "elementProperties": {
+                            "pageObjectId": page2_id,
+                            "size": {
+                                "width":  {"magnitude": display_w, "unit": "EMU"},
+                                "height": {"magnitude": display_h, "unit": "EMU"},
+                            },
+                            "transform": {
+                                "scaleX": 1, "scaleY": 1,
+                                "translateX": offset_x,
+                                "translateY": offset_y,
+                                "unit": "EMU",
+                            },
+                        },
+                    }
+                })
+
+    if shape14_id:
+        # img14_id is the LangChain logo on this slide — leave it untouched.
+        # Only delete the "CUSTOMER LOGO" text rectangle and create the customer
+        # logo image at its bounding box position.
+        page14_id: str | None = None
+        box14_eff_w = box14_eff_h = box14_tx = box14_ty = None
+        for slide in pres.get("slides", []):
+            for elem in slide.get("pageElements", []):
+                if elem["objectId"] == shape14_id:
+                    if page14_id is None:
+                        page14_id = slide["objectId"]
+                    t14  = elem.get("transform", {})
+                    sz14 = elem.get("size", {})
+                    box14_eff_w = sz14.get("width",  {}).get("magnitude", 1_200_000) * t14.get("scaleX", 1)
+                    box14_eff_h = sz14.get("height", {}).get("magnitude", 1_200_000) * t14.get("scaleY", 1)
+                    box14_tx    = t14.get("translateX", 0)
+                    box14_ty    = t14.get("translateY", 0)
+        requests.append({"deleteObject": {"objectId": shape14_id}})
+        if page14_id and box14_eff_w:
+            # Fit logo within the text-rect bounding box preserving aspect ratio.
+            try:
+                from PIL import Image as _PILImage
+                import io as _io
+                _img14 = _PILImage.open(_io.BytesIO(logo_bytes))
+                img14_w_px, img14_h_px = _img14.size
+            except Exception:
+                img14_w_px, img14_h_px = 1, 1
+            ir = img14_w_px / img14_h_px
+            br = box14_eff_w / box14_eff_h
+            if ir > br:
+                d14_w, d14_h = box14_eff_w, box14_eff_w / ir
+            else:
+                d14_h, d14_w = box14_eff_h, box14_eff_h * ir
+            requests.append({
+                "createImage": {
+                    "url": drive_logo_url,
+                    "elementProperties": {
+                        "pageObjectId": page14_id,
+                        "size": {
+                            "width":  {"magnitude": d14_w, "unit": "EMU"},
+                            "height": {"magnitude": d14_h, "unit": "EMU"},
+                        },
+                        "transform": {
+                            "scaleX": 1, "scaleY": 1,
+                            "translateX": box14_tx + (box14_eff_w - d14_w) / 2,
+                            "translateY": box14_ty + (box14_eff_h - d14_h) / 2,
+                            "unit": "EMU",
+                        },
+                    },
+                }
+            })
+
+    if requests:
+        slides_svc.presentations().batchUpdate(
+            presentationId=pres_id, body={"requests": requests},
+        ).execute()
+
+    _log.info("add_customer_logo: applied logo to %s", pres_id)
+
+
+def update_maturity_journey_slide(
+    pres_id: str, maturity_data: list[dict], account_name: str = "", month_label: str = ""
+) -> None:
+    """Delete all but one arrow group on the maturity journey slide (slide 32).
+
+    Each arrow + label pair is an elementGroup whose nested RIGHT_ARROW contains
+    the score as its text (e.g. "2.4").  We calculate the average maturity score
+    from maturity_data (same formula as _render_radar), find the group whose score
+    is closest to that value, and delete all other scored groups.  The background
+    group and title text box are untouched because they contain no scored arrow.
+
+    Only runs for the full-deck template; skipped when the config has no
+    maturity_journey_slide_index.
+    """
+    slide_index = _cfg().get("maturity_journey_slide_index")
+    if slide_index is None:
+        return
+
+    dimensions = {
+        r["dimension"]: float(r["stage"])
+        for r in maturity_data if r.get("stage") is not None
+    }
+    if len(dimensions) < 3:
+        _log.warning("update_maturity_journey_slide: too few dimensions (%d), skipping", len(dimensions))
+        return
+    avg = round(sum(dimensions.values()) / len(dimensions), 1)
+
+    _, slides_svc = _services()
+    pres = slides_svc.presentations().get(presentationId=pres_id).execute()
+    slides_list = pres.get("slides", [])
+    if slide_index >= len(slides_list):
+        _log.warning("update_maturity_journey_slide: slide index %d not found", slide_index)
+        return
+
+    scored_groups: list[dict] = []  # {"id": ..., "score": float}
+
+    for elem in slides_list[slide_index].get("pageElements", []):
+        if "elementGroup" not in elem:
+            continue
+        for child in elem["elementGroup"].get("children", []):
+            if "shape" not in child:
+                continue
+            if child["shape"].get("shapeType") != "RIGHT_ARROW":
+                continue
+            parts = []
+            for tr in child["shape"].get("text", {}).get("textElements", []):
+                c = tr.get("textRun", {}).get("content", "")
+                if c.strip():
+                    parts.append(c.strip())
+            try:
+                scored_groups.append({"id": elem["objectId"], "score": float("".join(parts))})
+            except (ValueError, TypeError):
+                pass
+            break  # one arrow per group is enough
+
+    if not scored_groups:
+        _log.warning("update_maturity_journey_slide: no scored groups found on slide %d", slide_index)
+        return
+
+    best = min(scored_groups, key=lambda g: abs(g["score"] - avg))
+    delete_ids = [g["id"] for g in scored_groups if g["id"] != best["id"]]
+
+    if not delete_ids:
+        return
+
+    slides_svc.presentations().batchUpdate(
+        presentationId=pres_id,
+        body={"requests": [{"deleteObject": {"objectId": oid}} for oid in delete_ids]},
+    ).execute()
+    _log.info(
+        "update_maturity_journey_slide: kept group score=%.1f (avg=%.1f), deleted %d groups",
+        best["score"], avg, len(delete_ids),
+    )
+
+    # Rebuild label text: "Name\nMMM YYYY" with bold name, plain date, auto-fit.
+    # Rebuilding from scratch (deleteText + insertText) avoids relying on paragraph
+    # index detection which is unreliable after replaceAllText transforms.
+    if not account_name:
+        return
+
+    import re as _re_date
+    _m = _re_date.search(r'([A-Z][a-z]+ \d{4})$', month_label)
+    date_str = _m.group(1) if _m else month_label
+
+    best_elem_data = next(
+        (e for e in slides_list[slide_index].get("pageElements", [])
+         if e["objectId"] == best["id"]),
+        None,
+    )
+    if not best_elem_data:
+        return
+    label_child = next(
+        (c for c in best_elem_data["elementGroup"].get("children", [])
+         if "shape" in c and c["shape"].get("shapeType") != "RIGHT_ARROW"),
+        None,
+    )
+    if not label_child:
+        return
+
+    label_id = label_child["objectId"]
+    label_text = f"{account_name}\n{date_str}"
+
+    # The label text box has effective width ~106pt (3,000,000 EMU × scaleX 0.4489 / 12,700).
+    # IBM Plex Mono occupies ~0.7× char-width per pt, so a long name like
+    # "Schneider Electric" (18 chars) at 14pt needs ~151pt — it wraps.  Compute
+    # the largest font that fits on one line and apply it explicitly so TEXT_AUTOFIT
+    # isn't needed (it only fires when text overflows the box height, not the width).
+    _BOX_PT = 106
+    font_size = max(7, min(14, int(_BOX_PT / (len(account_name) * 0.7))))
+
+    slides_svc.presentations().batchUpdate(
+        presentationId=pres_id,
+        body={"requests": [
+            # Replace all existing text
+            {"deleteText": {"objectId": label_id, "textRange": {"type": "ALL"}}},
+            {"insertText": {"objectId": label_id, "insertionIndex": 0, "text": label_text}},
+            # Remove bold and set font size on everything first
+            {"updateTextStyle": {
+                "objectId": label_id,
+                "textRange": {"type": "ALL"},
+                "style": {"bold": False, "fontSize": {"magnitude": font_size, "unit": "PT"}},
+                "fields": "bold,fontSize",
+            }},
+            # Re-apply bold only to the name (first line)
+            {"updateTextStyle": {
+                "objectId": label_id,
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 0,
+                    "endIndex": len(account_name),
+                },
+                "style": {"bold": True, "fontSize": {"magnitude": font_size, "unit": "PT"}},
+                "fields": "bold,fontSize",
+            }},
+        ]},
+    ).execute()
 
 
 def share_presentation(pres_id: str, user_email: str) -> None:
@@ -798,33 +1530,8 @@ def share_with_domain(pres_id: str, domain: str = "langchain.dev") -> None:
             raise
 
 
-# Object IDs of the 5 indicator dots, left to right.
-_DOT_IDS = [          # slide 1 — health score
-    "g3e618779947_0_12",
-    "g3e618779947_0_13",
-    "g3e618779947_0_14",
-    "g3e618779947_0_15",
-    "g3e618779947_0_16",
-]
-_ROADMAP_TEXT_IDS = [  # slide 2 — 3 roadmap label boxes, left to right
-    "g3d006d5f096_0_144",
-    "g3d006d5f096_0_145",
-    "g3d006d5f096_0_149",
-]
-_ROADMAP_IMG_IDS = [   # slide 2 — 3 roadmap screenshot images, left to right
-    "g3d006d5f096_0_142",
-    "g3d006d5f096_0_143",
-    "g3d006d5f096_0_148",
-]
-_SLIDE2_DOT_IDS = [   # slide 2 — FR delivery score
-    "g3d006d5f096_0_151",
-    "g3d006d5f096_0_152",
-    "g3d006d5f096_0_153",
-    "g3d006d5f096_0_154",
-    "g3d006d5f096_0_155",
-]
 _DOT_LIT   = {"red": 0.502, "green": 0.784, "blue": 1.0}   # bright blue
-_DOT_UNLIT = {"themeColor": "LIGHT2"}                       # matches Product Feedback slide circles
+_DOT_UNLIT = {"themeColor": "LIGHT2"}                       # matches template dot circles
 
 
 def _health_score(s14: dict) -> int:
@@ -869,6 +1576,39 @@ def _health_score(s14: dict) -> int:
     return 5
 
 
+def _usage_score(s14: dict) -> int:
+    """Return 1-5 score for the Product Usage slides.
+
+    Two signals, each contributing up to 3 strikes:
+      - Commit pacing: pct_commit_used vs pct_into_contract
+        (not penalised if contract data is unavailable)
+      - Feature breadth: how many distinct LangSmith features were active
+        in the last 3 months (traces, agent runs, agent builder, experiments,
+        prompts, datasets, page views, evaluators — 8 total)
+    """
+    pct_commit_used   = s14.get("pct_commit_used")    # fraction 0-1 or None
+    pct_into_contract = s14.get("pct_into_contract")  # fraction 0-1 or None
+    feature_count     = s14.get("usage_feature_count", 0)
+
+    strikes = 0
+
+    if pct_commit_used is not None and pct_into_contract and pct_into_contract > 0:
+        ratio = pct_commit_used / pct_into_contract
+        if ratio < 0.45:   strikes += 3
+        elif ratio < 0.65: strikes += 2
+        elif ratio < 0.85: strikes += 1
+
+    if feature_count == 0:   strikes += 3
+    elif feature_count == 1: strikes += 2
+    elif feature_count <= 3: strikes += 1
+
+    if strikes >= 5: return 1
+    if strikes >= 3: return 2
+    if strikes >= 2: return 3
+    if strikes >= 1: return 4
+    return 5
+
+
 def _fr_score(s15: dict) -> int:
     """Return 1-5 score based on delivered vs open feature requests.
 
@@ -899,6 +1639,9 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
     sla_pct = s14.get("sla_pct")
     observations = s14.get("observations", [])
     opportunities = s14.get("opportunities", [])
+    usage_headline = s14.get("usage_headline", "")
+    usage_observations = s14.get("usage_observations", [])
+    usage_opportunities = s14.get("usage_opportunities", [])
 
     sla_clause = f" {sla_pct}% of tickets within response time SLA." if sla_pct is not None else ""
     sev1_text = (
@@ -942,10 +1685,37 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
 
     # Keys are the exact strings in the template; values are the live replacements.
     # matchCase: false handles minor capitalisation differences in the template.
-    obs_text = "\n".join(observations) if observations else "…"
-    opp_text = "\n".join(opportunities) if opportunities else "…"
+    obs_text = "\n".join(observations) if observations else "[TODO]"
+    opp_text = "\n".join(opportunities) if opportunities else "[TODO]"
+    usage_obs_text = "\n".join(usage_observations) if usage_observations else "[TODO]"
+    usage_opp_text = "\n".join(usage_opportunities) if usage_opportunities else "[TODO]"
+
+    # Enablement & Training slide (slide 26)
+    # Only use billable_seats as denominator — est_engineering_headcount can be
+    # tens of thousands for large enterprises, making the fraction meaningless.
+    # If seats is 0 (e.g. self-hosted), show just the enrolled count.
+    academy_enrolled = s14.get("academy_enrolled", 0)
+    billable_seats   = s14.get("billable_seats", 0)
+    if academy_enrolled and billable_seats:
+        enablement_stat = f"{academy_enrolled}/{billable_seats} Agent Engineers trained on LangSmith"
+        raw_pct = academy_enrolled / billable_seats * 100
+        pct_str = f"{raw_pct:.1f}%" if raw_pct < 1 else f"{raw_pct:.0f}%"
+        enablement_pct  = f"{pct_str} of Engineers are enabled"
+    else:
+        # Without billable_seats the enrolled count has no denominator context and
+        # is not directly visible on the slide — show [TODO] rather than a bare number.
+        enablement_stat = "[TODO]"
+        total_sign_ups = s14.get("total_sign_ups", 0)
+        num_courses    = s14.get("num_courses", 0)
+        if total_sign_ups and num_courses:
+            enablement_pct = f"{total_sign_ups} sign-ups across {num_courses} courses"
+        else:
+            enablement_pct = None
+
+    cfg = _cfg()
 
     replacements = {
+        # Enterprise Support slide
         "No pending Sev 1 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
         "7 open tickets - pending LangChain's action": waiting_text,
         "1 Sev 2 open ticket with SE": sev2_text,
@@ -953,40 +1723,57 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
         "Four feature requests for Agent Builder actively being worked on": fr14_text,
         "{{OBSERVATIONS}}": obs_text,
         "{{OPPORTUNITIES}}": opp_text,
+        # LangSmith Usage slides (23-25) — AI-generated from BQ chart data
+        "Strong use of tracking and offline evals. Limited use of Insights and Deployments": usage_headline or "[TODO]",
+        "{usage observations}": usage_obs_text,
+        "{usage opportunities}": usage_opp_text,
+        # Product Feedback slide
         "{{FEATURE_REQUEST_LIST}}": fr_list,
         "5 open feature requests; 12 delivered capabilities sought by [Customer]": summary_line,
+        # LangSmith Engagement Scorecard (full deck) — slightly different placeholder text
+        "No pending Sev 1/2/3 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
+        "No pending Sev 1 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
+        # Enablement & Training slide — replace template placeholders
+        "Instructor-led in-person session for [X] [Customer Team] professionals": f"Instructor-led in-person session for [X] {account_name} professionals",
+        # Global token — replaces [Customer] / [CUSTOMER] across all slides
         "[Customer]": account_name,
+        "[CUSTOMER]": account_name,
     }
 
-    score = _health_score(s14)
-    fr_score = _fr_score(s15)
-    dot_requests = [
-        {
-            "updateShapeProperties": {
-                "objectId": obj_id,
-                "shapeProperties": {
-                    "shapeBackgroundFill": {
-                        "solidFill": {"color": {"rgbColor": _DOT_LIT} if i < score else _DOT_UNLIT}
-                    }
-                },
-                "fields": "shapeBackgroundFill",
+    # Enablement & Training slide — always replace both template placeholders
+    replacements["50/250 Agent Engineers trained on LangSmith. No SME engagement currently"] = enablement_stat
+    replacements["5% of Engineers are enabled. Opportunity to 10x"] = enablement_pct or "[TODO]"
+
+    score       = _health_score(s14)
+    fr_score    = _fr_score(s15)
+    usage_score = _usage_score(s14)
+
+    def _dot_reqs(ids: list, threshold: int) -> list:
+        return [
+            {
+                "updateShapeProperties": {
+                    "objectId": obj_id,
+                    "shapeProperties": {
+                        "shapeBackgroundFill": {
+                            "solidFill": {"color": {"rgbColor": _DOT_LIT} if i < threshold else _DOT_UNLIT}
+                        }
+                    },
+                    "fields": "shapeBackgroundFill",
+                }
             }
-        }
-        for i, obj_id in enumerate(_DOT_IDS)
-    ] + [
-        {
-            "updateShapeProperties": {
-                "objectId": obj_id,
-                "shapeProperties": {
-                    "shapeBackgroundFill": {
-                        "solidFill": {"color": {"rgbColor": _DOT_LIT} if i < fr_score else _DOT_UNLIT}
-                    }
-                },
-                "fields": "shapeBackgroundFill",
-            }
-        }
-        for i, obj_id in enumerate(_SLIDE2_DOT_IDS)
-    ]
+            for i, obj_id in enumerate(ids)
+        ]
+
+    dot_requests = (
+        _dot_reqs(cfg["dot_ids"], score)
+        + _dot_reqs(cfg["slide2_dot_ids"], fr_score)
+        # Product Usage slides — one row of dots per slide, all same score
+        + [req for row in cfg.get("usage_dot_id_rows", []) for req in _dot_reqs(row, usage_score)]
+        # Engagement Scorecard rows — mirror the same scores
+        + _dot_reqs(cfg.get("scorecard_support_dot_ids", []), score)
+        + _dot_reqs(cfg.get("scorecard_fr_dot_ids", []), fr_score)
+        + _dot_reqs(cfg.get("scorecard_usage_dot_ids", []), usage_score)
+    )
 
     return [
         {

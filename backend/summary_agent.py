@@ -287,6 +287,138 @@ Rules:
         return {"observations": [], "opportunities": []}
 
 
+@traceable(name="generate_usage_insights", run_type="llm")
+async def generate_usage_insights(
+    account_name: str,
+    quarter_label: str,
+    chart_data: dict,
+    maturity_data: list[dict] | None,
+) -> dict:
+    """Generate LangSmith usage headline, observations, and opportunities from BQ chart data."""
+    import json
+    from anthropic import AsyncAnthropic
+
+    monthly = chart_data.get("monthly_usage", [])
+    page_views_data = chart_data.get("page_views", [])
+    evaluators = chart_data.get("evaluator_usage", [])
+    contract = chart_data.get("contract_metrics") or {}
+    enablement = chart_data.get("enablement_stats") or {}
+
+    recent = monthly[-3:] if monthly else []
+    usage_lines = []
+    for r in recent:
+        month = str(r.get("month_start", "?"))[:7]
+        traces = int(r.get("actual_traces") or 0)
+        agents = int(r.get("actual_agent_runs") or 0)
+        experiments = int(r.get("total_experiments") or 0)
+        commits = int(r.get("total_prompt_commits") or 0)
+        pulls = int(r.get("total_prompt_pulls") or 0)
+        datasets = int(r.get("total_datasets") or 0)
+        usage_lines.append(
+            f"  {month}: traces={traces:,}, agent_runs={agents:,}, experiments={experiments},"
+            f" prompt_commits={commits}, prompt_pulls={pulls}, datasets={datasets}"
+        )
+
+    pv_lines = []
+    for r in page_views_data[-3:]:
+        month = str(r.get("event_month", "?"))[:7]
+        pv = int(r.get("total_page_views") or 0)
+        pv_lines.append(f"  {month}: {pv:,} page views")
+
+    eval_totals: dict[str, int] = {}
+    for r in evaluators:
+        cat = r.get("eval_category", "Unknown")
+        eval_totals[cat] = eval_totals.get(cat, 0) + int(r.get("rules") or 0)
+    eval_lines = [f"  {cat}: {cnt:,} rules" for cat, cnt in sorted(eval_totals.items())]
+
+    contract_lines = []
+    if contract.get("pct_into_contract") is not None:
+        pct_into = float(contract["pct_into_contract"]) * 100
+        pct_used = float(contract.get("pct_commit_used") or 0) * 100
+        contract_lines.append(f"  {pct_into:.0f}% through contract, {pct_used:.0f}% of commit used")
+        if contract.get("contract_end_date"):
+            contract_lines.append(f"  Contract ends: {contract['contract_end_date']}")
+
+    # Reach: active users only (no headcount on usage slides)
+    seats = int(enablement.get("billable_seats") or 0)
+    reach_lines = []
+    if seats:
+        reach_lines.append(f"  Active LangSmith users (MAU): {seats}")
+
+    maturity_lines = []
+    if maturity_data:
+        for r in maturity_data:
+            dim = r.get("dimension", "?")
+            stage = r.get("stage", "?")
+            label = r.get("stage_label", "?")
+            maturity_lines.append(f"  {dim}: Stage {stage} ({label})")
+
+    sections = []
+    if usage_lines:
+        sections.append("Monthly usage (last 3 months):\n" + "\n".join(usage_lines))
+    if pv_lines:
+        sections.append("LangSmith page views (last 3 months):\n" + "\n".join(pv_lines))
+    if eval_lines:
+        sections.append("Evaluator usage (12-month totals by type):\n" + "\n".join(eval_lines))
+    if contract_lines:
+        sections.append("Contract status:\n" + "\n".join(contract_lines))
+    if reach_lines:
+        sections.append("Platform reach:\n" + "\n".join(reach_lines))
+    if maturity_lines:
+        sections.append("Agent Engineering Maturity (per dimension):\n" + "\n".join(maturity_lines))
+
+    data_block = "\n\n".join(sections) if sections else "(no usage data available)"
+
+    prompt = f"""You are writing 3 text elements for the LangSmith Usage slides in a QBR with {account_name} ({quarter_label}).
+
+Usage data (slides 23-25: tracing, feature adoption, evals):
+{data_block}
+
+Generate:
+
+1. headline: ONE sentence, max 15 words, summarising LangSmith usage status. Lead with what's working, note the biggest gap.
+
+2. observations: 1-3 bullets. Each bullet: MAX 8 words. Terse slide fragments only.
+   - Usage trajectory and feature adoption (tracing, agent runs, evals, experiments, Prompt Hub, datasets)
+   - If active users (MAU) is low relative to expected org size, note shallow platform reach
+
+3. opportunities: 1-3 bullets. Each bullet: MAX 8 words. Terse slide fragments only.
+   - Unused features in the Agent Development Lifecycle (Prompt Hub, Playground, Online Evals, Experiments)
+   - Broader user personas: SMEs, prompt authors, annotation reviewers
+   - NOT about Academy or training (that's a separate slide)
+
+Rules:
+- STRICT 8-word max per bullet — count them
+- Headline max 15 words
+- No full sentences in bullets
+- No em dashes, no "LangChain", no filler
+- Customer-facing, constructive tone
+
+Return ONLY valid JSON (no markdown, no code block):
+{{"headline": "...", "observations": ["...", "..."], "opportunities": ["...", "..."]}}"""
+
+    client = AsyncAnthropic()
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+    try:
+        data = json.loads(raw)
+        return {
+            "usage_headline": data.get("headline", ""),
+            "usage_observations": data.get("observations", []),
+            "usage_opportunities": data.get("opportunities", []),
+        }
+    except Exception:
+        _log.warning("Failed to parse usage insights JSON: %s", raw[:200])
+        return {"usage_headline": "", "usage_observations": [], "usage_opportunities": []}
+
+
 # Module-level compiled graph registered with LSD via langgraph.json.
 # Tools (summarise_tickets) are bound per-request via the HTTP route in main.py;
 # this default instance has no tools but satisfies LSD's required `graphs` entry.

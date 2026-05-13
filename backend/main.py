@@ -54,7 +54,7 @@ import slack_client
 import metrics as metrics_mod
 import audit
 import cache as cache_mod
-from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights
+from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights, generate_usage_insights
 from report import generate_report_html
 from ticket_summarizer import parse_ticket_output
 
@@ -111,6 +111,7 @@ def _cache_set(key: str, data: object) -> None:
 OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
 VALID_PERIODS = {"7d", "1m", "3m", "6m", "1y"}
 ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_summary", "open_issues"})
+_METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"
 
 
 class SummaryRequest(BaseModel):
@@ -252,6 +253,32 @@ def _send_otp_email(to_email: str, code: str) -> None:
 # ---------------------------------------------------------------------------
 # Helpers: data fetching and payload computation
 # ---------------------------------------------------------------------------
+
+def _compute_usage_feature_count(chart_data: dict) -> int:
+    """Count distinct LangSmith features with non-zero usage in the last 3 months.
+
+    Checks 8 features: traces, agent runs, agent builder runs, experiments,
+    prompts (commits or pulls), datasets, page views, evaluators.
+    Result is stored in slide14["usage_feature_count"] and drives _usage_score.
+    """
+    monthly   = (chart_data.get("monthly_usage") or [])[-3:]
+    pv_rows   = (chart_data.get("page_views") or [])[-3:]
+    eval_rows = chart_data.get("evaluator_usage") or []
+
+    def _any(rows, field):
+        return any(float(r.get(field) or 0) > 0 for r in rows)
+
+    return sum([
+        _any(monthly, "billable_traces"),
+        _any(monthly, "billable_agent_runs"),
+        _any(monthly, "billable_agent_builder_runs"),
+        _any(monthly, "total_experiments"),
+        _any(monthly, "total_prompt_commits") or _any(monthly, "total_prompt_pulls"),
+        _any(monthly, "total_datasets"),
+        _any(pv_rows, "total_page_views"),
+        any(float(r.get("rules") or 0) > 0 for r in eval_rows),
+    ])
+
 
 def _compute_csat(responses: list[dict]) -> float | None:
     """Average the score answers from CSAT survey responses (1–5 scale)."""
@@ -1620,6 +1647,7 @@ class ScheduleRequest(BaseModel):
     qbr_notify_type: Literal["slack", "email"] | None = None
     qbr_notify_channel_id: str | None = None
     qbr_notify_emails: list[str] | None = None
+    qbr_template_type: Literal["full_deck", "support_highlights"] = "full_deck"
     sections: list[str] | None = None   # None = all sections; filtered to ALL_SECTIONS
     period: str = "1m"
     frequency: Literal["weekly", "monthly", "quarterly"]
@@ -1801,6 +1829,7 @@ def _format_schedule(cron: dict) -> dict:
         "qbr_notify_type": inp.get("qbr_notify_type"),
         "qbr_notify_channel_id": inp.get("qbr_notify_channel_id"),
         "qbr_notify_emails": inp.get("qbr_notify_emails"),
+        "qbr_template_type": inp.get("qbr_template_type", "full_deck"),
         "sections": inp.get("sections"),
         "period": inp.get("period", "1m"),
         "frequency": frequency,
@@ -1874,6 +1903,7 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
         "qbr_notify_type": body.qbr_notify_type,
         "qbr_notify_channel_id": body.qbr_notify_channel_id,
         "qbr_notify_emails": body.qbr_notify_emails,
+        "qbr_template_type": body.qbr_template_type,
         "sections": body.sections,
         "run_condition": run_condition,
         "label": body.label,
@@ -1985,15 +2015,21 @@ def _compute_qbr_data(
     return slide14, slide15
 
 
-async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, str, str]:
+async def _do_qbr_generation(account_id: str, account_name: str, template_type: str = "full_deck") -> tuple[str, str, str]:
     """Generate QBR slides and share with the langchain.dev domain.
 
     Called by the scheduled dispatcher. Returns (pres_id, url, month_label).
-    Raises on unrecoverable failures; roadmap/chart steps are non-fatal.
+    Raises on unrecoverable failures; roadmap/chart/Hex steps are non-fatal.
     """
     from datetime import date as _date, datetime as _dt
     import slides_client as slides_mod
     import roadmap_client as roadmap_mod
+
+    if template_type not in ("support_highlights", "full_deck"):
+        template_type = "full_deck"
+    is_full_deck = template_type == "full_deck"
+    resolved_template_id = slides_mod.resolve_template_id(template_type)
+    _ctx_token = slides_mod._template_ctx.set(resolved_template_id)
 
     # If a slide for this month already exists (e.g. a parallel schedule triggered
     # simultaneously), return it immediately without regenerating.
@@ -2050,6 +2086,62 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
         open_issues, closed_issues, quarter_issues, sla_pct, insights, avg_rt
     )
 
+    # Chart data — BigQuery (full deck only; support_highlights has no chart slides)
+    import hex_client as _hex
+    import bigquery_client as _bq
+    hex_charts: dict[str, bytes] = {}
+    _bq_chart_data: dict | None = None
+    _maturity_data: list[dict] | None = None
+    _account = pylon_client.get_account(account_id)
+
+    if is_full_deck:
+        _metronome_id = pylon_client._get_custom_field(_account, _METRONOME_ID_SLUG) if _account else ""
+        if _metronome_id:
+            try:
+                _bq_chart_data = await asyncio.to_thread(_bq.fetch_chart_data, _metronome_id)
+                if _bq_chart_data:
+                    _en = _bq_chart_data.get("enablement_stats") or {}
+                    if _en:
+                        slide14["academy_enrolled"] = _en.get("academy_enrolled", 0)
+                        slide14["billable_seats"] = _en.get("billable_seats", 0)
+                        slide14["est_engineering_headcount"] = _en.get("est_engineering_headcount", 0)
+                    _raw_sign_ups = _bq_chart_data.get("sign_ups_by_course", [])
+                    slide14["total_sign_ups"] = sum(int(r.get("sign_ups") or 0) for r in _raw_sign_ups)
+                    slide14["num_courses"] = len(_raw_sign_ups)
+                    # Usage score inputs
+                    _cm = _bq_chart_data.get("contract_metrics") or {}
+                    slide14["pct_commit_used"]   = _cm.get("pct_commit_used")
+                    slide14["pct_into_contract"] = _cm.get("pct_into_contract")
+                    slide14["usage_feature_count"] = _compute_usage_feature_count(_bq_chart_data)
+            except Exception:
+                _log.exception("BigQuery chart fetch failed for %s — continuing without usage charts", account_name)
+            try:
+                _maturity_data = await asyncio.to_thread(_bq.fetch_maturity_data, _metronome_id)
+                if _maturity_data:
+                    _radar = await asyncio.to_thread(
+                        _hex.generate_maturity_radar_from_bq, _maturity_data, account_name,
+                    )
+                    if _radar:
+                        hex_charts[_hex.MATURITY_CHART_CELL_ID] = _radar
+                    _bar = await asyncio.to_thread(
+                        _hex.generate_maturity_bar_from_bq, _maturity_data, account_name,
+                    )
+                    if _bar:
+                        hex_charts["_maturity_bar"] = _bar
+            except Exception:
+                _log.exception("Maturity chart generation failed for %s — continuing without it", account_name)
+        else:
+            _log.info("No Metronome ID for %s — skipping chart fetch", account_name)
+
+        if _bq_chart_data:
+            try:
+                _usage_ins = await generate_usage_insights(
+                    account_name, quarter_label, _bq_chart_data, _maturity_data
+                )
+                slide14.update(_usage_ins)
+            except Exception:
+                _log.exception("Usage insights generation failed for %s — continuing", account_name)
+
     # Roadmap items (non-fatal)
     roadmap_items: list[dict] = []
     try:
@@ -2073,7 +2165,7 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
                 _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
                 scopes=["https://www.googleapis.com/auth/drive"],
             )
-            _drive = _build("drive", "v3", credentials=_creds)
+            _drive = _build("drive", "v3", credentials=_creds, cache_discovery=False)
             found: list[tuple[str, _date]] = []
             seen_ids: set[str] = set()
             for month in _months:
@@ -2081,7 +2173,11 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
                 if not pres_id and _slack_token and month == _months[0]:
                     url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
                     if url:
-                        pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                        try:
+                            pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                        except Exception as _copy_exc:
+                            _log.warning("Could not copy roadmap for %s (%s) — skipping", month, _copy_exc)
+                            pres_id = None
                 if pres_id and pres_id not in seen_ids:
                     seen_ids.add(pres_id)
                     found.append((pres_id, month))
@@ -2095,7 +2191,7 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
                 _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
                 scopes=["https://www.googleapis.com/auth/presentations"],
             )
-            _slides = _build("slides", "v1", credentials=_creds)
+            _slides = _build("slides", "v1", credentials=_creds, cache_discovery=False)
             all_items: list[dict] = []
             for pres_id, month in roadmap_list:
                 try:
@@ -2153,11 +2249,80 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
         slides_mod.create_slide_deck, account_name, slide14, slide15, quarter_label, _month_label,
     )
 
+    _domain = ((_account.get("primary_domain") or _account.get("domain") or "") if _account else "").strip()
+    if _domain:
+        try:
+            _logo_token = os.environ.get("LOGO_DEV_TOKEN", "").strip()
+            _logo_url = f"https://img.logo.dev/{_domain}?token={_logo_token}" if _logo_token else f"https://img.logo.dev/{_domain}"
+            await asyncio.to_thread(slides_mod.add_customer_logo, pres_id, _logo_url, customer_folder_id)
+        except Exception:
+            _log.exception("Customer logo insertion failed for %s — continuing", account_name)
+
     if roadmap_items:
         try:
             await asyncio.to_thread(slides_mod.add_roadmap_items, pres_id, roadmap_items)
         except Exception:
             _log.exception("Roadmap items insertion failed in scheduled QBR — continuing")
+
+    if hex_charts:
+        try:
+            maturity_bytes = hex_charts.get(_hex.MATURITY_CHART_CELL_ID)
+            if maturity_bytes:
+                await asyncio.to_thread(
+                    slides_mod.add_hex_chart, pres_id, customer_folder_id, maturity_bytes,
+                )
+            bar_bytes = hex_charts.get("_maturity_bar")
+            if bar_bytes:
+                await asyncio.to_thread(
+                    slides_mod.add_maturity_bar_chart, pres_id, customer_folder_id, bar_bytes,
+                )
+        except Exception:
+            _log.exception("Hex chart insertion failed in scheduled QBR — continuing")
+
+    if _maturity_data:
+        try:
+            await asyncio.to_thread(slides_mod.update_maturity_journey_slide, pres_id, _maturity_data, account_name, _month_label)
+        except Exception:
+            _log.exception("Maturity journey slide update failed in scheduled QBR — continuing")
+
+    if _bq_chart_data:
+        try:
+            commit_bytes = await asyncio.to_thread(_hex.build_commit_usage_from_bq, _bq_chart_data)
+            if commit_bytes:
+                await asyncio.to_thread(
+                    slides_mod.add_commit_usage_chart, pres_id, customer_folder_id, commit_bytes,
+                )
+        except Exception:
+            _log.exception("Commit usage chart insertion failed in scheduled QBR — continuing")
+
+        try:
+            _composite = await asyncio.to_thread(_hex.create_usage_composite_from_bq, _bq_chart_data)
+            if _composite:
+                await asyncio.to_thread(
+                    slides_mod.add_usage_chart, pres_id, customer_folder_id, _composite,
+                )
+        except Exception:
+            _log.exception("Usage chart composite failed in scheduled QBR — continuing")
+
+        try:
+            _feature_composite = await asyncio.to_thread(_hex.create_feature_usage_composite_from_bq, _bq_chart_data)
+            if _feature_composite:
+                await asyncio.to_thread(
+                    slides_mod.add_feature_usage_chart, pres_id, customer_folder_id, _feature_composite,
+                )
+        except Exception:
+            _log.exception("Feature usage chart composite failed in scheduled QBR — continuing")
+
+    try:
+        _sign_ups = (_bq_chart_data or {}).get("sign_ups_by_course", [])
+        if _sign_ups:
+            _academy_table = await asyncio.to_thread(_hex.build_sign_ups_table_from_bq, _sign_ups)
+            if _academy_table:
+                await asyncio.to_thread(
+                    slides_mod.add_academy_table, pres_id, customer_folder_id, _academy_table,
+                )
+    except Exception:
+        _log.exception("Academy table generation failed in scheduled QBR — continuing")
 
     try:
         await asyncio.to_thread(
@@ -2174,6 +2339,7 @@ async def _do_qbr_generation(account_id: str, account_name: str) -> tuple[str, s
         cache_mod.set_qbr_slide, account_id, _ym, url, pres_id, _month_label,
     )
 
+    slides_mod._template_ctx.reset(_ctx_token)
     return pres_id, url, _month_label
 
 
@@ -2195,8 +2361,15 @@ async def create_qbr_slides(
     if not account_name:
         raise HTTPException(status_code=422, detail="account_name is required")
 
+    template_type = (body.get("template_type") or "full_deck").strip()
+    if template_type not in ("support_highlights", "full_deck"):
+        template_type = "full_deck"
+    is_full_deck = template_type == "full_deck"
+
     import slides_client as slides_mod
     import roadmap_client as roadmap_mod
+
+    resolved_template_id = slides_mod.resolve_template_id(template_type)
 
     quarter_start, quarter_end, quarter_label = slides_mod.get_last_quarter()
     chart_start = slides_mod.get_chart_start(6)
@@ -2205,6 +2378,7 @@ async def create_qbr_slides(
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
     async def _stream():
+        _ctx_token = slides_mod._template_ctx.set(resolved_template_id)
         try:
             # Step 1: fetch ticket data
             yield _sse("progress", {"step": "fetch", "label": "Fetching ticket data", "status": "running"})
@@ -2265,7 +2439,68 @@ async def create_qbr_slides(
 
             slide14, slide15 = _compute_qbr_data(open_issues, closed_issues, quarter_issues, sla_pct, insights, avg_rt)
 
-            # Step 3: roadmap lookup and AI item selection (non-fatal)
+            # Step 3: Chart data — BigQuery (full deck only; support_highlights has no chart slides)
+            import hex_client as _hex
+            import bigquery_client as _bq
+            hex_charts: dict[str, bytes] = {}
+            _bq_chart_data: dict | None = None
+            _maturity_data: list[dict] | None = None
+            _account = pylon_client.get_account(account_id)
+
+            if is_full_deck:
+                yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "running"})
+                _metronome_id = pylon_client._get_custom_field(_account, _METRONOME_ID_SLUG) if _account else ""
+                if _metronome_id:
+                    try:
+                        _bq_chart_data = await asyncio.to_thread(_bq.fetch_chart_data, _metronome_id)
+                        if _bq_chart_data:
+                            _en = _bq_chart_data.get("enablement_stats") or {}
+                            if _en:
+                                slide14["academy_enrolled"] = _en.get("academy_enrolled", 0)
+                                slide14["billable_seats"] = _en.get("billable_seats", 0)
+                                slide14["est_engineering_headcount"] = _en.get("est_engineering_headcount", 0)
+                            _raw_sign_ups = _bq_chart_data.get("sign_ups_by_course", [])
+                            slide14["total_sign_ups"] = sum(int(r.get("sign_ups") or 0) for r in _raw_sign_ups)
+                            slide14["num_courses"] = len(_raw_sign_ups)
+                            # Usage score inputs
+                            _cm = _bq_chart_data.get("contract_metrics") or {}
+                            slide14["pct_commit_used"]   = _cm.get("pct_commit_used")
+                            slide14["pct_into_contract"] = _cm.get("pct_into_contract")
+                            slide14["usage_feature_count"] = _compute_usage_feature_count(_bq_chart_data)
+                    except Exception:
+                        _log.exception("BigQuery chart fetch failed for %s — continuing without usage charts", account_name)
+                    try:
+                        _maturity_data = await asyncio.to_thread(_bq.fetch_maturity_data, _metronome_id)
+                        if _maturity_data:
+                            _radar = await asyncio.to_thread(
+                                _hex.generate_maturity_radar_from_bq, _maturity_data, account_name,
+                            )
+                            if _radar:
+                                hex_charts[_hex.MATURITY_CHART_CELL_ID] = _radar
+                            _bar = await asyncio.to_thread(
+                                _hex.generate_maturity_bar_from_bq, _maturity_data, account_name,
+                            )
+                            if _bar:
+                                hex_charts["_maturity_bar"] = _bar
+                    except Exception:
+                        _log.exception("Maturity chart generation failed for %s — continuing without it", account_name)
+                else:
+                    _log.info("No Metronome ID for %s — skipping chart fetch", account_name)
+
+                if _bq_chart_data:
+                    try:
+                        _usage_ins = await generate_usage_insights(
+                            account_name, quarter_label, _bq_chart_data, _maturity_data
+                        )
+                        slide14.update(_usage_ins)
+                    except Exception:
+                        _log.exception("Usage insights generation failed for %s — continuing", account_name)
+
+                yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "done"})
+            else:
+                yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "done"})
+
+            # Step 4: roadmap lookup and AI item selection (non-fatal)
             yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "running"})
             roadmap_items: list[dict] = []
             try:
@@ -2291,7 +2526,7 @@ async def create_qbr_slides(
                         _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
                         scopes=["https://www.googleapis.com/auth/drive"],
                     )
-                    _drive = _build("drive", "v3", credentials=_creds)
+                    _drive = _build("drive", "v3", credentials=_creds, cache_discovery=False)
                     found: list[tuple[str, _date]] = []
                     seen_ids: set[str] = set()
                     for month in _months:
@@ -2299,7 +2534,11 @@ async def create_qbr_slides(
                         if not pres_id and _slack_token and month == _months[0]:
                             url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
                             if url:
-                                pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                                try:
+                                    pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                                except Exception as _copy_exc:
+                                    _log.warning("Could not copy roadmap for %s (%s) — skipping", month, _copy_exc)
+                                    pres_id = None
                         if pres_id and pres_id not in seen_ids:
                             seen_ids.add(pres_id)
                             found.append((pres_id, month))
@@ -2313,7 +2552,7 @@ async def create_qbr_slides(
                         _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
                         scopes=["https://www.googleapis.com/auth/presentations"],
                     )
-                    _slides = _build("slides", "v1", credentials=_creds)
+                    _slides = _build("slides", "v1", credentials=_creds, cache_discovery=False)
                     all_items: list[dict] = []
                     for pres_id, month in roadmap_list:
                         try:
@@ -2355,7 +2594,7 @@ async def create_qbr_slides(
                 _log.exception("Roadmap lookup failed — continuing without roadmap items")
             yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "done"})
 
-            # Step 4: create slide deck (copy template + text replacements)
+            # Step 5: create slide deck (copy template + text replacements)
             yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "running"})
             _quarter = (_today.month - 1) // 3 + 1
             _month_label = f"Q{_quarter} {_today.strftime('%B %Y')}"
@@ -2381,14 +2620,80 @@ async def create_qbr_slides(
             except Exception as exc:
                 yield _sse("error", {"detail": f"Slides creation failed: {exc}"})
                 return
+            _domain = ((_account.get("primary_domain") or _account.get("domain") or "") if _account else "").strip()
+            if _domain:
+                try:
+                    _logo_token = os.environ.get("LOGO_DEV_TOKEN", "").strip()
+                    _logo_url = f"https://img.logo.dev/{_domain}?token={_logo_token}" if _logo_token else f"https://img.logo.dev/{_domain}"
+                    await asyncio.to_thread(slides_mod.add_customer_logo, pres_id, _logo_url, customer_folder_id)
+                except Exception:
+                    _log.exception("Customer logo insertion failed for %s — continuing", account_name)
             if roadmap_items:
                 try:
                     await asyncio.to_thread(slides_mod.add_roadmap_items, pres_id, roadmap_items)
                 except Exception:
                     _log.exception("Roadmap items insertion failed — continuing")
+            if hex_charts:
+                try:
+                    maturity_bytes = hex_charts.get(_hex.MATURITY_CHART_CELL_ID)
+                    if maturity_bytes:
+                        await asyncio.to_thread(
+                            slides_mod.add_hex_chart, pres_id, customer_folder_id, maturity_bytes,
+                        )
+                    bar_bytes = hex_charts.get("_maturity_bar")
+                    if bar_bytes:
+                        await asyncio.to_thread(
+                            slides_mod.add_maturity_bar_chart, pres_id, customer_folder_id, bar_bytes,
+                        )
+                except Exception:
+                    _log.exception("Hex chart insertion failed — continuing")
+
+            if _maturity_data:
+                try:
+                    await asyncio.to_thread(slides_mod.update_maturity_journey_slide, pres_id, _maturity_data, account_name, _month_label)
+                except Exception:
+                    _log.exception("Maturity journey slide update failed — continuing")
+
+            if _bq_chart_data:
+                try:
+                    commit_bytes = await asyncio.to_thread(_hex.build_commit_usage_from_bq, _bq_chart_data)
+                    if commit_bytes:
+                        await asyncio.to_thread(
+                            slides_mod.add_commit_usage_chart, pres_id, customer_folder_id, commit_bytes,
+                        )
+                except Exception:
+                    _log.exception("Commit usage chart insertion failed — continuing")
+
+                try:
+                    _composite = await asyncio.to_thread(_hex.create_usage_composite_from_bq, _bq_chart_data)
+                    if _composite:
+                        await asyncio.to_thread(
+                            slides_mod.add_usage_chart, pres_id, customer_folder_id, _composite,
+                        )
+                except Exception:
+                    _log.exception("Usage chart composite failed — continuing")
+
+                try:
+                    _feature_composite = await asyncio.to_thread(_hex.create_feature_usage_composite_from_bq, _bq_chart_data)
+                    if _feature_composite:
+                        await asyncio.to_thread(
+                            slides_mod.add_feature_usage_chart, pres_id, customer_folder_id, _feature_composite,
+                        )
+                except Exception:
+                    _log.exception("Feature usage chart composite failed — continuing")
+                try:
+                    _sign_ups = (_bq_chart_data or {}).get("sign_ups_by_course", [])
+                    if _sign_ups:
+                        _academy_table = await asyncio.to_thread(_hex.build_sign_ups_table_from_bq, _sign_ups)
+                        if _academy_table:
+                            await asyncio.to_thread(
+                                slides_mod.add_academy_table, pres_id, customer_folder_id, _academy_table,
+                            )
+                except Exception:
+                    _log.exception("Academy table generation failed — continuing")
             yield _sse("progress", {"step": "slides", "label": "Creating slide deck", "status": "done"})
 
-            # Step 5: metrics chart (non-fatal — slide keeps original image on failure)
+            # Step 6: metrics chart (non-fatal — slide keeps original image on failure)
             yield _sse("progress", {"step": "chart", "label": "Generating metrics chart", "status": "running"})
             try:
                 await asyncio.to_thread(
@@ -2400,7 +2705,7 @@ async def create_qbr_slides(
                 _log.exception("Chart generation failed — continuing without chart")
             yield _sse("progress", {"step": "chart", "label": "Generating metrics chart", "status": "done"})
 
-            # Step 6: share with the requesting user
+            # Step 7: share with the requesting user
             yield _sse("progress", {"step": "share", "label": "Sharing with you", "status": "running"})
             try:
                 await asyncio.to_thread(slides_mod.share_presentation, pres_id, user_email)
@@ -2423,6 +2728,8 @@ async def create_qbr_slides(
 
         except Exception as exc:
             yield _sse("error", {"detail": str(exc)})
+        finally:
+            slides_mod._template_ctx.reset(_ctx_token)
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
@@ -2432,6 +2739,16 @@ async def share_qbr_slide(account_id: str, pres_id: str, user_email: str = Depen
     """Grant the requesting user writer access to a previously generated QBR slide."""
     import slides_client as slides_mod
     await asyncio.to_thread(slides_mod.share_presentation, pres_id, user_email)
+    return {}
+
+
+@app.delete("/api/accounts/{account_id}/qbr-slides/{year_month}")
+async def delete_qbr_slide(account_id: str, year_month: str, _email: str = Depends(require_auth)):
+    """Remove a QBR slide record from the cache by year-month (YYYY-MM)."""
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}", year_month):
+        raise HTTPException(status_code=400, detail="year_month must be YYYY-MM")
+    cache_mod.delete_qbr_slide(account_id, year_month)
     return {}
 
 

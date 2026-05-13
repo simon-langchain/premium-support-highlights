@@ -118,6 +118,17 @@ def get_qbr_slide(account_id: str, year_month: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+def delete_qbr_slide(account_id: str, year_month: str) -> bool:
+    """Remove a QBR slide record. Returns True if the key existed."""
+    cache = _load()
+    key = f"qbr:{account_id}:{year_month}"
+    if key not in cache:
+        return False
+    del cache[key]
+    _save(cache)
+    return True
+
+
 def set_qbr_slide(
     account_id: str,
     year_month: str,

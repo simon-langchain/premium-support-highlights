@@ -31,6 +31,29 @@ import slack_client
 from report import generate_report_html
 from ticket_summarizer import parse_ticket_output
 
+# ---------------------------------------------------------------------------
+# Patch SimpleUser.__reduce__ to prevent DotDict nesting growth on each
+# pickle/unpickle cycle.  cron_scheduler.py mutates the stored cron payload
+# in-place (adds langgraph_auth_user to config.configurable), so SimpleUser
+# objects end up in the .langgraph_ops.pckl.  The upstream __reduce__ saves
+# self._user (a DotDict) rather than the identity string, so every server
+# restart wraps it in one more DotDict level.  After ~340 restarts the nesting
+# exceeds orjson's 1024-level recursion limit and POST /runs/crons/search 500s.
+# ---------------------------------------------------------------------------
+try:
+    from langgraph_api.auth.custom import SimpleUser as _SimpleUser
+
+    def _simple_user_reduce(self):
+        u = self._user
+        while hasattr(u, "_user"):
+            u = u._user
+        identity = u._dict.get("identity", "") if hasattr(u, "_dict") else ""
+        return (_SimpleUser, (str(identity),))
+
+    _SimpleUser.__reduce__ = _simple_user_reduce
+except Exception:
+    pass
+
 # Import shared helpers and constants from the FastAPI app.
 # main.py defines no circular imports from this module, so this is safe.
 from main import (
@@ -57,10 +80,11 @@ class ReportState(TypedDict):
     destination_type: str                # "slack" | "email" | "qbr"
     channel_id: Optional[str]           # Slack channel ID
     email_addresses: Optional[list[str]]
-    # QBR notification fields
+    # QBR fields
     qbr_notify_type: Optional[str]       # "slack" | "email"
     qbr_notify_channel_id: Optional[str]
     qbr_notify_emails: Optional[list[str]]
+    qbr_template_type: Optional[str]     # "full_deck" | "support_highlights"
     sections: Optional[list[str]]        # None = all sections
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
@@ -283,9 +307,10 @@ async def send_report(state: ReportState) -> dict:
         qbr_notify_type = state.get("qbr_notify_type")
         qbr_notify_channel_id = state.get("qbr_notify_channel_id")
         qbr_notify_emails = state.get("qbr_notify_emails") or []
+        qbr_template_type = state.get("qbr_template_type", "full_deck")
 
         try:
-            _pres_id, slide_url, month_label = await _do_qbr_generation(account_id, account_name)
+            _pres_id, slide_url, month_label = await _do_qbr_generation(account_id, account_name, qbr_template_type)
         except Exception as exc:
             return {"skipped": False, "result": None, "error": f"QBR generation failed: {exc}"}
 

@@ -475,6 +475,7 @@ export default function ScheduleModal({
   const [qbrNotifyType, setQbrNotifyType] = useState<"slack" | "email">("slack");
   const [qbrNotifyChannel, setQbrNotifyChannel] = useState<string | null>(channelId);
   const [qbrNotifyEmails, setQbrNotifyEmails] = useState<string[]>([]);
+  const [qbrTemplateType, setQbrTemplateType] = useState<"full_deck" | "support_highlights">("full_deck");
   const [period, setPeriod] = useState(["1m", "3m", "6m", "1y"].includes(defaultPeriod) ? defaultPeriod : "1m");
   const [frequency, setFrequency] = useState<"weekly" | "monthly" | "quarterly">(openToNewQbr ? "quarterly" : "monthly");
   const [weekday, setWeekday] = useState(0);
@@ -509,6 +510,7 @@ export default function ScheduleModal({
     setQbrNotifyType("slack");
     setQbrNotifyChannel(channelId);
     setQbrNotifyEmails([]);
+    setQbrTemplateType("full_deck");
     setPeriod(["1m", "3m", "6m", "1y"].includes(defaultPeriod) ? defaultPeriod : "1m");
     setFrequency("monthly");
     setWeekday(0);
@@ -530,6 +532,7 @@ export default function ScheduleModal({
     setQbrNotifyType((s.qbr_notify_type ?? "slack") as "slack" | "email");
     setQbrNotifyChannel(s.qbr_notify_channel_id ?? channelId);
     setQbrNotifyEmails(s.qbr_notify_emails ?? []);
+    setQbrTemplateType((s.qbr_template_type ?? "full_deck") as "full_deck" | "support_highlights");
     setPeriod(s.period ?? "1m");
     setFrequency(s.frequency ?? "monthly");
     setWeekday(s.weekday ?? 0);
@@ -595,6 +598,7 @@ export default function ScheduleModal({
         qbr_notify_type: mode === "qbr" ? qbrNotifyType : undefined,
         qbr_notify_channel_id: mode === "qbr" && qbrNotifyType === "slack" ? (qbrNotifyChannel ?? undefined) : undefined,
         qbr_notify_emails: mode === "qbr" && qbrNotifyType === "email" ? qbrNotifyEmails : undefined,
+        qbr_template_type: mode === "qbr" ? qbrTemplateType : undefined,
         sections: mode !== "qbr" ? [...selectedSections] : undefined,
         period,
         frequency,
@@ -721,14 +725,17 @@ export default function ScheduleModal({
                       if (s.destination_type === "slack") {
                         destLine = `#${getChannelName(s.channel_id)}`;
                       } else if (s.destination_type === "qbr") {
+                        const tmplLabel = s.qbr_template_type === "support_highlights" ? "Support Slides" : "Full Deck";
+                        let notifyPart: string;
                         if (s.qbr_notify_type === "slack") {
-                          destLine = `Notify: #${getChannelName(s.qbr_notify_channel_id)}`;
+                          notifyPart = `Notify: #${getChannelName(s.qbr_notify_channel_id)}`;
                         } else {
                           const ne = s.qbr_notify_emails ?? [];
-                          destLine = ne.length === 0 ? "Notify: —"
+                          notifyPart = ne.length === 0 ? "Notify: —"
                             : ne.length <= 2 ? `Notify: ${ne.join(", ")}`
                             : `Notify: ${ne.slice(0, 2).join(", ")} +${ne.length - 2} more`;
                         }
+                        destLine = `${tmplLabel} · ${notifyPart}`;
                       } else {
                         destLine = addrs.length === 0 ? "—"
                           : addrs.length <= 2 ? addrs.join(", ")
@@ -885,6 +892,28 @@ export default function ScheduleModal({
                   </div>
                 )}
               </div>
+
+              {/* Template type — QBR only */}
+              {mode === "qbr" && (
+                <div>
+                  <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Template</label>
+                  <div className="flex rounded overflow-hidden text-xs" style={{ border: "1px solid var(--border)" }}>
+                    {(["full_deck", "support_highlights"] as const).map((t) => (
+                      <button
+                        key={t} type="button" onClick={() => setQbrTemplateType(t)}
+                        className="flex-1 py-1.5 transition-colors cursor-pointer"
+                        style={{
+                          background: qbrTemplateType === t ? "var(--accent)" : "transparent",
+                          color: qbrTemplateType === t ? "white" : "var(--text-muted)",
+                          fontWeight: qbrTemplateType === t ? 500 : 400,
+                        }}
+                      >
+                        {t === "full_deck" ? "Full Deck" : "Support Slides"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Period — not applicable for QBR (always current quarter) */}
               {mode !== "qbr" && <div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, Circle, ExternalLink, X, RefreshCw } from "lucide-react";
+import { Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, Circle, ExternalLink, X, RefreshCw, Trash2 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
@@ -12,6 +12,7 @@ import {
   fetchAccountData,
   fetchCachedTicketSummaries,
   fetchTiers,
+  deleteQbrSlide,
   fetchQbrHistory,
   fetchSchedules,
   generateSummary,
@@ -130,6 +131,7 @@ const Logo = () => (
 const QBR_STEPS: { id: string; label: string }[] = [
   { id: "fetch",    label: "Fetching ticket data" },
   { id: "insights", label: "Generating AI insights" },
+  { id: "hex",      label: "Fetching usage data" },
   { id: "roadmap",  label: "Finding roadmap items" },
   { id: "slides",   label: "Creating slide deck" },
   { id: "chart",    label: "Generating metrics chart" },
@@ -170,11 +172,14 @@ export default function Home() {
   const [qbrGenerating, setQbrGenerating] = useState(false);
   const [qbrSteps, setQbrSteps] = useState<Record<string, QbrStepStatus>>({});
   const [qbrError, setQbrError] = useState<string | null>(null);
+  const [qbrTemplateType, setQbrTemplateType] = useState<"full_deck" | "support_highlights">("full_deck");
   const [qbrConfirmRegenerate, setQbrConfirmRegenerate] = useState(false);
+  const [qbrDeletingMonth, setQbrDeletingMonth] = useState<string | null>(null);
+  const [qbrConfirmDeleteMonth, setQbrConfirmDeleteMonth] = useState<string | null>(null);
 
   const qbrContainerRef = useRef<HTMLDivElement>(null);
 
-  const runQbrGeneration = useCallback(async (account: Account) => {
+  const runQbrGeneration = useCallback(async (account: Account, templateType: "full_deck" | "support_highlights" = "support_highlights") => {
     setQbrSteps({});
     setQbrError(null);
     setQbrGenerating(true);
@@ -184,6 +189,7 @@ export default function Home() {
         account.id,
         account.name,
         (step, _label, status) => setQbrSteps(prev => ({ ...prev, [step]: status })),
+        templateType,
       );
       const updated = await fetchQbrHistory(account.id, account.name);
       setQbrHistory(updated);
@@ -200,6 +206,7 @@ export default function Home() {
     function onMouseDown(e: MouseEvent) {
       if (qbrContainerRef.current && !qbrContainerRef.current.contains(e.target as Node)) {
         setQbrOpen(false);
+        setQbrConfirmDeleteMonth(null);
       }
     }
     document.addEventListener("mousedown", onMouseDown);
@@ -406,8 +413,11 @@ export default function Home() {
     setQbrGenerating(false);
     setQbrSteps({});
     setQbrError(null);
+    setQbrTemplateType("full_deck");
     setQbrHistory(null);
     setQbrScheduleCount(null);
+    setQbrConfirmDeleteMonth(null);
+    setQbrDeletingMonth(null);
     window.history.replaceState(null, "", `/?account=${toSlug(account.name)}`);
   }
 
@@ -659,6 +669,26 @@ export default function Home() {
                           </button>
                         </div>
 
+                        {/* Template picker */}
+                        {!qbrGenerating && (
+                          <div className="flex rounded overflow-hidden mb-3 text-xs" style={{ border: "1px solid var(--border)" }}>
+                            {(["full_deck", "support_highlights"] as const).map((t) => (
+                              <button
+                                key={t}
+                                onClick={() => setQbrTemplateType(t)}
+                                className="flex-1 py-1 transition-colors cursor-pointer"
+                                style={{
+                                  background: qbrTemplateType === t ? "var(--accent)" : "transparent",
+                                  color: qbrTemplateType === t ? "white" : "var(--text-muted)",
+                                  fontWeight: qbrTemplateType === t ? 500 : 400,
+                                }}
+                              >
+                                {t === "support_highlights" ? "Support Slides" : "Full Deck"}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Generation progress — shown while generating */}
                         {qbrGenerating && (
                           <div className="space-y-2 mb-3">
@@ -727,6 +757,37 @@ export default function Home() {
                                 )}
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
+                                {entry.slide && !entry.is_current && (
+                                  qbrConfirmDeleteMonth === entry.month ? (
+                                    <button
+                                      disabled={qbrDeletingMonth === entry.month}
+                                      onClick={async () => {
+                                        if (!selectedAccount) return;
+                                        setQbrDeletingMonth(entry.month);
+                                        try {
+                                          await deleteQbrSlide(selectedAccount.id, entry.month);
+                                          setQbrHistory(h => h ? h.filter(e => e.month !== entry.month) : h);
+                                        } finally {
+                                          setQbrDeletingMonth(null);
+                                          setQbrConfirmDeleteMonth(null);
+                                        }
+                                      }}
+                                      className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80 disabled:opacity-40 cursor-pointer"
+                                      style={{ background: "#ef4444", color: "white" }}
+                                    >
+                                      {qbrDeletingMonth === entry.month ? <Loader2 size={11} className="animate-spin" /> : "Confirm"}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => setQbrConfirmDeleteMonth(entry.month)}
+                                      className="p-1 rounded transition-colors hover:bg-[var(--bg-tertiary)] cursor-pointer"
+                                      style={{ color: "var(--text-muted)" }}
+                                      title="Delete"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  )
+                                )}
                                 {entry.slide && (
                                   <button
                                     onClick={() => {
@@ -747,7 +808,7 @@ export default function Home() {
                                     onClick={() => {
                                       if (!selectedAccount) return;
                                       if (entry.slide) { setQbrConfirmRegenerate(true); return; }
-                                      runQbrGeneration(selectedAccount);
+                                      runQbrGeneration(selectedAccount, qbrTemplateType);
                                     }}
                                     className="flex items-center gap-1 text-xs rounded px-2 py-1 transition-opacity hover:opacity-80 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                     style={entry.slide
@@ -997,7 +1058,7 @@ export default function Home() {
                 onClick={() => {
                   if (!selectedAccount) return;
                   setQbrConfirmRegenerate(false);
-                  runQbrGeneration(selectedAccount);
+                  runQbrGeneration(selectedAccount, qbrTemplateType);
                 }}
                 className="text-sm px-3 py-1.5 rounded transition-opacity hover:opacity-80 cursor-pointer"
                 style={{ background: "var(--accent)", color: "white" }}

@@ -154,6 +154,7 @@ export interface Schedule {
   qbr_notify_type: "slack" | "email" | null;
   qbr_notify_channel_id: string | null;
   qbr_notify_emails: string[] | null;
+  qbr_template_type: "full_deck" | "support_highlights";
   sections: string[] | null;
   period: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -179,6 +180,7 @@ export interface CreateScheduleRequest {
   qbr_notify_type?: "slack" | "email";
   qbr_notify_channel_id?: string;
   qbr_notify_emails?: string[];
+  qbr_template_type?: "full_deck" | "support_highlights";
   sections?: string[];
   period: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -240,6 +242,14 @@ export async function shareQbrSlide(accountId: string, presId: string): Promise<
   // Non-fatal: user may already have access
 }
 
+export async function deleteQbrSlide(accountId: string, yearMonth: string): Promise<void> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/${encodeURIComponent(yearMonth)}`, {
+    method: "DELETE",
+  });
+  if (res.status === 401) { handleUnauthorized(res); return; }
+  if (!res.ok) throw new Error(`Failed to delete QBR slide: ${res.status}`);
+}
+
 export async function fetchQbrHistory(accountId: string, accountName: string): Promise<QbrHistoryEntry[]> {
   const params = new URLSearchParams({ account_name: accountName });
   const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides/history?${params}`);
@@ -252,11 +262,12 @@ export async function streamQbrSlides(
   accountId: string,
   accountName: string,
   onProgress: (step: string, label: string, status: "running" | "done") => void,
+  templateType: "full_deck" | "support_highlights" = "full_deck",
 ): Promise<string> {
   const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ account_name: accountName }),
+    body: JSON.stringify({ account_name: accountName, template_type: templateType }),
   });
   if (res.status === 401) { handleUnauthorized(res); return ""; }
   if (!res.ok) {
@@ -264,7 +275,8 @@ export async function streamQbrSlides(
     throw new Error((err as { detail?: string }).detail ?? `Failed to generate QBR slides: ${res.status}`);
   }
 
-  const reader = res.body!.getReader();
+  if (!res.body) throw new Error("Response body is null");
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let url = "";

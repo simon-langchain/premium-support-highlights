@@ -17,6 +17,7 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "matplotlib>=3.8",
+    "google-cloud-bigquery>=3.0",
 ]
 
 [dependency-groups]

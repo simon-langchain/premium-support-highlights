@@ -166,28 +166,54 @@ def fetch_roadmap_link_from_slack(token: str, month: date) -> str | None:
     if not data:
         return None
 
+    # Match "May" (or whatever month) AND "Product Roadmap" appearing anywhere in
+    # the message — checked separately because mrkdwn bold formatting may split
+    # them across spans (e.g. "*May* *Product Roadmap <url|here>*").
+    month_name = month.strftime("%B").lower()
+
     for msg in data.get("messages", []):
-        # Plain text
+        # Collect all candidate URLs and all text content from this message.
+        candidate_urls: list[str] = []
+        text_content: list[str] = [msg.get("text", "")]
+
+        # Plain text (Slack mrkdwn — may contain <URL|label> links)
         url = _extract_slides_url(msg.get("text", ""))
         if url:
-            return url
-        # Rich-text blocks
+            candidate_urls.append(url)
+
+        # Rich-text blocks (newer Slack format — URLs live in link elements,
+        # not in the plain text field)
         for block in msg.get("blocks", []):
             for section_el in block.get("elements", []):
                 if not isinstance(section_el, dict):
                     continue
                 for inline in section_el.get("elements", []):
-                    if isinstance(inline, dict) and inline.get("type") == "link":
+                    if not isinstance(inline, dict):
+                        continue
+                    if inline.get("type") == "link":
                         url = _extract_slides_url(inline.get("url", ""))
                         if url:
-                            return url
+                            candidate_urls.append(url)
+                    elif inline.get("type") == "text":
+                        text_content.append(inline.get("text", ""))
+
         # Unfurl attachments
         for att in msg.get("attachments", []):
             url = _extract_slides_url(
                 att.get("title_link", "") or att.get("from_url", "")
             )
             if url:
-                return url
+                candidate_urls.append(url)
+            # Attachment title may say "May '26 Product Roadmap"
+            text_content.append(att.get("title", ""))
+
+        if not candidate_urls:
+            continue
+
+        # Only return a URL if this message is the roadmap announcement.
+        combined_text = " ".join(text_content).lower()
+        if month_name in combined_text and "product roadmap" in combined_text:
+            return candidate_urls[0]
 
     _log.warning("No Slides URL found in #%s for %s", _TEAM_GTM_CHANNEL, _month_label(month))
     return None

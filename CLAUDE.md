@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Premium Support Highlights — a dashboard that surfaces monthly support metrics and AI-generated summaries for premium customer accounts. Data comes from the Pylon REST API; AI summaries are generated via Claude through `deepagents`. Access is restricted to active Pylon team members with `@langchain.dev` emails via OTP-based login.
+Premium Support Highlights — a dashboard that surfaces monthly support metrics and AI-generated summaries for premium customer accounts. Data comes from the Pylon REST API; AI summaries are generated via Claude through `deepagents`. Access is restricted to active Pylon team members with `@langchain.dev` emails via Google OAuth (primary) or OTP email (fallback).
 
 Built with **Next.js** (frontend) and **FastAPI** (backend).
 
@@ -50,6 +50,10 @@ Optional variables:
 - `SLACK_OVERRIDE_CHANNEL` — When set, ALL Slack posts go to this channel ID (use during testing to avoid sending to real customers)
 - `LANGGRAPH_API_URL` — Set to `http://localhost:8000` for local dev so the schedule CRUD endpoints can reach the LangGraph cron API. Leave unset in LSD — the SDK uses ASGI in-process transport automatically.
 - `DASHBOARD_URL` — Frontend URL linked from the "View Full Report" button in Slack messages
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — JSON string of the Google service account used by `slides_client.py` for Drive + Slides API access
+- `BIGQUERY_SERVICE_ACCOUNT_JSON` / `GOOGLE_BIGQUERY_SERVICE_ACCOUNT_JSON` — JSON string of the service account for BigQuery access (falls back to ADC if absent)
+- `QBR_SHARED_DRIVE_ID` — ID of the Shared Drive where QBR decks and chart cache files are stored; if absent, uses My Drive
+- `QBR_TEMPLATE_ID` — Override the production template presentation ID (useful for testing with a test template)
 
 ## Architecture
 
@@ -88,12 +92,12 @@ Protected routes:
 - `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?, sections?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; `sections` filters which blocks are included; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
 - `POST /api/slack/actions` — Slack interactive callback endpoint; handles `psh_post_summary`, `psh_post_issues`, `psh_post_issues_more` button actions; verifies HMAC-SHA256 signature
 - `GET /api/schedules?account_id=` — list all (or account-filtered) LangGraph Platform cron jobs for the `report_dispatcher` graph; looks up the `report_dispatcher` assistant UUID via `client.assistants.search` before querying crons (UUID required by SDK)
-- `POST /api/schedules` — body `{account_id, account_name, label, destination_type, channel_id?, email_addresses?, qbr_notify_type?, qbr_notify_channel_id?, qbr_notify_emails?, sections?, period, frequency, weekday, nth, month_in_quarter, hour_local, timezone}`; `destination_type` is `"slack" | "email" | "qbr"` (Literal); QBR schedules ignore `sections`/`period` and require `qbr_notify_type` (`"slack"` or `"email"`), `qbr_notify_channel_id` (Slack), or `qbr_notify_emails` (email, must be `@langchain.dev`); all other fields Pydantic-validated; timezone passed natively to `crons.create(timezone=)`; `created_by` is the authenticated user's email, stored in the cron payload
+- `POST /api/schedules` — body `{account_id, account_name, label, destination_type, channel_id?, email_addresses?, qbr_notify_type?, qbr_notify_channel_id?, qbr_notify_emails?, qbr_template_type?, sections?, period, frequency, weekday, nth, month_in_quarter, hour_local, timezone}`; `destination_type` is `"slack" | "email" | "qbr"` (Literal); QBR schedules ignore `sections`/`period` and require `qbr_notify_type` (`"slack"` or `"email"`), `qbr_notify_channel_id` (Slack), or `qbr_notify_emails` (email, must be `@langchain.dev`); `qbr_template_type` is `"full_deck"` (default) or `"support_highlights"` — selects which Google Slides template to use; all other fields Pydantic-validated; timezone passed natively to `crons.create(timezone=)`; `created_by` is the authenticated user's email, stored in the cron payload
 - `DELETE /api/schedules/{cron_id}` — delete a scheduled report by LangGraph cron ID
-- `POST /api/accounts/{id}/qbr-slides` — streams SSE progress events while generating a QBR Google Slides deck; fetches the last 4 months of roadmap items from Google Drive, deduplicates by title (latest month wins), uses Claude to select the 3 most relevant items matching the account's open feature requests, inserts them into a template slide deck, saves the result to disk cache, and sends a final `result` event with `{url, month, month_label}`
+- `POST /api/accounts/{id}/qbr-slides` — body `{account_name, template_type?}`; streams SSE progress events while generating a QBR Google Slides deck; `template_type` is `"full_deck"` (default) or `"support_highlights"` — selects the template and skips BigQuery chart steps for `support_highlights`; fetches the last 4 months of roadmap items from Google Drive, deduplicates by title (latest month wins), uses Claude to select the 3 most relevant items matching the account's open feature requests, inserts them into a template slide deck, saves the result to disk cache, and sends a final `result` event with `{url, month, month_label}`; also generates BigQuery-powered charts (commit usage with KPI tiles, usage composites, maturity radar, Academy sign-ups table) and inserts them into the deck (full deck only)
 - `GET /api/accounts/{id}/qbr-slides/history` — returns last 6 months as `[{month, month_label, is_current, slide}]`; `slide` is `{url, pres_id, created_at, month_label}` or null; newest first
 
-**`auth.py`** — In-memory OTP and session management. `generate_otp`, `verify_otp`, `create_session`, `validate_session`, `revoke_session`, `is_rate_limited`.
+**`auth.py`** — Session management and OTP fallback auth. `generate_otp`, `verify_otp` handle the email OTP flow (used when Google OAuth is unavailable). `create_session`, `validate_session`, `revoke_session`, `is_rate_limited` manage the shared session store used by both auth paths.
 
 **`pylon_client.py`** — Pylon REST API client. Shared `httpx.Client`, `_get`/`_post`/`_patch` helpers with 429 retry, in-memory TTL cache. Key functions:
 - `get_current_customers(force_refresh)` — POST /accounts/search filtered to Relationship_Status = "Current Customer"; disk-cached for 1 hour; single source of truth for all tier/account derivation
@@ -129,7 +133,40 @@ Protected routes:
 
 **`roadmap_client.py`** — Google Slides roadmap parser. `extract_roadmap_items(slides_service, pres_id, month)` parses a roadmap presentation into a list of `{title, description, month, image_url}` items. Handles two multi-feature slide patterns: Pattern A (next text fragment starts with `:`), Pattern B (bullet ends with `:`). Single-feature title extraction joins fragments with `": "`, strips trailing colons, limits to 45 chars. `select_roadmap_items(items, open_issues, account_name, today)` uses Claude Haiku to pick the 3 most relevant items; tags items UPCOMING/DELIVERED relative to `today` and prioritises delivered items that match open feature requests.
 
-**`slides_client.py`** — Google Slides deck builder. `create_slide_deck(account_name, slide14, slide15, quarter_label, month_label)` copies the template presentation into the customer's Drive folder and applies text replacements. `add_roadmap_items(pres_id, items)` inserts up to 3 roadmap items into the roadmap slide using three isolated `batchUpdate` calls (text, image replace with `CENTER_CROP`, white border outline). Uses `image_url` (embedded product screenshot) as the image source, falling back to `getThumbnail` for slides without embedded images. `share_with_domain(pres_id, domain="langchain.dev")` grants `reader` access to the whole domain via Google Drive's `type: "domain"` permission — called by the dispatcher for all scheduled QBR runs so any `@langchain.dev` team member can open the link.
+**`bigquery_client.py`** — BigQuery client for QBR chart data and maturity scorecard. `fetch_chart_data(metronome_id)` runs 7 queries and returns a dict with these keys (all empty list/dict on failure, never raises):
+- `"monthly_usage"` — monthly trace/agent run counts (last 12 months); for SH customers overlays the latest month with `stg_postgres__usage_snapshots` values for experiments/prompt_commits/prompt_pulls/datasets
+- `"cumulative_usage"` — daily running totals within the active contract period
+- `"page_views"` — monthly LangSmith page view counts (last 12 months)
+- `"evaluator_usage"` — monthly evaluator rule counts by category (last 12 months)
+- `"contract_metrics"` — single-row dict: `contract_end_date`, `pct_into_contract`, `pct_commit_used` from `dim__contracts WHERE is_active_contract=TRUE`; powers the 4 KPI tiles on slide 23
+- `"enablement_stats"` — single-row dict: `academy_enrolled` (distinct contacts with Salesforce Academy Enrollment touchpoints), `billable_seats` (max from `fct__organization_usage_daily` last 30 days), `est_engineering_headcount` (ZoomInfo or `employees × 0.22`); `billable_seats` is the correct denominator — `est_engineering_headcount` can be 20,000+ for large enterprises
+- `"sign_ups_by_course"` — list of `{course_name, sign_ups}` dicts from Salesforce Academy Enrollment touchpoints grouped by `source_detail`, ordered by sign_ups DESC
+
+`fetch_maturity_data(metronome_id)` returns maturity dimension scores for the radar chart. `_param(name, value)` is a local helper for parameterised BQ queries. `_rows_to_dicts(rows)` converts BQ Row objects to plain dicts, serialising `date`/`datetime` to ISO strings.
+
+**`hex_client.py`** — Chart image generation (direct BigQuery path; Hex API path kept for `check_hex_cells.py` validation utility). Key functions:
+- `create_usage_composite_from_bq(chart_data)` — renders a 2×2 composite of monthly trace/agent/page-view/evaluator bar charts from BQ data
+- `create_feature_usage_composite_from_bq(chart_data)` — renders a 3+2 composite of feature usage bar charts (experiments, prompt commits/pulls, datasets, evaluator rules); the evaluator rules chart is rendered as a **stacked bar chart** when there are multiple series
+- `build_commit_usage_from_bq(chart_data)` — renders the commit usage line chart with 4 KPI tiles above it (Contract End Date, % into Contract Period, % Commit Used, Total Traces) using a 2-row GridSpec; tiles are populated from `chart_data["contract_metrics"]`; total traces from the last row of `chart_data["cumulative_usage"]`
+- `generate_maturity_radar_from_bq(maturity_data, customer_name)` — renders the Agent Engineering Maturity radar chart from BQ data
+- `generate_maturity_bar_from_bq(maturity_data, customer_name)` — renders a horizontal bar chart per dimension (used when radar rendering is requested as the bar view)
+- `build_sign_ups_table_from_bq(rows)` — renders a dark-themed matplotlib table of Academy sign-ups by course; caps at top 5 rows; column header is `"Top 5 Courses"` when more than 5 courses exist, `"Course"` otherwise
+- `fetch_chart_images(metronome_id, static_ids)` — triggers a Hex notebook run and downloads cell images; utility for `check_hex_cells.py` only
+- All chart functions use the dark theme: BG=`#0c0d1a`, CARD=`#161729`, TEXT=`#e2e8f0`, MUTED=`#94a3b8`, BORDER=`#2d3148`
+
+**`slides_client.py`** — Google Slides deck builder. `create_slide_deck(account_name, slide14, slide15, quarter_label, month_label)` copies the template presentation into the customer's Drive folder and applies text replacements. Key replacements in `_build_requests`:
+- Enterprise Support slide: sev1/sev2 ticket text, waiting text, severity breakdown, observations, opportunities
+- Product Feedback slide: feature request list, summary line
+- Enablement & Training slide (slide 26): `"50/250 Agent Engineers trained on LangSmith..."` → real enrolled/seats fraction (or just enrolled count for self-hosted with `billable_seats=0`); `"5% of Engineers are enabled..."` → real pct, or `"{total_sign_ups} sign-ups across {num_courses} courses"` fallback when seats is unknown; `"[X] [Customer Team] professionals"` → `"[X] {account_name} professionals"`
+- Global: `[Customer]` / `[CUSTOMER]` → account name (applied last)
+
+**Two-template system**: two Google Slides templates are supported, both stored in the shared Drive `Template` folder:
+- `"full_deck"` — `"LangChain QBR Template"`: complete deck with chart slides (maturity radar/bar, commit usage, LangSmith usage, feature usage, enablement, engagement scorecard, etc.)
+- `"support_highlights"` — `"LangChain QBR Template - Support Highlights"`: 2-slide deck (Enterprise Support + Product Feedback only)
+
+`TEMPLATE_NAMES` maps the type key to the display name used for Drive lookup. `_TEMPLATE_CONFIGS` maps each hardcoded template presentation ID to its object IDs (shape/image IDs for text boxes, dot rows, roadmap placeholders, chart slide indices). Chart slide indices are `None` in the `support_highlights` config — all chart-insertion functions check for `None` and skip gracefully. `resolve_template_id(template_type)` looks up the presentation ID from the shared Drive `Template` folder by display name, caching the result in `_discovered_template_ids`; falls back to hardcoded IDs if the Drive lookup fails. `_template_ctx` is a `contextvars.ContextVar[str | None]` that holds the resolved presentation ID for the current async request; all functions call `_template_id()` which reads from the context var first, then `QBR_TEMPLATE_ID` env var, then falls back to the production template ID. The context var is set in `_stream()` inside `create_qbr_slides` and in `_do_qbr_generation`, and always reset in `finally`/before return. Run `discover_template_ids.py` against a new template to find the object IDs needed to populate `_TEMPLATE_CONFIGS`.
+
+`add_roadmap_items(pres_id, items)` inserts up to 3 roadmap items using three isolated `batchUpdate` calls (text, image replace with `CENTER_CROP`, white border outline). `add_academy_table(pres_id, customer_folder_id, chart_bytes)` deletes any existing image placeholder on the enablement slide then creates a new image at explicit coordinates (38% from left, 57% from top, 55% wide, 33% tall) so the table is never constrained by a small placeholder element. `_insert_chart_at_slide` is the generic helper used by all other chart-insert functions — it replaces the first image element with `CENTER_INSIDE` if one exists, or creates a new image centred at 60% page size. `share_with_domain(pres_id, domain="langchain.dev")` grants `reader` access to the whole domain — called for all scheduled QBR runs so any `@langchain.dev` team member can open the link.
 
 **`audit.py`** — JSONL audit log (`.cache/audit.jsonl`).
 
@@ -138,7 +175,7 @@ Protected routes:
 2. Fetches fresh Pylon data for the account (Slack/email only; QBR generates its own data)
 3. Sends a Slack Block Kit message, HTML email, or generates QBR slides, respecting `destination_type`
 
-For QBR destinations: calls `_do_qbr_generation(account_id, account_name)` from `main.py` (runs the full pipeline — Pylon fetch, AI insights, slide deck, roadmap, metrics chart, domain share, cache), then sends a Slack notification or styled HTML email with the slide URL to the configured `qbr_notify_*` channel/addresses. The domain share grants any `@langchain.dev` account reader access via `slides_client.share_with_domain`.
+For QBR destinations: calls `_do_qbr_generation(account_id, account_name, template_type)` from `main.py` — `template_type` comes from `state["qbr_template_type"]` (defaults `"full_deck"` for existing schedules without the field). Runs the full pipeline (Pylon fetch, AI insights, slide deck, roadmap, metrics chart, domain share, cache), skipping BigQuery chart steps for `"support_highlights"`. Then sends a Slack notification or styled HTML email with the slide URL to the configured `qbr_notify_*` channel/addresses. The domain share grants any `@langchain.dev` account reader access via `slides_client.share_with_domain`.
 
 `_should_run(condition)` supports three condition types; `n=-1` means "last" in all cases:
 - `nth_weekday_of_month` — monthly; fires on the nth occurrence of the given weekday in the current month
@@ -157,9 +194,9 @@ Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backe
 
 **`src/app/login/page.tsx`** — Google OAuth button (primary). Clicking "or sign in with email" hides the Google button and reveals the OTP flow (email input → 6-digit code). Each OTP step has a "Back to Google sign-in" link. Handles `sent` / `not_authorized` / `rate_limited` states inline.
 
-**`src/app/page.tsx`** — Main dashboard. Loads available tiers on mount; re-fetches accounts when the selected tier changes. Fetches account data on account selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`. Shows a centered empty state when no account is selected.
+**`src/app/page.tsx`** — Main dashboard. Loads available tiers on mount; re-fetches accounts when the selected tier changes. Fetches account data on account selection. Manages filtering/sorting client-side. Polls cached ticket summaries every 2s while the summary agent runs. Reads `?account=<slug>` on mount for deep links; updates the URL on every account switch so all views are shareable. Account names are slugified (`toSlug`: lowercase, apostrophes/brackets stripped, non-alphanumeric runs → hyphens). State labels (e.g. "Waiting on Customer") use the actual account name via `getStateLabels(accountName)`. Shows a centered empty state when no account is selected. Model picker offers `claude-sonnet-4-6` (default), `claude-opus-4-6`, and `claude-haiku-4-5-20251001`.
 
-The **QBR Slides** popover (header button) lazily fetches history on first open and shows the last 6 months filtered to months that have slides plus the current month. Each row shows month name, generation date, an Open link (if slides exist), and a Generate/refresh-icon button (current month only). Generate runs immediately; the refresh icon shows a custom confirm modal before overwriting. Progress steps are shown inline while generating; the month list is hidden during generation. Switching accounts resets all QBR state. `runQbrGeneration(account)` is a shared `useCallback` used by both the generate button and the confirm modal. An indicator row at the bottom of the popover shows the count of active QBR schedules (fetched alongside history); tapping "Set up →" (0 schedules) opens the modal directly to a new QBR form; tapping "View →" (N schedules) opens the modal to the list view.
+The **QBR Slides** popover (header button) lazily fetches history on first open and shows the last 6 months filtered to months that have slides plus the current month. A **Full Deck / Support Slides** toggle at the top selects the template (defaults to Full Deck, resets on account change). Each row shows month name, generation date, an Open link (if slides exist), and a Generate/refresh-icon button (current month only). Generate runs immediately using the selected template; the refresh icon shows a custom confirm modal before overwriting. Progress steps are shown inline while generating; the month list is hidden during generation. Switching accounts resets all QBR state. `runQbrGeneration(account, templateType)` is a shared `useCallback` used by both the generate button and the confirm modal. An indicator row at the bottom of the popover shows the count of active QBR schedules (fetched alongside history); tapping "Set up →" (0 schedules) opens the modal directly to a new QBR form; tapping "View →" (N schedules) opens the modal to the list view.
 
 **`src/app/api/[...path]/route.ts`** — Catch-all proxy. Forwards all headers (including `cookie` and `authorization`) to the backend. Injects `x-api-key` for LSD authentication server-side.
 
@@ -170,7 +207,7 @@ The **QBR Slides** popover (header button) lazily fetches history on first open 
 **`src/components/ScheduleModal.tsx`** — Two-view modal for managing scheduled reports, opened via the "Schedule" button in the page header.
 - **List view**: active schedules per account, each card showing label + `[Slack/Email/QBR]` pill, compact schedule description (e.g. "4th Wed of every month at 08:00 PDT · 6 months"), destination, and next run + created-by metadata. QBR cards show dual icons (Presentation + Slack or Mail). Edit (pencil) and delete (trash) actions per card. "Add Schedule" button pinned at the bottom.
 - **Form view**: create/edit form with back-arrow navigation. Fields: label (optional), destination toggle (Slack / Email / QBR Slides), report period (hidden for QBR), sections (hidden for QBR), frequency (Weekly/Monthly/Quarterly for Slack/email; Monthly/Quarterly only for QBR, defaulting to Quarterly), occurrence in month (1st–Last), month of quarter (quarterly only), day of week, time + timezone picker.
-- **QBR form**: when QBR destination is selected, shows a Slack/Email sub-toggle for the notification delivery, then a channel picker or email chip input (placeholder `name@langchain.dev`). Period and Sections fields are hidden.
+- **QBR form**: when QBR destination is selected, shows a **Full Deck / Support Slides** template toggle (defaults to Full Deck), a Slack/Email sub-toggle for the notification delivery, then a channel picker or email chip input (placeholder `name@langchain.dev`). Period and Sections fields are hidden. The selected template type is stored as `qbr_template_type` in the cron payload and shown in the list card as e.g. `"Full Deck · Notify: #channel"`.
 - **`openToNewQbr` prop**: when `true`, the modal opens directly to the new-schedule form with QBR pre-selected and frequency set to Quarterly.
 - **Timezone picker**: 51 IANA timezones ordered west-to-east; UTC at its natural position. Labels show DST-aware abbreviation + offset (e.g. "Los Angeles (PDT · GMT-7)") computed via `Intl.DateTimeFormat` with a `getTzAbbr` lookup table for international zones. `tzShort(tz)` returns just the abbreviation for compact schedule descriptions.
 - **Email chip input** (`EmailTagInput`): emails displayed as removable chips; Enter/comma/space (when input contains `@`) commits a chip; paste of comma- or whitespace-separated lists splits automatically; Backspace removes the last chip.
@@ -183,9 +220,28 @@ The **QBR Slides** popover (header button) lazily fetches history on first open 
 
 **`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected.
 
-**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, `created_by`, and `qbr_notify_type`/`qbr_notify_channel_id`/`qbr_notify_emails` fields; `destination_type` is `"slack" | "email" | "qbr"`. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string. `QbrSlide`, `QbrHistoryEntry` interfaces and `fetchQbrHistory`, `streamQbrSlides` functions support the QBR slides feature; `streamQbrSlides` reads an SSE stream of `progress`/`result`/`error` events.
+**`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, `created_by`, `qbr_notify_type`/`qbr_notify_channel_id`/`qbr_notify_emails`, and `qbr_template_type` fields; `destination_type` is `"slack" | "email" | "qbr"`. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string. `QbrSlide`, `QbrHistoryEntry` interfaces and `fetchQbrHistory`, `streamQbrSlides` functions support the QBR slides feature; `streamQbrSlides` accepts an optional `templateType` parameter (`"full_deck"` default) forwarded in the POST body; reads an SSE stream of `progress`/`result`/`error` events.
 
 **`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
+
+### QBR slide generation data flow
+
+The `slide14` dict is the primary data carrier for the QBR deck. It is built in `main.py` from multiple sources and passed to `slides_client._build_requests`:
+
+| Key | Source | Used for |
+|-----|---------|----------|
+| `open_tickets`, `waiting_on_langchain`, `sev1/2/3/4_tickets`, `sev1/2/3/4_since_*` | Pylon API | Enterprise Support slide text |
+| `fr_list`, `fr_count`, `delivered_count` | Pylon API + Claude | Product Feedback slide |
+| `observations`, `opportunities` | Claude (AI insights) | Observations / Opportunities bullets |
+| `academy_enrolled` | BigQuery `enablement_stats` | Enablement & Training slide |
+| `billable_seats` | BigQuery `enablement_stats` | Denominator for enrolled % (preferred over `est_engineering_headcount` which can be 20k+ for large enterprises) |
+| `est_engineering_headcount` | BigQuery `enablement_stats` | Stored but not used as denominator |
+| `total_sign_ups` | Computed in main.py from `sign_ups_by_course` | Fallback text when `billable_seats=0` |
+| `num_courses` | Computed in main.py from `sign_ups_by_course` | Fallback text when `billable_seats=0` |
+
+The `sign_ups_by_course` list from BigQuery is rendered by `hex_client.build_sign_ups_table_from_bq` (top 5 courses, dark-themed table) and inserted into slide 26 by `slides_client.add_academy_table`. The academy table function always deletes the template placeholder and creates a fresh image at explicit coordinates (not `replaceImage CENTER_INSIDE`) so its size is never constrained by the original placeholder.
+
+`contract_metrics` from BigQuery powers the 4 KPI tiles rendered by `build_commit_usage_from_bq` at the top of the commit usage chart on slide 23.
 
 ## Key Patterns
 
@@ -212,8 +268,12 @@ premium-support-highlights/
 │   ├── report.py               # HTML report generator (browser/PDF + email variants)
 │   ├── roadmap_client.py       # Google Slides roadmap parser + AI item selector
 │   ├── slides_client.py        # Google Slides QBR deck builder
+│   ├── bigquery_client.py      # BigQuery client for QBR chart data (7 queries)
+│   ├── hex_client.py           # Chart image generation (Hex API + direct BQ matplotlib)
 │   ├── cache.py                # JSON file cache (ticket summaries, account summaries, QBR slides)
 │   ├── audit.py                # JSONL audit log
+│   ├── check_hex_cells.py      # Utility: fetch & save Hex chart PNGs for visual validation
+│   ├── discover_template_ids.py # Utility: print shape/image object IDs from a QBR template deck
 │   └── pyproject.toml          # Python dependencies (uv)
 ├── frontend/
 │   ├── src/
