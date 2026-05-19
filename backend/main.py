@@ -557,15 +557,6 @@ async def auth_google_callback(body: GoogleCallbackBody):
     if not email_verified or not email.endswith("@langchain.dev") or hd != "langchain.dev":
         raise HTTPException(status_code=403, detail="Access restricted to @langchain.dev accounts")
 
-    try:
-        members = await asyncio.to_thread(pylon_client.get_team_members)
-        member_emails = {(m.get("email") or "").lower() for m in members}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Unable to verify membership: {exc}") from exc
-
-    if email not in member_emails:
-        raise HTTPException(status_code=403, detail="Not an active Pylon team member")
-
     token = auth_mod.create_session(email)
     is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
     response = JSONResponse({"ok": True})
@@ -592,15 +583,6 @@ async def auth_request(body: AuthRequestBody):
 
     if auth_mod.is_rate_limited(email):
         return {"status": "rate_limited"}
-
-    try:
-        members = await asyncio.to_thread(pylon_client.get_team_members)
-        member_emails = {(m.get("email") or "").lower() for m in members}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Unable to verify membership: {exc}") from exc
-
-    if email not in member_emails:
-        return {"status": "not_authorized"}
 
     code = auth_mod.generate_otp(email)
     try:
