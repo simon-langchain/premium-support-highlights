@@ -104,7 +104,7 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
     chart_data: dict = {}
 
     # ------------------------------------------------------------------
-    # 1. Monthly usage — last 12 months
+    # 1. Monthly usage — active contract period
     # For SH customers, experiments/prompt_commits/prompt_pulls in
     # fct__organization_usage_daily are 0; overlay the latest month with
     # values from stg_postgres__usage_snapshots (same logic as Hex).
@@ -139,6 +139,12 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   AND s.received_at_utc BETWEEN DATETIME_SUB(lr.max_rx, INTERVAL 1 HOUR)
                                             AND DATETIME_ADD(lr.max_rx, INTERVAL 1 HOUR)
             ),
+            contract_start AS (
+                SELECT MIN(CAST(contract_start_at_utc AS DATE)) AS start_date
+                FROM {_tbl("dim__contracts")}
+                WHERE metronome_customer_id = @metronome_id
+                  AND is_active_contract = TRUE
+            ),
             monthly_base AS (
                 SELECT
                   DATE_TRUNC(date_day, MONTH)            AS month_start,
@@ -154,11 +160,12 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   SUM(total_playground_prompt_pulls)     AS raw_prompt_pulls,
                   SUM(total_datasets)                    AS total_datasets
                 FROM {_tbl("fct__organization_usage_daily")}
+                CROSS JOIN contract_start
                 WHERE organization_id IN (
                     SELECT organization_id FROM {_tbl("dim__organizations")}
                     WHERE metronome_customer_id = @metronome_id
                 )
-                AND date_day >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+                AND date_day >= contract_start.start_date
                 GROUP BY 1
             ),
             latest_month AS (
@@ -254,19 +261,26 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
         chart_data["cumulative_usage"] = []
 
     # ------------------------------------------------------------------
-    # 3. Page views — last 12 months (joined through dim__organizations)
+    # 3. Page views — active contract period (joined through dim__organizations)
     # ------------------------------------------------------------------
     try:
         q = f"""
+            WITH contract_start AS (
+                SELECT MIN(CAST(contract_start_at_utc AS DATE)) AS start_date
+                FROM {_tbl("dim__contracts")}
+                WHERE metronome_customer_id = @metronome_id
+                  AND is_active_contract = TRUE
+            )
             SELECT
               DATE_TRUNC(DATE(event_at_utc), MONTH) AS event_month,
               COUNT(*) AS total_page_views
             FROM {_tbl("fct__page_views")}
+            CROSS JOIN contract_start
             WHERE organization_id IN (
                 SELECT organization_id FROM {_tbl("dim__organizations")}
                 WHERE metronome_customer_id = @metronome_id
             )
-            AND event_at_utc >= DATETIME(DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH))
+            AND event_at_utc >= DATETIME(contract_start.start_date)
             GROUP BY 1
             ORDER BY 1
         """
@@ -278,7 +292,7 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
         chart_data["page_views"] = []
 
     # ------------------------------------------------------------------
-    # 4. Evaluator usage — monthly by category (last 12 months).
+    # 4. Evaluator usage — active contract period, monthly by category.
     #    SH fallback: fct__evaluator_usage_daily has no rows for self-hosted
     #    customers; use stg_postgres__usage_snapshots.run_rules as a proxy
     #    when the direct query returns nothing.
@@ -309,6 +323,12 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   AND s.received_at_utc BETWEEN DATETIME_SUB(lr.max_rx, INTERVAL 1 HOUR)
                                             AND DATETIME_ADD(lr.max_rx, INTERVAL 1 HOUR)
             ),
+            contract_start AS (
+                SELECT MIN(CAST(contract_start_at_utc AS DATE)) AS start_date
+                FROM {_tbl("dim__contracts")}
+                WHERE metronome_customer_id = @metronome_id
+                  AND is_active_contract = TRUE
+            ),
             eval_direct AS (
                 SELECT
                   DATE_TRUNC(rule_created_date, MONTH) AS month_start,
@@ -321,17 +341,19 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   STRUCT('Code - Online' AS eval_category, code_online_rules AS rules),
                   STRUCT('Code - Offline' AS eval_category, code_offline_rules AS rules)
                 ]) AS u
+                CROSS JOIN contract_start
                 WHERE organization_id IN (
                     SELECT organization_id FROM {_tbl("dim__organizations")}
                     WHERE metronome_customer_id = @metronome_id
                 )
-                AND rule_created_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+                AND rule_created_date >= contract_start.start_date
                 GROUP BY 1, u.eval_category
             ),
             sh_fallback AS (
-                -- Generate a full 12-month spine so the chart x-axis matches the other
-                -- feature usage charts.  Snapshot value goes on the current month only;
-                -- prior months are 0.  The WHERE guard keeps this empty for SaaS.
+                -- Generate a monthly spine from contract start so the chart x-axis
+                -- matches the other feature usage charts.  Snapshot value goes on the
+                -- current month only; prior months are 0.  The WHERE guard keeps this
+                -- empty for SaaS.
                 SELECT
                     month_start,
                     'Run Rules' AS eval_category,
@@ -340,8 +362,9 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                         THEN COALESCE((SELECT sh_run_rules FROM sh_snap), 0)
                         ELSE 0
                     END AS rules
-                FROM UNNEST(GENERATE_DATE_ARRAY(
-                    DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 11 MONTH), MONTH),
+                FROM contract_start,
+                UNNEST(GENERATE_DATE_ARRAY(
+                    DATE_TRUNC(contract_start.start_date, MONTH),
                     DATE_TRUNC(CURRENT_DATE(), MONTH),
                     INTERVAL 1 MONTH
                 )) AS month_start
