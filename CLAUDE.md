@@ -120,7 +120,7 @@ Protected routes:
 - `compute_avg_response_time(issues)` — hours to first response for closed tickets
 - `get_priority_breakdown(issues)` / `get_state_breakdown(issues)` / `get_disposition_breakdown(issues)`
 
-**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt.
+**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt. `generate_qbr_insights(...)` generates `observations` and `opportunities` bullets for the Enterprise Support slide. `generate_usage_insights(...)` generates per-slide observations and opportunities for the 3 LangSmith Usage slides (22-24) in a single Claude Haiku call so bullets stay aligned: slide 22 (commit usage — contract pacing, % commit used), slide 23 (tracing — traces, agent runs, page views, evaluator totals), slide 24 (feature adoption — experiments, Prompt Hub, datasets, evaluator rules by type). Returns `usage_headline`, `commit_observations/opportunities`, `tracing_observations/opportunities`, `feature_observations/opportunities`.
 
 **`report.py`** — Self-contained HTML report generator. `generate_report_html(..., is_email=False, banner_url=None, logo_url=None, sections=None)`:
 - `is_email=True`: email-safe layout (table-based, no SVG/CSS grid/flex), banner + footer, metric cards 2x2, breakdowns stacked
@@ -138,7 +138,7 @@ Protected routes:
 - `"cumulative_usage"` — daily running totals within the active contract period
 - `"page_views"` — monthly LangSmith page view counts (last 12 months)
 - `"evaluator_usage"` — monthly evaluator rule counts by category (last 12 months)
-- `"contract_metrics"` — single-row dict: `contract_end_date`, `pct_into_contract`, `pct_commit_used` from `dim__contracts WHERE is_active_contract=TRUE`; powers the 4 KPI tiles on slide 23
+- `"contract_metrics"` — single-row dict: `contract_end_date`, `pct_into_contract`, `pct_commit_used` from `dim__contracts WHERE is_active_contract=TRUE`; powers the 4 KPI tiles on slide 22
 - `"enablement_stats"` — single-row dict: `academy_enrolled` (distinct contacts with Salesforce Academy Enrollment touchpoints), `billable_seats` (max from `fct__organization_usage_daily` last 30 days), `est_engineering_headcount` (ZoomInfo or `employees × 0.22`); `billable_seats` is the correct denominator — `est_engineering_headcount` can be 20,000+ for large enterprises
 - `"sign_ups_by_course"` — list of `{course_name, sign_ups}` dicts from Salesforce Academy Enrollment touchpoints grouped by `source_detail`, ordered by sign_ups DESC
 
@@ -232,7 +232,11 @@ The `slide14` dict is the primary data carrier for the QBR deck. It is built in 
 |-----|---------|----------|
 | `open_tickets`, `waiting_on_langchain`, `sev1/2/3/4_tickets`, `sev1/2/3/4_since_*` | Pylon API | Enterprise Support slide text |
 | `fr_list`, `fr_count`, `delivered_count` | Pylon API + Claude | Product Feedback slide |
-| `observations`, `opportunities` | Claude (AI insights) | Observations / Opportunities bullets |
+| `observations`, `opportunities` | Claude (AI insights) | Enterprise Support slide observations/opportunities bullets |
+| `usage_headline` | Claude (AI insights) | One-sentence summary headline on LangSmith Usage slides (22-24) |
+| `commit_observations`, `commit_opportunities` | Claude (AI insights) | Slide 22 (commit usage) — `{commit observations}` / `{commit opportunities}` template placeholders |
+| `tracing_observations`, `tracing_opportunities` | Claude (AI insights) | Slide 23 (tracing) — `{tracing observations}` / `{tracing opportunities}` template placeholders |
+| `feature_observations`, `feature_opportunities` | Claude (AI insights) | Slide 24 (feature adoption) — `{feature observations}` / `{feature opportunities}` template placeholders |
 | `academy_enrolled` | BigQuery `enablement_stats` | Enablement & Training slide |
 | `billable_seats` | BigQuery `enablement_stats` | Denominator for enrolled % (preferred over `est_engineering_headcount` which can be 20k+ for large enterprises) |
 | `est_engineering_headcount` | BigQuery `enablement_stats` | Stored but not used as denominator |
@@ -241,7 +245,7 @@ The `slide14` dict is the primary data carrier for the QBR deck. It is built in 
 
 The `sign_ups_by_course` list from BigQuery is rendered by `hex_client.build_sign_ups_table_from_bq` (top 5 courses, dark-themed table) and inserted into slide 26 by `slides_client.add_academy_table`. The academy table function always deletes the template placeholder and creates a fresh image at explicit coordinates (not `replaceImage CENTER_INSIDE`) so its size is never constrained by the original placeholder.
 
-`contract_metrics` from BigQuery powers the 4 KPI tiles rendered by `build_commit_usage_from_bq` at the top of the commit usage chart on slide 23.
+`contract_metrics` from BigQuery powers the 4 KPI tiles rendered by `build_commit_usage_from_bq` at the top of the commit usage chart on slide 22.
 
 ## Key Patterns
 

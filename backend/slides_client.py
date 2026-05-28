@@ -223,9 +223,11 @@ _TEMPLATE_CONFIGS: dict[str, dict] = {
             ["g3d006d5f096_0_75", "g3d006d5f096_0_76", "g3d006d5f096_0_77", "g3d006d5f096_0_78", "g3d006d5f096_0_79"],  # slide 24
             ["g3d006d5f096_0_90", "g3d006d5f096_0_91", "g3d006d5f096_0_92", "g3d006d5f096_0_93", "g3d006d5f096_0_94"],  # slide 25
         ],
-        # Customer logo placeholders — slide 2 (text rect) and slide 14 (text rect + image)
+        # Customer logo placeholders — slides 2, 7, and 14
         "logo_slide2_shape_id":  "g3c5483549f8_0_2553",  # RECTANGLE "CUSTOMER LOGO" to swap for image
         "logo_slide2_page_id":   "g3bec9bcb565_0_0",     # slide 2 objectId (needed for createImage)
+        "logo_slide7_shape_id":  "g3d06298ad88_0_640",   # RECTANGLE "CUSTOMER LOGO" on Meet the Team slide
+        "logo_slide7_page_id":   "g3c5483549f8_0_954",   # slide 7 objectId
         "logo_slide14_shape_id": "g3d006d5f096_0_219",   # RECTANGLE "CUSTOMER LOGO" to delete
         "logo_slide14_img_id":   "g3d006d5f096_0_220",   # existing IMAGE element to replace
         # Engagement Scorecard (slide 15) — LangSmith Usage row (1st dot row)
@@ -1216,10 +1218,12 @@ def add_customer_logo(pres_id: str, logo_url: str, customer_folder_id: str | Non
     cfg = _cfg()
     shape2_id  = cfg.get("logo_slide2_shape_id")
     page2_id   = cfg.get("logo_slide2_page_id")
+    shape7_id  = cfg.get("logo_slide7_shape_id")
+    page7_id   = cfg.get("logo_slide7_page_id")
     shape14_id = cfg.get("logo_slide14_shape_id")
     img14_id   = cfg.get("logo_slide14_img_id")
 
-    if not any([shape2_id, shape14_id, img14_id]):
+    if not any([shape2_id, shape7_id, shape14_id, img14_id]):
         return
 
     # Fetch the logo bytes and re-host on Drive so Google Slides can access them.
@@ -1289,6 +1293,53 @@ def add_customer_logo(pres_id: str, logo_url: str, customer_folder_id: str | Non
                                 "scaleX": 1, "scaleY": 1,
                                 "translateX": offset_x,
                                 "translateY": offset_y,
+                                "unit": "EMU",
+                            },
+                        },
+                    }
+                })
+
+    if shape7_id and page7_id:
+        slide7 = next((s for s in pres.get("slides", []) if s["objectId"] == page7_id), None)
+        if slide7:
+            shape7 = next(
+                (e for e in slide7.get("pageElements", []) if e["objectId"] == shape7_id),
+                None,
+            )
+            if shape7:
+                t7  = shape7.get("transform", {})
+                sz7 = shape7.get("size", {})
+                eff_w7 = sz7.get("width",  {}).get("magnitude", 3_000_000) * t7.get("scaleX", 1)
+                eff_h7 = sz7.get("height", {}).get("magnitude", 3_000_000) * t7.get("scaleY", 1)
+                try:
+                    from PIL import Image as _PILImage
+                    import io as _io
+                    _img7 = _PILImage.open(_io.BytesIO(logo_bytes))
+                    img7_w_px, img7_h_px = _img7.size
+                except Exception:
+                    img7_w_px, img7_h_px = 1, 1
+                img7_ratio = img7_w_px / img7_h_px
+                box7_ratio = eff_w7 / eff_h7
+                if img7_ratio > box7_ratio:
+                    d7_w, d7_h = eff_w7, eff_w7 / img7_ratio
+                else:
+                    d7_h, d7_w = eff_h7, eff_h7 * img7_ratio
+                off7_x = t7.get("translateX", 0) + (eff_w7 - d7_w) / 2
+                off7_y = t7.get("translateY", 0) + (eff_h7 - d7_h) / 2
+                requests.append({"deleteObject": {"objectId": shape7_id}})
+                requests.append({
+                    "createImage": {
+                        "url": drive_logo_url,
+                        "elementProperties": {
+                            "pageObjectId": page7_id,
+                            "size": {
+                                "width":  {"magnitude": d7_w, "unit": "EMU"},
+                                "height": {"magnitude": d7_h, "unit": "EMU"},
+                            },
+                            "transform": {
+                                "scaleX": 1, "scaleY": 1,
+                                "translateX": off7_x,
+                                "translateY": off7_y,
                                 "unit": "EMU",
                             },
                         },
@@ -1640,8 +1691,12 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
     observations = s14.get("observations", [])
     opportunities = s14.get("opportunities", [])
     usage_headline = s14.get("usage_headline", "")
-    usage_observations = s14.get("usage_observations", [])
-    usage_opportunities = s14.get("usage_opportunities", [])
+    commit_observations = s14.get("commit_observations", [])
+    commit_opportunities = s14.get("commit_opportunities", [])
+    tracing_observations = s14.get("tracing_observations", [])
+    tracing_opportunities = s14.get("tracing_opportunities", [])
+    feature_observations = s14.get("feature_observations", [])
+    feature_opportunities = s14.get("feature_opportunities", [])
 
     sla_clause = f" {sla_pct}% of tickets within response time SLA." if sla_pct is not None else ""
     sev1_text = (
@@ -1687,8 +1742,12 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
     # matchCase: false handles minor capitalisation differences in the template.
     obs_text = "\n".join(observations) if observations else "[TODO]"
     opp_text = "\n".join(opportunities) if opportunities else "[TODO]"
-    usage_obs_text = "\n".join(usage_observations) if usage_observations else "[TODO]"
-    usage_opp_text = "\n".join(usage_opportunities) if usage_opportunities else "[TODO]"
+    commit_obs_text = "\n".join(commit_observations) if commit_observations else "[TODO]"
+    commit_opp_text = "\n".join(commit_opportunities) if commit_opportunities else "[TODO]"
+    tracing_obs_text = "\n".join(tracing_observations) if tracing_observations else "[TODO]"
+    tracing_opp_text = "\n".join(tracing_opportunities) if tracing_opportunities else "[TODO]"
+    feature_obs_text = "\n".join(feature_observations) if feature_observations else "[TODO]"
+    feature_opp_text = "\n".join(feature_opportunities) if feature_opportunities else "[TODO]"
 
     # Enablement & Training slide (slide 26)
     # Only use billable_seats as denominator — est_engineering_headcount can be
@@ -1723,10 +1782,14 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
         "Four feature requests for Agent Builder actively being worked on": fr14_text,
         "{{OBSERVATIONS}}": obs_text,
         "{{OPPORTUNITIES}}": opp_text,
-        # LangSmith Usage slides (23-25) — AI-generated from BQ chart data
+        # LangSmith Usage slides (22-24) — AI-generated from BQ chart data, per-slide
         "Strong use of tracking and offline evals. Limited use of Insights and Deployments": usage_headline or "[TODO]",
-        "{usage observations}": usage_obs_text,
-        "{usage opportunities}": usage_opp_text,
+        "{commit observations}": commit_obs_text,
+        "{commit opportunities}": commit_opp_text,
+        "{tracing observations}": tracing_obs_text,
+        "{tracing opportunities}": tracing_opp_text,
+        "{feature observations}": feature_obs_text,
+        "{feature opportunities}": feature_opp_text,
         # Product Feedback slide
         "{{FEATURE_REQUEST_LIST}}": fr_list,
         "5 open feature requests; 12 delivered capabilities sought by [Customer]": summary_line,

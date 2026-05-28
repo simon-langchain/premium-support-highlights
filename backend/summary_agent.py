@@ -294,7 +294,14 @@ async def generate_usage_insights(
     chart_data: dict,
     maturity_data: list[dict] | None,
 ) -> dict:
-    """Generate LangSmith usage headline, observations, and opportunities from BQ chart data."""
+    """Generate per-slide LangSmith usage observations and opportunities from BQ chart data.
+
+    Generates tailored bullets for 3 LangSmith Usage slides in a single call so the
+    model can keep them aligned:
+      Slide 22 — Commit usage (contract KPIs: % into contract, % commit used)
+      Slide 23 — LangSmith usage (traces, agent runs, page views, evaluator totals)
+      Slide 24 — Feature adoption (experiments, Prompt Hub, datasets, evaluator rules)
+    """
     import json
     from anthropic import AsyncAnthropic
 
@@ -305,102 +312,121 @@ async def generate_usage_insights(
     enablement = chart_data.get("enablement_stats") or {}
 
     recent = monthly[-3:] if monthly else []
-    usage_lines = []
+    seats = int(enablement.get("billable_seats") or 0)
+
+    # Slide 22 — Commit Usage: contract KPI tiles + cumulative trace chart
+    s22_lines = []
+    if contract.get("pct_into_contract") is not None:
+        pct_into = float(contract["pct_into_contract"]) * 100
+        pct_used = float(contract.get("pct_commit_used") or 0) * 100
+        s22_lines.append(f"  {pct_into:.0f}% through contract period, {pct_used:.0f}% of commit used")
+        pace = pct_used - pct_into
+        if abs(pace) >= 5:
+            direction = "ahead of" if pace > 0 else "behind"
+            s22_lines.append(f"  Commit pace: {abs(pace):.0f}pp {direction} contract timeline")
+        if contract.get("contract_end_date"):
+            s22_lines.append(f"  Contract ends: {contract['contract_end_date']}")
+    if recent:
+        last = recent[-1]
+        total_traces = int(last.get("actual_traces") or 0)
+        s22_lines.append(f"  Most recent month traces: {total_traces:,}")
+    slide22_block = "Contract & commit usage:\n" + "\n".join(s22_lines) if s22_lines else "(no contract data)"
+
+    # Slide 23 — LangSmith Usage: traces, agent runs, page views, evaluator totals
+    s23_lines = []
     for r in recent:
         month = str(r.get("month_start", "?"))[:7]
         traces = int(r.get("actual_traces") or 0)
         agents = int(r.get("actual_agent_runs") or 0)
-        experiments = int(r.get("total_experiments") or 0)
-        commits = int(r.get("total_prompt_commits") or 0)
-        pulls = int(r.get("total_prompt_pulls") or 0)
-        datasets = int(r.get("total_datasets") or 0)
-        usage_lines.append(
-            f"  {month}: traces={traces:,}, agent_runs={agents:,}, experiments={experiments},"
-            f" prompt_commits={commits}, prompt_pulls={pulls}, datasets={datasets}"
-        )
-
+        s23_lines.append(f"  {month}: traces={traces:,}, agent_runs={agents:,}")
     pv_lines = []
     for r in page_views_data[-3:]:
         month = str(r.get("event_month", "?"))[:7]
         pv = int(r.get("total_page_views") or 0)
         pv_lines.append(f"  {month}: {pv:,} page views")
-
     eval_totals: dict[str, int] = {}
     for r in evaluators:
         cat = r.get("eval_category", "Unknown")
         eval_totals[cat] = eval_totals.get(cat, 0) + int(r.get("rules") or 0)
-    eval_lines = [f"  {cat}: {cnt:,} rules" for cat, cnt in sorted(eval_totals.items())]
-
-    contract_lines = []
-    if contract.get("pct_into_contract") is not None:
-        pct_into = float(contract["pct_into_contract"]) * 100
-        pct_used = float(contract.get("pct_commit_used") or 0) * 100
-        contract_lines.append(f"  {pct_into:.0f}% through contract, {pct_used:.0f}% of commit used")
-        if contract.get("contract_end_date"):
-            contract_lines.append(f"  Contract ends: {contract['contract_end_date']}")
-
-    # Reach: active users only (no headcount on usage slides)
-    seats = int(enablement.get("billable_seats") or 0)
-    reach_lines = []
-    if seats:
-        reach_lines.append(f"  Active LangSmith users (MAU): {seats}")
-
-    maturity_lines = []
-    if maturity_data:
-        for r in maturity_data:
-            dim = r.get("dimension", "?")
-            stage = r.get("stage", "?")
-            label = r.get("stage_label", "?")
-            maturity_lines.append(f"  {dim}: Stage {stage} ({label})")
-
-    sections = []
-    if usage_lines:
-        sections.append("Monthly usage (last 3 months):\n" + "\n".join(usage_lines))
+    total_eval_rules = sum(eval_totals.values())
+    s23_parts = []
+    if s23_lines:
+        s23_parts.append("Monthly traces & agent runs (last 3 months):\n" + "\n".join(s23_lines))
     if pv_lines:
-        sections.append("LangSmith page views (last 3 months):\n" + "\n".join(pv_lines))
+        s23_parts.append("LangSmith page views (last 3 months):\n" + "\n".join(pv_lines))
+    if total_eval_rules:
+        s23_parts.append(f"Total evaluator rules (12-month): {total_eval_rules:,}")
+    if seats:
+        s23_parts.append(f"Active LangSmith users (MAU): {seats}")
+    slide23_block = "\n\n".join(s23_parts) if s23_parts else "(no usage data)"
+
+    # Slide 24 — Feature Adoption: experiments, Prompt Hub, datasets, evaluator rules by category
+    s24_lines = []
+    for r in recent:
+        month = str(r.get("month_start", "?"))[:7]
+        experiments = int(r.get("total_experiments") or 0)
+        commits = int(r.get("total_prompt_commits") or 0)
+        pulls = int(r.get("total_prompt_pulls") or 0)
+        datasets = int(r.get("total_datasets") or 0)
+        s24_lines.append(
+            f"  {month}: experiments={experiments}, prompt_commits={commits},"
+            f" prompt_pulls={pulls}, datasets={datasets}"
+        )
+    eval_lines = [f"  {cat}: {cnt:,} rules" for cat, cnt in sorted(eval_totals.items())]
+    s24_parts = []
+    if s24_lines:
+        s24_parts.append("Feature usage (last 3 months):\n" + "\n".join(s24_lines))
     if eval_lines:
-        sections.append("Evaluator usage (12-month totals by type):\n" + "\n".join(eval_lines))
-    if contract_lines:
-        sections.append("Contract status:\n" + "\n".join(contract_lines))
-    if reach_lines:
-        sections.append("Platform reach:\n" + "\n".join(reach_lines))
-    if maturity_lines:
-        sections.append("Agent Engineering Maturity (per dimension):\n" + "\n".join(maturity_lines))
+        s24_parts.append("Evaluator rules by type (12-month totals):\n" + "\n".join(eval_lines))
+    slide24_block = "\n\n".join(s24_parts) if s24_parts else "(no feature adoption data)"
 
-    data_block = "\n\n".join(sections) if sections else "(no usage data available)"
+    prompt = f"""You are writing content for 3 LangSmith Usage slides in a QBR with {account_name} ({quarter_label}).
 
-    prompt = f"""You are writing 3 text elements for the LangSmith Usage slides in a QBR with {account_name} ({quarter_label}).
+Each slide shows different charts. Write bullets tailored to each slide's specific data.
+Bullets across slides must be aligned: no contradictions, no repeating the same point on multiple slides.
 
-Usage data (slides 23-25: tracing, feature adoption, evals):
-{data_block}
+---
+SLIDE 22 — Commit Usage
+Charts: cumulative trace count over contract period, 4 KPI tiles (contract end date, % into contract period, % commit used, total traces)
+{slide22_block}
 
+---
+SLIDE 23 — LangSmith Usage
+Charts: monthly traces, monthly agent runs, LangSmith page views, total evaluator rule count
+{slide23_block}
+
+---
+SLIDE 24 — Feature Adoption
+Charts: monthly experiments, Prompt Hub commits/pulls, datasets, evaluator rules broken down by type
+{slide24_block}
+
+---
 Generate:
 
-1. headline: ONE sentence, max 15 words, summarising LangSmith usage status. Lead with what's working, note the biggest gap.
+1. headline: ONE sentence, max 15 words, summarising overall LangSmith usage. Lead with what's working; note the biggest gap or opportunity.
 
-2. observations: 1-3 bullets. Each bullet: MAX 8 words. Terse slide fragments only.
-   - Usage trajectory and feature adoption (tracing, agent runs, evals, experiments, Prompt Hub, datasets)
-   - If active users (MAU) is low relative to expected org size, note shallow platform reach
-
-3. opportunities: 1-3 bullets. Each bullet: MAX 8 words. Terse slide fragments only.
-   - Unused features in the Agent Development Lifecycle (Prompt Hub, Playground, Online Evals, Experiments)
-   - Broader user personas: SMEs, prompt authors, annotation reviewers
-   - NOT about Academy or training (that's a separate slide)
+2. For EACH slide, write observations (1-3 bullets) and opportunities (1-3 bullets):
+   - observations: factual snapshot of what the data shows on that specific slide only
+   - opportunities: how to deepen value — specific to each slide's feature area:
+       Slide 22: commit pacing risk, contract value realisation, usage trajectory vs renewal
+       Slide 23: expanding tracing coverage, agent observability, growing active user base
+       Slide 24: unused features (Playground, Online Evals, Experiments, Prompt Hub, Datasets), evaluator adoption
 
 Rules:
-- STRICT 8-word max per bullet — count them
-- Headline max 15 words
-- No full sentences in bullets
-- No em dashes, no "LangChain", no filler
-- Customer-facing, constructive tone
+- STRICT 8-word max per bullet — count every word
+- Terse slide fragments only — no full sentences
+- No em dashes, no "LangChain", no filler words
+- Customer-facing, constructive, positively framed
+- Only flag serious issues (Sev 1, SLA breach, commit severely off-pace) directly; everything else forward-looking
+- Academy/training topics belong on the Enablement slide, not here
 
 Return ONLY valid JSON (no markdown, no code block):
-{{"headline": "...", "observations": ["...", "..."], "opportunities": ["...", "..."]}}"""
+{{"headline": "...", "slide22": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide23": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide24": {{"observations": ["...", "..."], "opportunities": ["..."]}}}}"""
 
     client = AsyncAnthropic()
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=800,
+        max_tokens=1000,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -409,14 +435,26 @@ Return ONLY valid JSON (no markdown, no code block):
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     try:
         data = json.loads(raw)
+        s22 = data.get("slide22", {})
+        s23 = data.get("slide23", {})
+        s24 = data.get("slide24", {})
         return {
             "usage_headline": data.get("headline", ""),
-            "usage_observations": data.get("observations", []),
-            "usage_opportunities": data.get("opportunities", []),
+            "commit_observations": s22.get("observations", []),
+            "commit_opportunities": s22.get("opportunities", []),
+            "tracing_observations": s23.get("observations", []),
+            "tracing_opportunities": s23.get("opportunities", []),
+            "feature_observations": s24.get("observations", []),
+            "feature_opportunities": s24.get("opportunities", []),
         }
     except Exception:
         _log.warning("Failed to parse usage insights JSON: %s", raw[:200])
-        return {"usage_headline": "", "usage_observations": [], "usage_opportunities": []}
+        return {
+            "usage_headline": "",
+            "commit_observations": [], "commit_opportunities": [],
+            "tracing_observations": [], "tracing_opportunities": [],
+            "feature_observations": [], "feature_opportunities": [],
+        }
 
 
 # Module-level compiled graph registered with LSD via langgraph.json.
