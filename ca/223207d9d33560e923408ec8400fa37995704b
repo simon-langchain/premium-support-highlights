@@ -1,0 +1,27 @@
+CLAUDE.md
+  s_b1d709508337c9::t_9a993847e61775 149-150
+  s_b1d709508337c9::t_e79e11823bb495 161,163-166
+  s_b1d709508337c9::t_8f44ea9f1a6e27 41-42
+  s_b1d709508337c9::t_a0e63ecdc18e76 162
+  s_b1d709508337c9::t_dddc1abb030c4a 241,243,245,247
+  s_b1d709508337c9::t_ee69b4329f9314 125
+backend/bigquery_client.py
+  s_b1d709508337c9::t_d9dd25a02eb1a4 153,156
+  s_b1d709508337c9::t_05554546c42d3c 236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "ca223207d9d33560e923408ec8400fa37995704b",
+  "prompts": {},
+  "sessions": {
+    "s_b1d709508337c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a685fbc3-d70e-40d9-ad92-3d260c183b53",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
