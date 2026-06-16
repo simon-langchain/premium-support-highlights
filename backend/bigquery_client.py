@@ -150,10 +150,10 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   DATE_TRUNC(date_day, MONTH)            AS month_start,
                   SUM(billable_trace_count)              AS billable_traces,
                   SUM(billable_nodes_executed)           AS billable_nodes_executed,
-                  SUM(billable_agent_runs)               AS billable_agent_runs,
+                  SUM(billable_lsd_runs)                 AS billable_agent_runs,
                   SUM(billable_agent_builder_runs_count) AS billable_agent_builder_runs,
                   SUM(actual_trace_count_sent)           AS actual_traces,
-                  SUM(actual_agent_runs)                 AS actual_agent_runs,
+                  SUM(actual_lsd_runs)                   AS actual_agent_runs,
                   SUM(actual_agent_builder_runs_count)   AS actual_agent_builder_runs,
                   SUM(total_experiments)                 AS raw_experiments,
                   SUM(total_playground_prompt_commits)   AS raw_prompt_commits,
@@ -233,7 +233,7 @@ def fetch_chart_data(metronome_id: str) -> dict | None:
                   f.date_day AS usage_date,
                   SUM(f.billable_trace_count) AS traces,
                   SUM(f.billable_nodes_executed) AS nodes,
-                  SUM(f.billable_agent_runs) AS agent_runs,
+                  SUM(f.billable_lsd_runs) AS agent_runs,
                   SUM(f.billable_longlived_trace_count) AS longlived_traces,
                   SUM(f.billable_agent_builder_runs_count) AS ab_runs
                 FROM {_tbl("fct__organization_usage_daily")} f

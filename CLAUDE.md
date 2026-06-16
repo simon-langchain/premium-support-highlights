@@ -38,6 +38,8 @@ Copy `.env.example` to `.env`. Required variables:
 - `ANTHROPIC_API_KEY` — For Claude summaries
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (Web application type). Add `{DASHBOARD_URL}/auth/google/callback` (and `http://localhost:3000/auth/google/callback` for local dev) to Authorised redirect URIs in Google Cloud Console. The redirect URI is derived automatically from `DASHBOARD_URL`.
 
+**Gotcha — inherited `ANTHROPIC_BASE_URL`:** if you've set up the [LangSmith LLM Gateway](https://docs.langchain.com/langsmith/llm-gateway-coding-agents) to route Claude Code CLI through `gateway.smith.langchain.com` (exporting `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` in a shell), any VS Code integrated terminal opened from a window launched after that export inherits it too. Sourcing `.env` in `start.sh` can't undo this — it only sets vars actually present in the file, so the inherited gateway URL silently wins over the real key in `.env` and Anthropic calls 403 (the gateway requires a `gateway:invoke`-scoped key). `start.sh` now strips `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_URL` at startup unless you've explicitly added them to this project's own `.env`.
+
 Optional variables:
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` — For emailing reports (Postmark recommended)
 - `SMTP_FROM` — From address (defaults to `SMTP_USER`)
@@ -120,7 +122,7 @@ Protected routes:
 - `compute_avg_response_time(issues)` — hours to first response for closed tickets
 - `get_priority_breakdown(issues)` / `get_state_breakdown(issues)` / `get_disposition_breakdown(issues)`
 
-**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt. `generate_qbr_insights(...)` generates `observations` and `opportunities` bullets for the Enterprise Support slide. `generate_usage_insights(...)` generates per-slide observations and opportunities for the 3 LangSmith Usage slides (22-24) in a single Claude Haiku call so bullets stay aligned: slide 22 (commit usage — contract pacing, % commit used), slide 23 (tracing — traces, agent runs, page views, evaluator totals), slide 24 (feature adoption — experiments, Prompt Hub, datasets, evaluator rules by type). Returns `usage_headline`, `commit_observations/opportunities`, `tracing_observations/opportunities`, `feature_observations/opportunities`.
+**`summary_agent.py`** — AI summary generation via `deepagents`. `generate_account_summary(...)` formats metrics as compact text and runs the agent. `make_summarise_tickets_tool(open_issues, force, account_name)` returns a tool that generates and caches per-ticket summaries in parallel, passing the account name through to the prompt. `generate_qbr_insights(...)` generates `observations` and `opportunities` bullets for the Enterprise Support slide. `generate_usage_insights(...)` generates per-slide summaries, observations, and opportunities for the 3 LangSmith Usage slides (22-24) plus an Engagement Scorecard rollup, all in a single Claude Haiku call so everything stays aligned: slide 22 (commit usage — contract pacing, % commit used), slide 23 (tracing — traces, agent runs, page views, evaluator totals), slide 24 (feature adoption — experiments, Prompt Hub, datasets, evaluator rules by type). Returns `commit_summary`/`tracing_summary`/`feature_summary` (one-sentence per-slide headlines), `usage_summary` (rollup sentence for the Engagement Scorecard, synthesising all 3), and `commit_observations/opportunities`, `tracing_observations/opportunities`, `feature_observations/opportunities` (bullet lists).
 
 **`report.py`** — Self-contained HTML report generator. `generate_report_html(..., is_email=False, banner_url=None, logo_url=None, sections=None)`:
 - `is_email=True`: email-safe layout (table-based, no SVG/CSS grid/flex), banner + footer, metric cards 2x2, breakdowns stacked
@@ -144,6 +146,8 @@ Protected routes:
 
 `fetch_maturity_data(metronome_id)` returns maturity dimension scores for the radar chart. `_param(name, value)` is a local helper for parameterised BQ queries. `_rows_to_dicts(rows)` converts BQ Row objects to plain dicts, serialising `date`/`datetime` to ISO strings.
 
+**Gotcha — schema drift breaks chart insertion silently:** the `monthly_usage`/`cumulative_usage` queries read `fct__organization_usage_daily.billable_lsd_runs`/`actual_lsd_runs` (renamed from `billable_agent_runs`/`actual_agent_runs` upstream — the Python-side field names keep the old `*_agent_runs` aliases so no downstream code needed to change). If a BQ query fails, `fetch_chart_data` catches the exception and returns an empty list for that key rather than raising — and `build_commit_usage_from_bq`/`create_usage_composite_from_bq` both return empty bytes when their source rows are empty, which makes `main.py` skip the chart-insertion call entirely (`if commit_bytes: ...`). The net effect: the slide's chart silently never updates (stuck on whatever was last successfully inserted) while AI-generated text from unrelated queries like `contract_metrics` keeps updating fine — easy to mistake for a text/chart sync bug rather than a broken upstream column reference. Check `logs/backend.log` for `fetch_chart_data: ... query failed` warnings when a chart looks frozen.
+
 **`hex_client.py`** — Chart image generation (direct BigQuery path; Hex API path kept for `check_hex_cells.py` validation utility). Key functions:
 - `create_usage_composite_from_bq(chart_data)` — renders a 2×2 composite of monthly trace/agent/page-view/evaluator bar charts from BQ data
 - `create_feature_usage_composite_from_bq(chart_data)` — renders a 3+2 composite of feature usage bar charts (experiments, prompt commits/pulls, datasets, evaluator rules); the evaluator rules chart is rendered as a **stacked bar chart** when there are multiple series
@@ -154,11 +158,12 @@ Protected routes:
 - `fetch_chart_images(metronome_id, static_ids)` — triggers a Hex notebook run and downloads cell images; utility for `check_hex_cells.py` only
 - All chart functions use the dark theme: BG=`#0c0d1a`, CARD=`#161729`, TEXT=`#e2e8f0`, MUTED=`#94a3b8`, BORDER=`#2d3148`
 
-**`slides_client.py`** — Google Slides deck builder. `create_slide_deck(account_name, slide14, slide15, quarter_label, month_label)` copies the template presentation into the customer's Drive folder and applies text replacements. Key replacements in `_build_requests`:
-- Enterprise Support slide: sev1/sev2 ticket text, waiting text, severity breakdown, observations, opportunities
-- Product Feedback slide: feature request list, summary line
-- Enablement & Training slide (slide 26): `"50/250 Agent Engineers trained on LangSmith..."` → real enrolled/seats fraction (or just enrolled count for self-hosted with `billable_seats=0`); `"5% of Engineers are enabled..."` → real pct, or `"{total_sign_ups} sign-ups across {num_courses} courses"` fallback when seats is unknown; `"[X] [Customer Team] professionals"` → `"[X] {account_name} professionals"`
-- Global: `[Customer]` / `[CUSTOMER]` → account name (applied last)
+**`slides_client.py`** — Google Slides deck builder. `create_slide_deck(account_name, slide14, slide15, quarter_label, month_label)` copies the template presentation into the customer's Drive folder and applies text replacements. All template substitutions use `{placeholder}` tokens (not literal sentence matching) so wording changes in the template don't silently break replacement. Key replacements in `_build_requests`:
+- Enterprise Support slide: `{sev1 status}`, `{{OBSERVATIONS}}`, `{{OPPORTUNITIES}}` (waiting-on-LangChain count, Sev 2-4 breakdown, and in-progress feature request count have no template placeholder in the current deck and aren't computed — that info is shown independently via `priority_breakdown`/`state_breakdown` in Slack and email/PDF reports)
+- Product Feedback slide: `{{FEATURE_REQUEST_LIST}}`, `{feature request summary}`
+- Enablement & Training slide (slide 26): `{enablement stat}` → real enrolled/seats fraction (or just enrolled count for self-hosted with `billable_seats=0`); `{enablement pct}` → real pct, or `"{total_sign_ups} sign-ups across {num_courses} courses"` fallback when seats is unknown; `{enablement session note}` → `"Instructor-led in-person session for [X] {account_name} professionals"`
+- LangSmith Usage slides (22-24) and Engagement Scorecard: `{commit summary}`/`{tracing summary}`/`{feature summary}`/`{usage summary}` plus the `observations`/`opportunities` placeholders documented in the QBR data flow table below
+- Global: `[Customer]` / `[CUSTOMER]` → account name (applied last); `[Date]` / `[Customer][date]` used elsewhere in the file for date stamps
 
 **Two-template system**: two Google Slides templates are supported, both stored in the shared Drive `Template` folder:
 - `"full_deck"` — `"LangChain QBR Template"`: complete deck with chart slides (maturity radar/bar, commit usage, LangSmith usage, feature usage, enablement, engagement scorecard, etc.)
@@ -233,10 +238,13 @@ The `slide14` dict is the primary data carrier for the QBR deck. It is built in 
 | `open_tickets`, `waiting_on_langchain`, `sev1/2/3/4_tickets`, `sev1/2/3/4_since_*` | Pylon API | Enterprise Support slide text |
 | `fr_list`, `fr_count`, `delivered_count` | Pylon API + Claude | Product Feedback slide |
 | `observations`, `opportunities` | Claude (AI insights) | Enterprise Support slide observations/opportunities bullets |
-| `usage_headline` | Claude (AI insights) | One-sentence summary headline on LangSmith Usage slides (22-24) |
+| `commit_summary` | Claude (AI insights) | Slide 22 (commit usage) headline — `{commit summary}` template placeholder |
 | `commit_observations`, `commit_opportunities` | Claude (AI insights) | Slide 22 (commit usage) — `{commit observations}` / `{commit opportunities}` template placeholders |
+| `tracing_summary` | Claude (AI insights) | Slide 23 (tracing) headline — `{tracing summary}` template placeholder |
 | `tracing_observations`, `tracing_opportunities` | Claude (AI insights) | Slide 23 (tracing) — `{tracing observations}` / `{tracing opportunities}` template placeholders |
+| `feature_summary` | Claude (AI insights) | Slide 24 (feature adoption) headline — `{feature summary}` template placeholder |
 | `feature_observations`, `feature_opportunities` | Claude (AI insights) | Slide 24 (feature adoption) — `{feature observations}` / `{feature opportunities}` template placeholders |
+| `usage_summary` | Claude (AI insights) | LangSmith Engagement Scorecard rollup headline, synthesises commit/tracing/feature summaries — `{usage summary}` template placeholder |
 | `academy_enrolled` | BigQuery `enablement_stats` | Enablement & Training slide |
 | `billable_seats` | BigQuery `enablement_stats` | Denominator for enrolled % (preferred over `est_engineering_headcount` which can be 20k+ for large enterprises) |
 | `est_engineering_headcount` | BigQuery `enablement_stats` | Stored but not used as denominator |
