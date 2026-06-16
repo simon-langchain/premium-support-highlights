@@ -1,0 +1,33 @@
+backend/summary_agent.py
+  s_b1d709508337c9::t_fb3ee04e045473 333-335,338
+  s_b1d709508337c9::t_88507413bba454 336-337,339
+  s_b1d709508337c9::t_42b38ec1f2f117 358-361,371-374
+  s_b1d709508337c9::t_984f98a47caf03 423-426,435,443-444,452,470-473,484
+  s_b1d709508337c9::t_9bb5343c31ed6d 446
+  s_b1d709508337c9::t_e86d4a2e1f67ff 264
+  s_b1d709508337c9::t_30a4042f7cb8c4 392-393,396-398
+  s_b1d709508337c9::t_80eb322c8c72a8 367
+  s_b1d709508337c9::t_6280c7fc9f5fbb 296,298-299,303
+  s_b1d709508337c9::t_b6b25d44ca6d9f 428-433
+  s_b1d709508337c9::t_6388400a406e0c 448-449
+backend/slides_client.py
+  s_b1d709508337c9::t_da73ef4ca7cd8c 1688-1691
+  s_b1d709508337c9::t_4d1d58c61d863a 1753,1770,1772-1774
+  s_b1d709508337c9::t_0437b0719b2ae2 1757,1760,1763,1766-1767
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "90934b3ac70e355ef158cddb57df553204289edd",
+  "prompts": {},
+  "sessions": {
+    "s_b1d709508337c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a685fbc3-d70e-40d9-ad92-3d260c183b53",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
