@@ -1,0 +1,19 @@
+start.sh
+  s_b1d709508337c9::t_ee84a603ac1bae 111-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "111d84a2d75639d458e36fd8aec62e9e9765e07a",
+  "prompts": {},
+  "sessions": {
+    "s_b1d709508337c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a685fbc3-d70e-40d9-ad92-3d260c183b53",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
