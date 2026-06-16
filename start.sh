@@ -108,6 +108,24 @@ if [ "$_env_changed" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Guard against an inherited LangSmith LLM Gateway override. ANTHROPIC_BASE_URL
+# / ANTHROPIC_API_URL are sometimes exported in a shell to route Claude Code
+# CLI through gateway.smith.langchain.com (see langsmith/llm-gateway-coding-
+# agents docs). VS Code integrated terminals inherit that from whatever shell
+# launched the app, which silently reroutes this project's Anthropic calls
+# through the gateway too (sourcing .env above can't undo it — it only sets
+# vars that are actually present in the file). Strip it unless this project's
+# own .env explicitly defines it.
+# ---------------------------------------------------------------------------
+
+for _gw_var in ANTHROPIC_BASE_URL ANTHROPIC_API_URL; do
+  if [ -n "${!_gw_var:-}" ] && ! grep -qE "^${_gw_var}=" "$ENV_FILE"; then
+    echo "Warning: ${_gw_var} is set in your shell environment (${!_gw_var}) but not in .env — unsetting for this run so Anthropic calls go direct." >&2
+    unset "$_gw_var"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # Dependencies (fast no-op if already up to date)
 # ---------------------------------------------------------------------------
 
