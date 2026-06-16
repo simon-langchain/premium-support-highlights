@@ -1682,15 +1682,13 @@ def _fr_score(s15: dict) -> int:
 def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
     """Build replaceAllText API requests for both slides."""
     sev1 = s14.get("sev1_open", 0)
-    sev2 = s14.get("sev2_open", 0)
-    sev3 = s14.get("sev3_open", 0)
-    sev4 = s14.get("sev4_open", 0)
-    waiting = s14.get("waiting_on_you", 0)
-    fr_open_14 = s14.get("feature_requests_open", 0)
     sla_pct = s14.get("sla_pct")
     observations = s14.get("observations", [])
     opportunities = s14.get("opportunities", [])
-    usage_headline = s14.get("usage_headline", "")
+    commit_summary = s14.get("commit_summary", "")
+    tracing_summary = s14.get("tracing_summary", "")
+    feature_summary = s14.get("feature_summary", "")
+    usage_summary = s14.get("usage_summary", "")
     commit_observations = s14.get("commit_observations", [])
     commit_opportunities = s14.get("commit_opportunities", [])
     tracing_observations = s14.get("tracing_observations", [])
@@ -1703,29 +1701,6 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
         f"No pending Sev 1 support tickets.{sla_clause}"
         if sev1 == 0
         else f"{sev1} pending Sev 1 ticket{'s' if sev1 > 1 else ''}.{sla_clause}"
-    )
-    waiting_text = (
-        f"{waiting} open ticket{'s' if waiting != 1 else ''} pending LangChain's action"
-        if waiting > 0
-        else "No open tickets pending LangChain's action"
-    )
-    sev2_text = (
-        f"{sev2} Sev 2 open ticket{'s' if sev2 != 1 else ''} with SE"
-        if sev2 > 0
-        else "No Sev 2 open tickets"
-    )
-    sev_parts = [
-        f"{c} {lbl}"
-        for lbl, c in [("Sev 1", sev1), ("Sev 2", sev2), ("Sev 3", sev3), ("Sev 4", sev4)]
-        if c > 0
-    ]
-    sev_breakdown = (
-        "By Severity — " + ", ".join(sev_parts) if sev_parts else "No open support tickets"
-    )
-    fr14_text = (
-        f"{fr_open_14} feature request{'s' if fr_open_14 != 1 else ''} actively being worked on"
-        if fr_open_14 > 0
-        else "No open feature requests"
     )
 
     fr_open_15 = s15.get("feature_requests_open", 0)
@@ -1775,37 +1750,32 @@ def _build_requests(account_name: str, s14: dict, s15: dict) -> list[dict]:
 
     replacements = {
         # Enterprise Support slide
-        "No pending Sev 1 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
-        "7 open tickets - pending LangChain's action": waiting_text,
-        "1 Sev 2 open ticket with SE": sev2_text,
-        "By Severity - 1 Sev 2, 1 Sev 3, 1  Sev 4": sev_breakdown,
-        "Four feature requests for Agent Builder actively being worked on": fr14_text,
+        "{sev1 status}": sev1_text,
         "{{OBSERVATIONS}}": obs_text,
         "{{OPPORTUNITIES}}": opp_text,
         # LangSmith Usage slides (22-24) — AI-generated from BQ chart data, per-slide
-        "Strong use of tracking and offline evals. Limited use of Insights and Deployments": usage_headline or "[TODO]",
+        "{commit summary}": commit_summary or "[TODO]",
         "{commit observations}": commit_obs_text,
         "{commit opportunities}": commit_opp_text,
+        "{tracing summary}": tracing_summary or "[TODO]",
         "{tracing observations}": tracing_obs_text,
         "{tracing opportunities}": tracing_opp_text,
+        "{feature summary}": feature_summary or "[TODO]",
         "{feature observations}": feature_obs_text,
         "{feature opportunities}": feature_opp_text,
+        # LangSmith Engagement Scorecard — rollup summary across all 3 usage slides
+        "{usage summary}": usage_summary or "[TODO]",
         # Product Feedback slide
         "{{FEATURE_REQUEST_LIST}}": fr_list,
-        "5 open feature requests; 12 delivered capabilities sought by [Customer]": summary_line,
-        # LangSmith Engagement Scorecard (full deck) — slightly different placeholder text
-        "No pending Sev 1/2/3 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
-        "No pending Sev 1 support tickets. Uptime and response time SLAs within agreed terms": sev1_text,
+        "{feature request summary}": summary_line,
         # Enablement & Training slide — replace template placeholders
-        "Instructor-led in-person session for [X] [Customer Team] professionals": f"Instructor-led in-person session for [X] {account_name} professionals",
+        "{enablement session note}": f"Instructor-led in-person session for [X] {account_name} professionals",
+        "{enablement stat}": enablement_stat,
+        "{enablement pct}": enablement_pct or "[TODO]",
         # Global token — replaces [Customer] / [CUSTOMER] across all slides
         "[Customer]": account_name,
         "[CUSTOMER]": account_name,
     }
-
-    # Enablement & Training slide — always replace both template placeholders
-    replacements["50/250 Agent Engineers trained on LangSmith. No SME engagement currently"] = enablement_stat
-    replacements["5% of Engineers are enabled. Opportunity to 10x"] = enablement_pct or "[TODO]"
 
     score       = _health_score(s14)
     fr_score    = _fr_score(s15)

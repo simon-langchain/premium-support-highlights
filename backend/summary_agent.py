@@ -261,8 +261,7 @@ Rules:
 - observations: exactly 3 bullets — factual snapshot, specific numbers, highlight what's going well
 - opportunities: 1–3 bullets — meaningful ways to deepen the support relationship or unlock more value for {account_name}; think things like: expanding usage, unblocking a strategic initiative, reducing a recurring pain point, making integrations more robust. NOT generic operational tasks like "schedule follow-ups" or "clear backlog"
 - Each bullet: 6-12 words MAX, terse slide-style fragment (not a full sentence)
-- Tone: customer-facing, positively framed — this is read by {account_name} in a QBR. Frame as a partnership
-- Only flag serious issues (Sev 1 open, SLA breach) directly; everything else should be constructive and forward-looking
+- Tone: lean positive — this is read by {account_name} in a QBR, frame as a partnership and lead with genuine wins. Do not sugar-coat real problems though: if something is genuinely bad (long-open Sev 1, SLA breach), state it clearly and directly rather than spinning it. Constructive, not falsely upbeat
 - No filler words, no "LangChain should", no em dashes"""
 
     client = AsyncAnthropic()
@@ -294,13 +293,14 @@ async def generate_usage_insights(
     chart_data: dict,
     maturity_data: list[dict] | None,
 ) -> dict:
-    """Generate per-slide LangSmith usage observations and opportunities from BQ chart data.
+    """Generate per-slide LangSmith usage summaries, observations, and opportunities from BQ chart data.
 
-    Generates tailored bullets for 3 LangSmith Usage slides in a single call so the
-    model can keep them aligned:
+    Generates tailored content for 3 LangSmith Usage slides plus the Engagement Scorecard
+    rollup in a single call so everything stays aligned:
       Slide 22 — Commit usage (contract KPIs: % into contract, % commit used)
       Slide 23 — LangSmith usage (traces, agent runs, page views, evaluator totals)
       Slide 24 — Feature adoption (experiments, Prompt Hub, datasets, evaluator rules)
+      Engagement Scorecard — usage_summary synthesises all 3 slides above into one line
     """
     import json
     from anthropic import AsyncAnthropic
@@ -330,7 +330,13 @@ async def generate_usage_insights(
         last = recent[-1]
         total_traces = int(last.get("actual_traces") or 0)
         s22_lines.append(f"  Most recent month traces: {total_traces:,}")
-    slide22_block = "Contract & commit usage:\n" + "\n".join(s22_lines) if s22_lines else "(no contract data)"
+    # Note: like slide 23, the slide 22 chart returns no image at all when there's no
+    # data (rather than showing a "no data" placeholder), so its absence is never
+    # visually misleading — no NO-DATA hedge needed here either.
+    slide22_block = (
+        "Contract & commit usage:\n" + "\n".join(s22_lines) if s22_lines
+        else "(No chart is shown on this slide when there is no data, so its absence is self-evident. Keep the summary/observations/opportunities brief and neutral — do not claim usage or non-usage, and do not mention data availability.)"
+    )
 
     # Slide 23 — LangSmith Usage: traces, agent runs, page views, evaluator totals
     s23_lines = []
@@ -349,16 +355,23 @@ async def generate_usage_insights(
         cat = r.get("eval_category", "Unknown")
         eval_totals[cat] = eval_totals.get(cat, 0) + int(r.get("rules") or 0)
     total_eval_rules = sum(eval_totals.values())
+    # Note: unlike slides 22/24, the slide 23 chart silently skips any panel with no
+    # data (and the whole image if all panels are empty) rather than showing a "no
+    # data" placeholder — so missing data here is never visually misleading. Only
+    # include lines for metrics that actually have data; no NO-DATA hedge needed.
     s23_parts = []
     if s23_lines:
         s23_parts.append("Monthly traces & agent runs (last 3 months):\n" + "\n".join(s23_lines))
     if pv_lines:
         s23_parts.append("LangSmith page views (last 3 months):\n" + "\n".join(pv_lines))
-    if total_eval_rules:
+    if evaluators:
         s23_parts.append(f"Total evaluator rules (12-month): {total_eval_rules:,}")
     if seats:
         s23_parts.append(f"Active LangSmith users (MAU): {seats}")
-    slide23_block = "\n\n".join(s23_parts) if s23_parts else "(no usage data)"
+    slide23_block = (
+        "\n\n".join(s23_parts) if s23_parts
+        else "(No chart is shown on this slide when there is no data, so its absence is self-evident. Keep the summary/observations/opportunities brief and neutral — do not claim usage or non-usage, and do not mention data availability.)"
+    )
 
     # Slide 24 — Feature Adoption: experiments, Prompt Hub, datasets, evaluator rules by category
     s24_lines = []
@@ -376,9 +389,13 @@ async def generate_usage_insights(
     s24_parts = []
     if s24_lines:
         s24_parts.append("Feature usage (last 3 months):\n" + "\n".join(s24_lines))
+    else:
+        s24_parts.append("Feature usage: NO DATA RECEIVED (tracking/sync gap, not necessarily zero usage)")
     if eval_lines:
         s24_parts.append("Evaluator rules by type (12-month totals):\n" + "\n".join(eval_lines))
-    slide24_block = "\n\n".join(s24_parts) if s24_parts else "(no feature adoption data)"
+    else:
+        s24_parts.append("Evaluator rules by type: NO DATA RECEIVED (tracking/sync gap, not necessarily zero usage)")
+    slide24_block = "\n\n".join(s24_parts)
 
     prompt = f"""You are writing content for 3 LangSmith Usage slides in a QBR with {account_name} ({quarter_label}).
 
@@ -403,9 +420,19 @@ Charts: monthly experiments, Prompt Hub commits/pulls, datasets, evaluator rules
 ---
 Generate:
 
-1. headline: ONE sentence, max 15 words, summarising overall LangSmith usage. Lead with what's working; note the biggest gap or opportunity.
+1. Per-slide summary headlines — ONE sentence each, max 12 words, terse and specific to that slide's data only:
+   - commit_summary (slide 22): commit/contract pacing status
+   - tracing_summary (slide 23): tracing & agent run adoption status
+   - feature_summary (slide 24): feature adoption breadth status
 
-2. For EACH slide, write observations (1-3 bullets) and opportunities (1-3 bullets):
+2. usage_summary: ONE short single-clause sentence, max 10 words, for the LangSmith Engagement
+   Scorecard slide. No semicolons, no joining two statements into one — pick the single most
+   important point, don't try to cover everything. Weight it towards the commit/contract
+   picture (slide 22) as the primary signal — tracing and feature adoption inform it, not
+   co-lead it. Must not contradict any of the 3 summaries above — it is the rollup, not a 4th
+   opinion.
+
+3. For EACH slide, write observations (1-3 bullets) and opportunities (1-3 bullets):
    - observations: factual snapshot of what the data shows on that specific slide only
    - opportunities: how to deepen value — specific to each slide's feature area:
        Slide 22: commit pacing risk, contract value realisation, usage trajectory vs renewal
@@ -413,15 +440,16 @@ Generate:
        Slide 24: unused features (Playground, Online Evals, Experiments, Prompt Hub, Datasets), evaluator adoption
 
 Rules:
-- STRICT 8-word max per bullet — count every word
-- Terse slide fragments only — no full sentences
+- Summaries (commit_summary/tracing_summary/feature_summary/usage_summary): lead with what's working, note the biggest gap — full sentences, not fragments
+- Bullets (observations/opportunities): STRICT 8-word max per bullet — count every word, terse slide fragments only, no full sentences
 - No em dashes, no "LangChain", no filler words
-- Customer-facing, constructive, positively framed
-- Only flag serious issues (Sev 1, SLA breach, commit severely off-pace) directly; everything else forward-looking
+- Tone: lean positive — this is a QBR read by {account_name}, frame as a partnership and lead with genuine wins where the data supports it. Do not sugar-coat real problems though: if something is genuinely bad (Sev 1 open, SLA breach, commit severely off-pace, sustained usage decline), state it clearly and directly rather than spinning it. Constructive, not falsely upbeat
 - Academy/training topics belong on the Enablement slide, not here
+- CRITICAL — "NO DATA RECEIVED" handling (slide 24 only): slide 24's chart always renders a "No data" placeholder for any empty panel, so a viewer could misread that as "customer doesn't use this feature." When a slide 24 data line is marked "NO DATA RECEIVED", that means LangChain is not currently receiving that data, NOT that the customer has zero usage. Never write or imply "no usage", "not using X", "limited adoption" for that metric. Instead hedge: say we are not receiving that data and suggest confirming tracking/instrumentation is set up correctly. If slide 24's data is entirely "NO DATA RECEIVED", its summary/observations should focus on the data gap itself rather than fabricating a usage narrative, and its opportunities should be about validating the data pipeline, not about feature adoption
+- Slides 22 and 23 are different: their charts silently omit whatever has no data (or skip the whole chart) rather than showing a misleading placeholder, so the absence is already self-evident. Never mention missing data, tracking gaps, or data pipeline issues for slides 22 or 23 — if either has little or no underlying data, keep that slide's summary/observations/opportunities brief and neutral instead
 
 Return ONLY valid JSON (no markdown, no code block):
-{{"headline": "...", "slide22": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide23": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide24": {{"observations": ["...", "..."], "opportunities": ["..."]}}}}"""
+{{"commit_summary": "...", "tracing_summary": "...", "feature_summary": "...", "usage_summary": "...", "slide22": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide23": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide24": {{"observations": ["...", "..."], "opportunities": ["..."]}}}}"""
 
     client = AsyncAnthropic()
     response = await client.messages.create(
@@ -439,7 +467,10 @@ Return ONLY valid JSON (no markdown, no code block):
         s23 = data.get("slide23", {})
         s24 = data.get("slide24", {})
         return {
-            "usage_headline": data.get("headline", ""),
+            "commit_summary": str(data.get("commit_summary", "")),
+            "tracing_summary": str(data.get("tracing_summary", "")),
+            "feature_summary": str(data.get("feature_summary", "")),
+            "usage_summary": str(data.get("usage_summary", "")),
             "commit_observations": s22.get("observations", []),
             "commit_opportunities": s22.get("opportunities", []),
             "tracing_observations": s23.get("observations", []),
@@ -450,7 +481,7 @@ Return ONLY valid JSON (no markdown, no code block):
     except Exception:
         _log.warning("Failed to parse usage insights JSON: %s", raw[:200])
         return {
-            "usage_headline": "",
+            "commit_summary": "", "tracing_summary": "", "feature_summary": "", "usage_summary": "",
             "commit_observations": [], "commit_opportunities": [],
             "tracing_observations": [], "tracing_opportunities": [],
             "feature_observations": [], "feature_opportunities": [],
