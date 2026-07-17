@@ -94,7 +94,7 @@ langgraph deploy
 
 Set in the LSD deployment environment:
 - `PYLON_API_TOKEN`
-- `LANGSMITH_API_KEY` — LangSmith API key with `gateway:invoke` scope (authenticates all LLM calls through the gateway)
+- `LLM_GATEWAY_API_KEY` — LangSmith API key with `gateway:invoke` scope (authenticates all LLM calls through the gateway). Note: `LANGSMITH_API_KEY` is reserved by LSD, so use `LLM_GATEWAY_API_KEY` instead.
 - `LANGSMITH_GATEWAY_URL` — optional, defaults to `https://gateway.smith.langchain.com`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 - `DASHBOARD_URL` — your Vercel frontend URL (e.g. `https://your-app.vercel.app`); also used to derive the Google OAuth redirect URI

@@ -35,10 +35,10 @@ cd frontend && npm install
 
 Copy `.env.example` to `.env`. Required variables:
 - `PYLON_API_TOKEN` — Pylon REST API token
-- `LANGSMITH_API_KEY` — LangSmith API key with `gateway:invoke` scope (used to authenticate all LLM calls through the LangSmith LLM Gateway)
+- `LANGSMITH_API_KEY` — LangSmith API key with `gateway:invoke` scope (used to authenticate all LLM calls through the LangSmith LLM Gateway). In LSD, use `LLM_GATEWAY_API_KEY` instead (LSD reserves `LANGSMITH_API_KEY`).
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (Web application type). Add `{DASHBOARD_URL}/auth/google/callback` (and `http://localhost:3000/auth/google/callback` for local dev) to Authorised redirect URIs in Google Cloud Console. The redirect URI is derived automatically from `DASHBOARD_URL`.
 
-**LLM Gateway:** All LLM calls (account summaries, per-ticket summaries, QBR insights, roadmap selection) route through the LangSmith LLM Gateway (`gateway.smith.langchain.com`). The gateway resolves provider API keys from your LangSmith workspace secrets, so no provider keys (Anthropic, OpenAI, Google) are needed locally. `start.sh` sets the per-provider `*_BASE_URL` and `*_API_KEY` env vars from `LANGSMITH_API_KEY` and `LANGSMITH_GATEWAY_URL` at startup. The model registry in `backend/llm.py` defines which models are available; the frontend fetches them via `GET /api/models`.
+**LLM Gateway:** All LLM calls (account summaries, per-ticket summaries, QBR insights, roadmap selection) route through the LangSmith LLM Gateway (`gateway.smith.langchain.com`). The gateway resolves provider API keys from your LangSmith workspace secrets, so no provider keys (Anthropic, OpenAI, Google) are needed locally. `start.sh` sets the per-provider `*_BASE_URL` and `*_API_KEY` env vars from the gateway key at startup. `llm.py` checks `LLM_GATEWAY_API_KEY` first (for LSD), then `LANGSMITH_API_KEY` and `ANTHROPIC_API_KEY` (for local dev). The model registry in `backend/llm.py` defines which models are available; the frontend fetches them via `GET /api/models`.
 
 Optional variables:
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` — For emailing reports (Postmark recommended)

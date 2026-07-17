@@ -131,19 +131,20 @@ fi
 # The gateway authenticates with a LangSmith API key and resolves real
 # provider keys from workspace secrets, so no provider API keys are needed
 # locally. Set the per-provider base URLs and API keys so all SDKs
-# (Anthropic, OpenAI, Google, Fireworks) route through the gateway automatically.
+# (Anthropic, OpenAI, Google, Fireworks, Baseten) route through the gateway.
 #
-# Provider API keys: if .env already sets a provider key (e.g. ANTHROPIC_API_KEY
-# with gateway:invoke scope), keep it. Otherwise default to LANGSMITH_API_KEY.
+# Gateway API key resolution order:
+#   1. LLM_GATEWAY_API_KEY (explicit, used in LSD)
+#   2. ANTHROPIC_API_KEY (shell-exported by gateway coding agents setup)
+#   3. LANGSMITH_API_KEY (from .env)
+# Note: LANGSMITH_API_KEY is reserved by LSD, so in LSD set LLM_GATEWAY_API_KEY.
 # ---------------------------------------------------------------------------
 
 _GATEWAY_URL="${LANGSMITH_GATEWAY_URL:-https://gateway.smith.langchain.com}"
 
-# Determine the gateway API key: prefer the shell-exported ANTHROPIC_API_KEY
-# (set by the LLM Gateway coding agents setup), then .env's LANGSMITH_API_KEY.
-# This key is used for all provider authentication through the gateway.
-_GATEWAY_KEY="${ANTHROPIC_API_KEY:-$LANGSMITH_API_KEY}"
-export LANGSMITH_API_KEY="$_GATEWAY_KEY"
+# Determine the gateway API key from whichever source is available.
+_GATEWAY_KEY="${LLM_GATEWAY_API_KEY:-${ANTHROPIC_API_KEY:-$LANGSMITH_API_KEY}}"
+export LLM_GATEWAY_API_KEY="$_GATEWAY_KEY"
 
 export ANTHROPIC_BASE_URL="$_GATEWAY_URL/anthropic"
 export ANTHROPIC_API_KEY="$_GATEWAY_KEY"
