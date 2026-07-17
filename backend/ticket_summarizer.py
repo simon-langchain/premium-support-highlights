@@ -1,18 +1,20 @@
-"""Per-ticket AI next-steps generation using Claude Haiku.
+"""Per-ticket AI next-steps generation.
 
 Called by make_summarise_tickets_tool() in summary_agent.py. Each open ticket gets a
 1-2 sentence "next steps" output that the summary agent uses as context before
 writing its account-level report, and that appears directly on each ticket card in the UI.
 
-Haiku is used here (rather than Sonnet) because we make one call per open ticket,
-often 20-40 in parallel. It's significantly cheaper and fast enough for short outputs.
-Results are cached by the tool in cache.py so unchanged tickets skip the API call.
+All calls route through the LangSmith LLM Gateway via the centralized model factory
+in llm.py. Results are cached by the tool in cache.py so unchanged tickets skip the
+API call. The cache key includes the model, so switching models triggers a refresh.
 """
 
 import re
 from bs4 import BeautifulSoup
 
-DEFAULT_TICKET_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+from llm import get_chat_model, DEFAULT_MODEL_ID
+
+DEFAULT_TICKET_SUMMARY_MODEL = "anthropic:claude-haiku-4-5-20251001"
 
 
 def _strip_html(html: str) -> str:
@@ -72,9 +74,7 @@ async def summarize_ticket(
     model: str | None = None,
 ) -> str:
     """Generate a 1-2 sentence next-steps action for an open ticket."""
-    from anthropic import AsyncAnthropic
-
-    client = AsyncAnthropic()
+    chat_model = get_chat_model(model or DEFAULT_TICKET_SUMMARY_MODEL)
 
     body_text = _strip_html(body_html)[:600]
     messages_text = _build_message_context(messages)
@@ -100,13 +100,13 @@ async def summarize_ticket(
         f"never individual names, never use 'should' or prescriptive language>"
     )
 
-    response = await client.messages.create(
-        model=model or DEFAULT_TICKET_SUMMARY_MODEL,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    response = await chat_model.ainvoke(prompt)
 
-    return response.content[0].text.strip()
+    content = response.content
+    if isinstance(content, list):
+        parts = [c.get("text", "") if isinstance(c, dict) else str(c) for c in content]
+        return "\n".join(p for p in parts if p).strip()
+    return str(content).strip()
 
 
 def parse_ticket_output(text: str) -> tuple[str, str]:

@@ -55,6 +55,23 @@ export async function fetchTiers(): Promise<string[]> {
   return res.json();
 }
 
+export interface LlmModel {
+  id: string;
+  label: string;
+  provider: string;
+  model: string;
+}
+
+/** Fetch LLM models available through the LangSmith Gateway. */
+export async function fetchModels(): Promise<LlmModel[]> {
+  const res = await fetch("/api/models");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) {
+    throw new Error(`Failed to fetch models: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
 /** Fetch accounts for the given support tier, sorted alphabetically by name. */
 export async function fetchAccounts(tier: string = "Premium"): Promise<Account[]> {
   const res = await fetch(`/api/accounts?${new URLSearchParams({ tier })}`);
@@ -94,8 +111,9 @@ export interface TicketSummary {
   next_steps: string;
 }
 
-export async function fetchCachedTicketSummaries(accountId: string): Promise<Record<number, TicketSummary>> {
-  const res = await fetch(`/api/accounts/${accountId}/cached-ticket-summaries`);
+export async function fetchCachedTicketSummaries(accountId: string, model: string = ""): Promise<Record<number, TicketSummary>> {
+  const params = model ? `?model=${encodeURIComponent(model)}` : "";
+  const res = await fetch(`/api/accounts/${accountId}/cached-ticket-summaries${params}`);
   if (res.status === 401) { handleUnauthorized(res); return {}; }
   if (!res.ok) {
     throw new Error(`Failed to fetch ticket summaries: ${res.status} ${res.statusText}`);
@@ -130,7 +148,8 @@ export async function generateSummary(
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(
-      (data as { detail?: string }).detail ||
+      (data as { detail?: string; error?: string }).detail ||
+      (data as { error?: string }).error ||
         `Failed to generate summary: ${res.status} ${res.statusText}`
     );
   }
@@ -157,6 +176,7 @@ export interface Schedule {
   qbr_template_type: "full_deck" | "support_highlights";
   sections: string[] | null;
   period: string;
+  model: string;
   frequency: "weekly" | "monthly" | "quarterly";
   weekday: number;          // 0=Mon … 6=Sun (Python weekday)
   nth: number;              // 1–4 or -1 (last); ignored for weekly
@@ -183,6 +203,7 @@ export interface CreateScheduleRequest {
   qbr_template_type?: "full_deck" | "support_highlights";
   sections?: string[];
   period: string;
+  model?: string;
   frequency: "weekly" | "monthly" | "quarterly";
   weekday: number;
   nth: number;
@@ -263,11 +284,12 @@ export async function streamQbrSlides(
   accountName: string,
   onProgress: (step: string, label: string, status: "running" | "done") => void,
   templateType: "full_deck" | "support_highlights" = "full_deck",
+  model: string = "",
 ): Promise<string> {
   const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qbr-slides`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ account_name: accountName, template_type: templateType }),
+    body: JSON.stringify({ account_name: accountName, template_type: templateType, model }),
   });
   if (res.status === 401) { handleUnauthorized(res); return ""; }
   if (!res.ok) {

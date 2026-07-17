@@ -409,6 +409,7 @@ async def select_roadmap_items(
     open_issues: list[dict],
     account_name: str,
     today: date | None = None,
+    model: str | None = None,
 ) -> list[dict]:
     """Pick the 3 roadmap items most relevant to this customer.
 
@@ -421,7 +422,7 @@ async def select_roadmap_items(
     """
     import json as _json
     import re as _re
-    from anthropic import AsyncAnthropic
+    from llm import get_chat_model
 
     if not items:
         return []
@@ -473,14 +474,14 @@ Instructions:
 
 Return ONLY a JSON array of exactly 3 distinct integers (indices into the roadmap list above), ordered most to least relevant. Example: [4, 1, 7]"""
 
-    client = AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=60,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    chat_model = get_chat_model(model or "anthropic:claude-haiku-4-5-20251001")
+    response = await chat_model.ainvoke(prompt)
 
-    raw = response.content[0].text.strip()
+    content = response.content
+    if isinstance(content, list):
+        raw = "\n".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content).strip()
+    else:
+        raw = str(content).strip()
     # Extract JSON array even if there's surrounding text
     m = _re.search(r"\[[\d\s,]+\]", raw)
     if m:

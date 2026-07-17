@@ -12,8 +12,8 @@ CACHE_FILE = CACHE_DIR / "analysis_cache.json"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)  # create once at import time
 
 
-def _cache_key(issue_id: str, latest_message_time: str) -> str:
-    raw = f"{issue_id}:{latest_message_time}"
+def _cache_key(issue_id: str, latest_message_time: str, model: str = "") -> str:
+    raw = f"{issue_id}:{latest_message_time}:{model}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -42,21 +42,30 @@ def _is_stale(entry: dict, max_age_seconds: int) -> bool:
         return True
 
 
-def get_ticket_summary(issue_id: str, latest_message_time: str) -> str | None:
-    """Return a cached ticket summary string, or None if not cached or stale."""
-    key = "ts:" + _cache_key(issue_id, latest_message_time)
-    entry = _load().get(key)
-    if not isinstance(entry, dict):
-        return None
-    if _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
-        return None
+def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "") -> str | None:
+    """Return a cached ticket summary string, or None if not cached or stale.
+
+    Looks up by model-specific key first. If not found, falls back to the
+    legacy key (without model) so existing cache entries from before the
+    model-aware cache key migration are still served.
+    """
+    cache = _load()
+    key = "ts:" + _cache_key(issue_id, latest_message_time, model)
+    entry = cache.get(key)
+    if not isinstance(entry, dict) or _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
+        # Fall back to legacy key (no model in hash)
+        if model:
+            legacy_key = "ts:" + _cache_key(issue_id, latest_message_time, "")
+            entry = cache.get(legacy_key)
+        if not isinstance(entry, dict) or _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
+            return None
     return entry.get("summary")
 
 
-def set_ticket_summary(issue_id: str, latest_message_time: str, summary: str) -> None:
+def set_ticket_summary(issue_id: str, latest_message_time: str, summary: str, model: str = "") -> None:
     """Persist a ticket summary to the file cache."""
     cache = _load()
-    key = "ts:" + _cache_key(issue_id, latest_message_time)
+    key = "ts:" + _cache_key(issue_id, latest_message_time, model)
     cache[key] = {
         "summary": summary,
         "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
