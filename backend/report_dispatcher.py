@@ -60,6 +60,7 @@ from main import (
     ALL_SECTIONS,
     OPEN_STATES,
     VALID_PERIODS,
+    DEFAULT_MODEL_ID,
     _build_metrics_blocks,
     _build_payload,
     _compute_csat,
@@ -86,6 +87,7 @@ class ReportState(TypedDict):
     qbr_notify_emails: Optional[list[str]]
     qbr_template_type: Optional[str]     # "full_deck" | "support_highlights"
     sections: Optional[list[str]]        # None = all sections
+    model: Optional[str]                 # model ID for cache lookups
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
     hour_local: Optional[int]            # local hour for display/audit only; cron already encodes UTC
@@ -168,7 +170,7 @@ def _should_run(condition: dict | None) -> bool:
 # Ticket-summary reader (inline here to avoid depending on route-level code)
 # ---------------------------------------------------------------------------
 
-def _read_ticket_summaries(open_issues: list[dict]) -> dict[int, dict]:
+def _read_ticket_summaries(open_issues: list[dict], model: str = "") -> dict[int, dict]:
     out: dict[int, dict] = {}
     for issue in open_issues:
         issue_id = issue.get("id", "")
@@ -176,7 +178,7 @@ def _read_ticket_summaries(open_issues: list[dict]) -> dict[int, dict]:
         if number is None:
             continue
         latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-        raw = cache_mod.get_ticket_summary(issue_id, latest)
+        raw = cache_mod.get_ticket_summary(issue_id, latest, model)
         if raw:
             s, ns = parse_ticket_output(raw)
             if s or ns:
@@ -219,7 +221,8 @@ async def send_report(state: ReportState) -> dict:
         return {"skipped": False, "result": None, "error": f"Failed to fetch Pylon data: {exc}"}
 
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
-    ticket_summaries = await asyncio.to_thread(_read_ticket_summaries, open_issues)
+    ticket_model = state.get("model") or DEFAULT_MODEL_ID
+    ticket_summaries = await asyncio.to_thread(_read_ticket_summaries, open_issues, ticket_model)
     account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
     sections_set = set(sections) if sections is not None else None
 
@@ -308,9 +311,10 @@ async def send_report(state: ReportState) -> dict:
         qbr_notify_channel_id = state.get("qbr_notify_channel_id")
         qbr_notify_emails = state.get("qbr_notify_emails") or []
         qbr_template_type = state.get("qbr_template_type", "full_deck")
+        qbr_model = state.get("model") or DEFAULT_MODEL_ID
 
         try:
-            _pres_id, slide_url, month_label = await _do_qbr_generation(account_id, account_name, qbr_template_type)
+            _pres_id, slide_url, month_label = await _do_qbr_generation(account_id, account_name, qbr_template_type, model=qbr_model)
         except Exception as exc:
             return {"skipped": False, "result": None, "error": f"QBR generation failed: {exc}"}
 

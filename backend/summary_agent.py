@@ -2,9 +2,12 @@
 
 Pipeline (orchestrated by main.py's POST /summary route):
   1. generate_account_summary() formats ticket and metric data into a structured prompt
-  2. A deepagents agent (Claude Sonnet) receives the prompt and calls summarise_tickets()
-  3. summarise_tickets() runs per-ticket Claude Haiku calls in parallel, caching to disk
+  2. A deepagents agent receives the prompt and calls summarise_tickets()
+  3. summarise_tickets() runs per-ticket LLM calls in parallel, caching to disk
   4. The agent writes a 2-paragraph customer-facing executive summary
+
+All LLM calls route through the LangSmith LLM Gateway via the centralized
+client and model factory in llm.py.
 
 The summarise_tickets tool is built by make_summarise_tickets_tool(), a factory that
 captures the per-request open_issues list and force flag as a closure. This keeps tool
@@ -21,10 +24,12 @@ import pylon_client
 import cache as cache_mod
 from langchain_core.tools import tool
 from ticket_summarizer import summarize_ticket
+from llm import get_chat_model, DEFAULT_MODEL_ID
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_SUMMARY_MODEL = "claude-sonnet-4-6"
+DEFAULT_SUMMARY_MODEL = DEFAULT_MODEL_ID
+DEFAULT_QBR_MODEL = "anthropic:claude-haiku-4-5-20251001"
 
 SUMMARY_SYSTEM_PROMPT = """You are preparing a monthly support highlights report to share directly with a premium customer.
 
@@ -47,12 +52,14 @@ Guidelines:
 - Do not use headers — the summary is two paragraphs, not a structured document"""
 
 
-def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_name: str = ""):
+def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_name: str = "", model: str = ""):
     """Return the summarise_tickets tool bound to this request's open issues.
 
     Defined as a factory so the tool (and its captured context) lives in the
     agent layer rather than in the HTTP route handler.
     """
+    ticket_model = model or DEFAULT_SUMMARY_MODEL
+
     @tool
     async def summarise_tickets() -> str:
         """Generate next-steps actions for all open tickets in parallel.
@@ -64,7 +71,7 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_na
             number = issue.get("number")
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
             if not force:
-                cached = await asyncio.to_thread(cache_mod.get_ticket_summary, issue_id, latest_msg_time)
+                cached = await asyncio.to_thread(cache_mod.get_ticket_summary, issue_id, latest_msg_time, ticket_model)
                 if cached:
                     return number, cached
             try:
@@ -75,9 +82,10 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_na
                     messages=messages,
                     state=issue.get("state", ""),
                     account_name=account_name,
+                    model=ticket_model,
                 )
                 if issue_id:
-                    await asyncio.to_thread(cache_mod.set_ticket_summary, issue_id, latest_msg_time, summary)
+                    await asyncio.to_thread(cache_mod.set_ticket_summary, issue_id, latest_msg_time, summary, ticket_model)
                 return number, summary
             except Exception:
                 _log.exception("Failed to summarise ticket #%s (id=%s)", number, issue_id)
@@ -91,11 +99,18 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_na
 
 
 def create_summary_agent(model: str | None = None, tools: list | None = None):
-    """Create a deepagent for account summary generation."""
+    """Create a deepagent for account summary generation.
+
+    The model string (a registry ID like 'anthropic:claude-sonnet-4-6') is
+    resolved to a BaseChatModel via the gateway before being passed to
+    create_deep_agent, so the agent always routes through the gateway.
+    """
     from deepagents import create_deep_agent
 
+    chat_model = get_chat_model(model or DEFAULT_SUMMARY_MODEL)
+
     return create_deep_agent(
-        model=model or DEFAULT_SUMMARY_MODEL,
+        model=chat_model,
         system_prompt=SUMMARY_SYSTEM_PROMPT,
         name="support-highlights-summarizer",
         tools=tools or [],
@@ -218,10 +233,10 @@ async def generate_qbr_insights(
     avg_response_hours: float | None,
     tickets_raised_qtr: int,
     tickets_closed_qtr: int,
+    model: str | None = None,
 ) -> dict[str, list[str]]:
-    """Generate QBR Observations and Opportunities bullet points using Claude."""
+    """Generate QBR Observations and Opportunities bullet points via the gateway."""
     import json
-    from anthropic import AsyncAnthropic
 
     _PRIORITY_MAP = {"urgent": "Sev1", "high": "Sev2", "medium": "Sev3", "low": "Sev4"}
 
@@ -264,15 +279,15 @@ Rules:
 - Tone: lean positive — this is read by {account_name} in a QBR, frame as a partnership and lead with genuine wins. Do not sugar-coat real problems though: if something is genuinely bad (long-open Sev 1, SLA breach), state it clearly and directly rather than spinning it. Constructive, not falsely upbeat
 - No filler words, no "LangChain should", no em dashes"""
 
-    client = AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    chat_model = get_chat_model(model or DEFAULT_QBR_MODEL)
+    response = await chat_model.ainvoke(prompt)
 
-    raw = response.content[0].text.strip()
-    # Strip markdown code fences if Claude wraps the JSON
+    content = response.content
+    if isinstance(content, list):
+        raw = "\n".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content).strip()
+    else:
+        raw = str(content).strip()
+    # Strip markdown code fences if the model wraps the JSON
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     try:
@@ -292,6 +307,7 @@ async def generate_usage_insights(
     quarter_label: str,
     chart_data: dict,
     maturity_data: list[dict] | None,
+    model: str | None = None,
 ) -> dict:
     """Generate per-slide LangSmith usage summaries, observations, and opportunities from BQ chart data.
 
@@ -303,7 +319,6 @@ async def generate_usage_insights(
       Engagement Scorecard — usage_summary synthesises all 3 slides above into one line
     """
     import json
-    from anthropic import AsyncAnthropic
 
     monthly = chart_data.get("monthly_usage", [])
     page_views_data = chart_data.get("page_views", [])
@@ -451,14 +466,14 @@ Rules:
 Return ONLY valid JSON (no markdown, no code block):
 {{"commit_summary": "...", "tracing_summary": "...", "feature_summary": "...", "usage_summary": "...", "slide22": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide23": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide24": {{"observations": ["...", "..."], "opportunities": ["..."]}}}}"""
 
-    client = AsyncAnthropic()
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    chat_model = get_chat_model(model or DEFAULT_QBR_MODEL)
+    response = await chat_model.ainvoke(prompt)
 
-    raw = response.content[0].text.strip()
+    content = response.content
+    if isinstance(content, list):
+        raw = "\n".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content).strip()
+    else:
+        raw = str(content).strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     try:

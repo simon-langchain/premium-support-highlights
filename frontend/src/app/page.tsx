@@ -12,6 +12,7 @@ import {
   fetchAccountData,
   fetchCachedTicketSummaries,
   fetchTiers,
+  fetchModels,
   deleteQbrSlide,
   fetchQbrHistory,
   fetchSchedules,
@@ -24,6 +25,7 @@ import {
   type AccountData,
   type Issue,
   type TicketSummary,
+  type LlmModel,
 } from "@/lib/api";
 import DownloadMenu from "@/components/DownloadMenu";
 import ShareButton from "@/components/ShareButton";
@@ -113,12 +115,6 @@ function sortIssues(issues: Issue[], sortBy: string, sortOrder: "asc" | "desc"):
   });
 }
 
-const MODELS = [
-  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-];
-
 const Logo = () => (
   <svg width="32" height="32" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
     <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="#006ddd" />
@@ -149,7 +145,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-6");
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [selectedModelName, setSelectedModelName] = useState("");
+  const [models, setModels] = useState<LlmModel[]>([]);
   const [period, setPeriod] = useState("6m");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("priority");
@@ -190,6 +188,7 @@ export default function Home() {
         account.name,
         (step, _label, status) => setQbrSteps(prev => ({ ...prev, [step]: status })),
         templateType,
+        modelRef.current,
       );
       const updated = await fetchQbrHistory(account.id, account.name);
       setQbrHistory(updated);
@@ -213,6 +212,9 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, []);
 
+  // Derived: combined model ID sent to the backend (provider:model format)
+  const selectedModel = selectedModelName;
+
   // Refs so pipeline callbacks always see current model/period without stale closures
   const modelRef = useRef(selectedModel);
   useEffect(() => { modelRef.current = selectedModel; }, [selectedModel]);
@@ -222,11 +224,21 @@ export default function Home() {
   // Abort controller for any in-flight summary pipeline (ticket SSE + account summary)
   const summaryAbortRef = useRef<AbortController | null>(null);
 
-  // Load available tiers once on mount
+  // Load available tiers and models once on mount
   useEffect(() => {
     fetchTiers()
       .then((data) => setTiers(data))
       .catch(() => {}); // non-fatal — tier selector will still show default
+    fetchModels()
+      .then((data) => {
+        setModels(data);
+        if (data.length > 0 && !selectedProvider) {
+          const first = data[0];
+          setSelectedProvider(first.provider);
+          setSelectedModelName(first.id);
+        }
+      })
+      .catch(() => {}); // non-fatal — model selector will be empty
   }, []);
 
   // Load accounts when tier changes — auto-select deep link account on first load
@@ -274,7 +286,7 @@ export default function Home() {
       };
       const pollInterval = setInterval(() => {
         if (signal.aborted) { clearInterval(pollInterval); return; }
-        fetchCachedTicketSummaries(account.id)
+        fetchCachedTicketSummaries(account.id, modelRef.current)
           .then((s) => { if (!signal.aborted) applysummaries(s); })
           .catch(() => {});
       }, 2000);
@@ -296,7 +308,7 @@ export default function Home() {
 
       // Final fetch to catch any summaries that completed between the last poll and agent finish
       try {
-        const summaries = await fetchCachedTicketSummaries(account.id);
+        const summaries = await fetchCachedTicketSummaries(account.id, modelRef.current);
         if (!signal.aborted) {
           setTicketSummaries((prev) => {
             const next = { ...prev };
@@ -352,7 +364,7 @@ export default function Home() {
           const initial: Record<number, TicketSummary | null> = {};
           for (const n of openNumbers) initial[n] = null;
           setTicketSummaries(initial);
-          fetchCachedTicketSummaries(account.id)
+          fetchCachedTicketSummaries(account.id, modelRef.current)
             .then((cached) => {
               if (!abortCtrl.signal.aborted) {
                 setTicketSummaries((prev) => {
@@ -533,15 +545,34 @@ export default function Home() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
-                  Summary Model
-                </label>
-                <OptionPicker
-                  options={MODELS}
-                  value={selectedModel}
-                  onChange={setSelectedModel}
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                    Provider
+                  </label>
+                  <OptionPicker
+                    options={[...new Set(models.map((m) => m.provider))].map((p) => ({
+                      value: p,
+                      label: p.charAt(0).toUpperCase() + p.slice(1),
+                    }))}
+                    value={selectedProvider}
+                    onChange={(p) => {
+                      setSelectedProvider(p);
+                      const firstForProvider = models.find((m) => m.provider === p);
+                      if (firstForProvider) setSelectedModelName(firstForProvider.id);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs uppercase tracking-wider mb-1.5 font-medium" style={{ color: "var(--text-muted)" }}>
+                    Model
+                  </label>
+                  <OptionPicker
+                    options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
+                    value={selectedModelName}
+                    onChange={setSelectedModelName}
+                  />
+                </div>
               </div>
 
               <button
@@ -573,8 +604,15 @@ export default function Home() {
         onSelect={handleAccountSelect}
         onRefresh={handleRefresh}
         dataUpdatedAt={dataUpdatedAt}
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
+        selectedProvider={selectedProvider}
+        selectedModelName={selectedModelName}
+        onProviderChange={(p) => {
+          setSelectedProvider(p);
+          const firstForProvider = models.find((m) => m.provider === p);
+          if (firstForProvider) setSelectedModelName(firstForProvider.id);
+        }}
+        onModelChange={setSelectedModelName}
+        models={models}
         period={period}
         onPeriodChange={setPeriod}
         onSetup={() => setConfigured(false)}
@@ -1073,6 +1111,7 @@ export default function Home() {
           accountId={selectedAccount.id}
           accountName={selectedAccount.name}
           defaultPeriod={period}
+          model={selectedModel}
           channelId={slackChannelId}
           availableChannels={slackAvailableChannels}
           openToNewQbr={scheduleOpenToNewQbr}

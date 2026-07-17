@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { RefreshCw, ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import type { Account } from "@/lib/api";
+import type { Account, LlmModel } from "@/lib/api";
 import OptionPicker from "@/components/OptionPicker";
 import AccountPicker from "@/components/AccountPicker";
 
@@ -14,8 +14,11 @@ interface SidebarProps {
   onSelect: (account: Account) => void;
   onRefresh: () => void;
   dataUpdatedAt: Date | null;
-  selectedModel: string;
+  selectedProvider: string;
+  selectedModelName: string;
+  onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
+  models: LlmModel[];
   period: string;
   onPeriodChange: (period: string) => void;
   onSetup: () => void;
@@ -23,12 +26,6 @@ interface SidebarProps {
   selectedTier: string;
   onTierChange: (tier: string) => void;
 }
-
-const MODELS = [
-  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-];
 
 const PERIODS = [
   { value: "7d", label: "7 Days" },
@@ -61,8 +58,11 @@ export default function Sidebar({
   onSelect,
   onRefresh,
   dataUpdatedAt,
-  selectedModel,
+  selectedProvider,
+  selectedModelName,
+  onProviderChange,
   onModelChange,
+  models,
   period,
   onPeriodChange,
   onSetup,
@@ -168,9 +168,27 @@ export default function Sidebar({
 
             <div className="px-4 pb-3">
               <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Summary Model
+                Provider
               </label>
-              <OptionPicker options={MODELS} value={selectedModel} onChange={onModelChange} />
+              <OptionPicker
+                options={[...new Set(models.map((m) => m.provider))].map((p) => ({
+                  value: p,
+                  label: p.charAt(0).toUpperCase() + p.slice(1),
+                }))}
+                value={selectedProvider}
+                onChange={onProviderChange}
+              />
+            </div>
+
+            <div className="px-4 pb-3">
+              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+                Model
+              </label>
+              <OptionPicker
+                options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
+                value={selectedModelName}
+                onChange={onModelChange}
+              />
             </div>
 
             <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />

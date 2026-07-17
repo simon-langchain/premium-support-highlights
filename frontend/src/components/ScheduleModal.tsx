@@ -435,6 +435,7 @@ interface ScheduleModalProps {
   accountId: string;
   accountName: string;
   defaultPeriod: string;
+  model: string;
   channelId: string | null;
   availableChannels: { id: string; name: string }[];
   onClose: () => void;
@@ -445,6 +446,7 @@ export default function ScheduleModal({
   accountId,
   accountName,
   defaultPeriod,
+  model,
   channelId,
   availableChannels,
   onClose,
@@ -601,6 +603,7 @@ export default function ScheduleModal({
         qbr_template_type: mode === "qbr" ? qbrTemplateType : undefined,
         sections: mode !== "qbr" ? [...selectedSections] : undefined,
         period,
+        model,
         frequency,
         weekday,
         nth,

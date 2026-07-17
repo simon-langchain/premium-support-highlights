@@ -51,7 +51,7 @@ _save_env_var() {
 
 REQUIRED_VARS=(
   "PYLON_API_TOKEN|Pylon API token — https://app.usepylon.com/settings/api-tokens"
-  "ANTHROPIC_API_KEY|Anthropic API key — https://console.anthropic.com"
+  "LANGSMITH_API_KEY|LangSmith API key (gateway:invoke scope) — https://smith.langchain.com → Settings → API Keys"
 )
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -59,7 +59,26 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "Created .env from .env.example"
 fi
 
+# Save shell-exported provider keys before sourcing .env overwrites them.
+# In environments where the LLM Gateway is already configured (e.g. a shell
+# that exported ANTHROPIC_API_KEY with gateway:invoke scope), we want to keep
+# that key rather than letting .env's value win.
+_SHELL_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+_SHELL_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+_SHELL_FIREWORKS_API_KEY="${FIREWORKS_API_KEY:-}"
+_SHELL_BASETEN_API_KEY="${BASETEN_API_KEY:-}"
+_SHELL_GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"
+_SHELL_GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+
 set -a; source "$ENV_FILE"; set +a
+
+# Restore shell-exported provider keys if .env didn't set them to gateway keys.
+[ -n "$_SHELL_ANTHROPIC_API_KEY" ] && export ANTHROPIC_API_KEY="$_SHELL_ANTHROPIC_API_KEY"
+[ -n "$_SHELL_OPENAI_API_KEY" ] && export OPENAI_API_KEY="$_SHELL_OPENAI_API_KEY"
+[ -n "$_SHELL_FIREWORKS_API_KEY" ] && export FIREWORKS_API_KEY="$_SHELL_FIREWORKS_API_KEY"
+[ -n "$_SHELL_BASETEN_API_KEY" ] && export BASETEN_API_KEY="$_SHELL_BASETEN_API_KEY"
+[ -n "$_SHELL_GOOGLE_API_KEY" ] && export GOOGLE_API_KEY="$_SHELL_GOOGLE_API_KEY"
+[ -n "$_SHELL_GEMINI_API_KEY" ] && export GEMINI_API_KEY="$_SHELL_GEMINI_API_KEY"
 
 _env_changed=false
 for entry in "${REQUIRED_VARS[@]}"; do
@@ -108,22 +127,39 @@ if [ "$_env_changed" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Guard against an inherited LangSmith LLM Gateway override. ANTHROPIC_BASE_URL
-# / ANTHROPIC_API_URL are sometimes exported in a shell to route Claude Code
-# CLI through gateway.smith.langchain.com (see langsmith/llm-gateway-coding-
-# agents docs). VS Code integrated terminals inherit that from whatever shell
-# launched the app, which silently reroutes this project's Anthropic calls
-# through the gateway too (sourcing .env above can't undo it — it only sets
-# vars that are actually present in the file). Strip it unless this project's
-# own .env explicitly defines it.
+# LangSmith LLM Gateway — route all LLM calls through the gateway.
+# The gateway authenticates with a LangSmith API key and resolves real
+# provider keys from workspace secrets, so no provider API keys are needed
+# locally. Set the per-provider base URLs and API keys so all SDKs
+# (Anthropic, OpenAI, Google, Fireworks) route through the gateway automatically.
+#
+# Provider API keys: if .env already sets a provider key (e.g. ANTHROPIC_API_KEY
+# with gateway:invoke scope), keep it. Otherwise default to LANGSMITH_API_KEY.
 # ---------------------------------------------------------------------------
 
-for _gw_var in ANTHROPIC_BASE_URL ANTHROPIC_API_URL; do
-  if [ -n "${!_gw_var:-}" ] && ! grep -qE "^${_gw_var}=" "$ENV_FILE"; then
-    echo "Warning: ${_gw_var} is set in your shell environment (${!_gw_var}) but not in .env — unsetting for this run so Anthropic calls go direct." >&2
-    unset "$_gw_var"
-  fi
-done
+_GATEWAY_URL="${LANGSMITH_GATEWAY_URL:-https://gateway.smith.langchain.com}"
+
+# Determine the gateway API key: prefer the shell-exported ANTHROPIC_API_KEY
+# (set by the LLM Gateway coding agents setup), then .env's LANGSMITH_API_KEY.
+# This key is used for all provider authentication through the gateway.
+_GATEWAY_KEY="${ANTHROPIC_API_KEY:-$LANGSMITH_API_KEY}"
+export LANGSMITH_API_KEY="$_GATEWAY_KEY"
+
+export ANTHROPIC_BASE_URL="$_GATEWAY_URL/anthropic"
+export ANTHROPIC_API_KEY="$_GATEWAY_KEY"
+
+export OPENAI_BASE_URL="$_GATEWAY_URL/openai/v1"
+export OPENAI_API_KEY="$_GATEWAY_KEY"
+
+export GOOGLE_GEMINI_BASE_URL="$_GATEWAY_URL/gemini"
+export GOOGLE_API_KEY="$_GATEWAY_KEY"
+export GEMINI_API_KEY="$_GATEWAY_KEY"
+
+export FIREWORKS_BASE_URL="$_GATEWAY_URL/fireworks"
+export FIREWORKS_API_KEY="$_GATEWAY_KEY"
+
+export BASETEN_BASE_URL="$_GATEWAY_URL/baseten/v1"
+export BASETEN_API_KEY="$_GATEWAY_KEY"
 
 # ---------------------------------------------------------------------------
 # Dependencies (fast no-op if already up to date)

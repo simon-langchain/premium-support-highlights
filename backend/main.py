@@ -57,6 +57,7 @@ import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights, generate_usage_insights
 from report import generate_report_html
 from ticket_summarizer import parse_ticket_output
+from llm import AVAILABLE_MODELS, DEFAULT_MODEL_ID
 
 app = FastAPI(title="Premium Support Highlights API", version="0.1.0")
 
@@ -116,9 +117,14 @@ _METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"
 
 class SummaryRequest(BaseModel):
     account_name: str
-    model: str = "claude-sonnet-4-6"
+    model: str = DEFAULT_MODEL_ID
     period: str = "6m"
     force: bool = False
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _default_model(cls, v: str | None) -> str:
+        return v if v else DEFAULT_MODEL_ID
 
 
 class EmailReportRequest(BaseModel):
@@ -458,7 +464,7 @@ async def _get_or_regenerate_account_summary(
     period: str,
     payload: dict,
     open_issues: list[dict],
-    model: str = "claude-sonnet-4-6",
+    model: str = DEFAULT_MODEL_ID,
 ) -> str | None:
     """Return a fresh account summary, regenerating if missing or stale.
 
@@ -470,7 +476,7 @@ async def _get_or_regenerate_account_summary(
         return summary
 
     # Regenerate -force=True ensures stale ticket summaries are also refreshed
-    summarise_tickets = make_summarise_tickets_tool(open_issues, force=True, account_name=account_name)
+    summarise_tickets = make_summarise_tickets_tool(open_issues, force=True, account_name=account_name, model=model)
     try:
         summary = await generate_account_summary(
             account_name=account_name,
@@ -634,6 +640,12 @@ def get_tiers(_email: str = Depends(require_auth)):
         raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
 
 
+@app.get("/api/models")
+def get_models(_email: str = Depends(require_auth)):
+    """Return list of LLM models available through the LangSmith Gateway."""
+    return AVAILABLE_MODELS
+
+
 @app.get("/api/accounts")
 def get_accounts(tier: str = "Premium", _email: str = Depends(require_auth)):
     """Return sorted list of accounts for the given support tier [{id, name}, ...]."""
@@ -685,12 +697,18 @@ async def get_account_data(
 
 
 @app.get("/api/accounts/{account_id}/cached-ticket-summaries")
-async def get_cached_ticket_summaries(account_id: str, _email: str = Depends(require_auth)):
+async def get_cached_ticket_summaries(
+    account_id: str,
+    model: str = Query(default=""),
+    _email: str = Depends(require_auth),
+):
     """Return cached per-ticket summaries keyed by ticket number.
 
     Uses the open-issues cache so the frequent frontend polling doesn't
-    hit the Pylon API on every request.
+    hit the Pylon API on every request. The model query param ensures
+    summaries are read from the correct model-specific cache entries.
     """
+    ticket_model = model or DEFAULT_MODEL_ID
     open_key = f"open:{account_id}"
     open_issues = _cache_get(open_key)
     if open_issues is None:
@@ -710,7 +728,7 @@ async def get_cached_ticket_summaries(account_id: str, _email: str = Depends(req
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, ticket_model)
             if raw:
                 s, ns = parse_ticket_output(raw)
                 if s or ns:
@@ -726,7 +744,7 @@ async def get_account_summary(account_id: str, body: SummaryRequest, _email: str
     period = body.period if body.period in VALID_PERIODS else "6m"
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
-    summarise_tickets = make_summarise_tickets_tool(open_issues, body.force, account_name=body.account_name)
+    summarise_tickets = make_summarise_tickets_tool(open_issues, body.force, account_name=body.account_name, model=body.model)
 
     async def event_stream():
         # Run the agent as a background task and emit SSE keepalive pings every 3
@@ -1529,7 +1547,7 @@ async def _handle_slack_action(
             # For the first page, regenerate stale/missing summaries.
             # Subsequent pages skip regeneration -summaries were already warmed on first click.
             if action_id == "psh_post_issues":
-                summarise_tickets = make_summarise_tickets_tool(open_issues, force=False, account_name=account_name)
+                summarise_tickets = make_summarise_tickets_tool(open_issues, force=False, account_name=account_name, model=DEFAULT_MODEL_ID)
                 await summarise_tickets.ainvoke({})
 
             def _read_ticket_summaries() -> dict[int, dict]:
@@ -1632,6 +1650,7 @@ class ScheduleRequest(BaseModel):
     qbr_template_type: Literal["full_deck", "support_highlights"] = "full_deck"
     sections: list[str] | None = None   # None = all sections; filtered to ALL_SECTIONS
     period: str = "1m"
+    model: str = DEFAULT_MODEL_ID
     frequency: Literal["weekly", "monthly", "quarterly"]
     weekday: Annotated[int, Field(ge=0, le=6)] = 0    # 0=Mon … 6=Sun
     nth: Annotated[int, Field(ge=-1, le=4)] = 1       # 1–4 or -1 (last); 0 is invalid but excluded by ge=-1
@@ -1814,6 +1833,7 @@ def _format_schedule(cron: dict) -> dict:
         "qbr_template_type": inp.get("qbr_template_type", "full_deck"),
         "sections": inp.get("sections"),
         "period": inp.get("period", "1m"),
+        "model": inp.get("model", DEFAULT_MODEL_ID),
         "frequency": frequency,
         "weekday": weekday,
         "nth": nth,
@@ -1889,6 +1909,7 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
         "sections": body.sections,
         "run_condition": run_condition,
         "label": body.label,
+        "model": body.model,
         "hour_local": body.hour_local,
         "timezone": body.timezone,
         "created_by": created_by,
@@ -1997,7 +2018,7 @@ def _compute_qbr_data(
     return slide14, slide15
 
 
-async def _do_qbr_generation(account_id: str, account_name: str, template_type: str = "full_deck") -> tuple[str, str, str]:
+async def _do_qbr_generation(account_id: str, account_name: str, template_type: str = "full_deck", model: str | None = None) -> tuple[str, str, str]:
     """Generate QBR slides and share with the langchain.dev domain.
 
     Called by the scheduled dispatcher. Returns (pres_id, url, month_label).
@@ -2062,6 +2083,7 @@ async def _do_qbr_generation(account_id: str, account_name: str, template_type: 
         avg_response_hours=avg_rt,
         tickets_raised_qtr=len(quarter_issues),
         tickets_closed_qtr=tickets_closed_qtr,
+        model=model,
     )
 
     slide14, slide15 = _compute_qbr_data(
@@ -2118,7 +2140,7 @@ async def _do_qbr_generation(account_id: str, account_name: str, template_type: 
         if _bq_chart_data:
             try:
                 _usage_ins = await generate_usage_insights(
-                    account_name, quarter_label, _bq_chart_data, _maturity_data
+                    account_name, quarter_label, _bq_chart_data, _maturity_data, model=model
                 )
                 slide14.update(_usage_ins)
             except Exception:
@@ -2198,7 +2220,7 @@ async def _do_qbr_generation(account_id: str, account_name: str, template_type: 
                     except (ValueError, KeyError):
                         pass
             raw_items = list(_seen.values())
-            selected = await roadmap_mod.select_roadmap_items(raw_items, open_issues, account_name, _today)
+            selected = await roadmap_mod.select_roadmap_items(raw_items, open_issues, account_name, _today, model=model)
 
             def _month_key(item: dict) -> tuple:
                 try:
@@ -2347,6 +2369,7 @@ async def create_qbr_slides(
     if template_type not in ("support_highlights", "full_deck"):
         template_type = "full_deck"
     is_full_deck = template_type == "full_deck"
+    qbr_model = (body.get("model") or "").strip() or None
 
     import slides_client as slides_mod
     import roadmap_client as roadmap_mod
@@ -2413,6 +2436,7 @@ async def create_qbr_slides(
                     avg_response_hours=avg_rt,
                     tickets_raised_qtr=len(quarter_issues),
                     tickets_closed_qtr=tickets_closed_qtr,
+                    model=qbr_model,
                 )
             except Exception as exc:
                 yield _sse("error", {"detail": f"AI insights failed: {exc}"})
@@ -2472,7 +2496,7 @@ async def create_qbr_slides(
                 if _bq_chart_data:
                     try:
                         _usage_ins = await generate_usage_insights(
-                            account_name, quarter_label, _bq_chart_data, _maturity_data
+                            account_name, quarter_label, _bq_chart_data, _maturity_data, model=qbr_model
                         )
                         slide14.update(_usage_ins)
                     except Exception:
@@ -2562,7 +2586,7 @@ async def create_qbr_slides(
                                 pass
                     raw_items = list(_seen.values())
                     selected = await roadmap_mod.select_roadmap_items(
-                        raw_items, open_issues, account_name, _today
+                        raw_items, open_issues, account_name, _today, model=qbr_model
                     )
                     # Order selected items oldest-month-first (left→right on slide)
                     def _month_key(item: dict) -> tuple:
