@@ -45,13 +45,13 @@ _PROVIDER_TO_LANGCHAIN = {
 }
 
 # API key used for gateway authentication.
-# In production (LSD), only LANGSMITH_API_KEY is set. In local dev, start.sh
-# sets the per-provider *_API_KEY env vars from LANGSMITH_API_KEY, and the
-# shell may also export ANTHROPIC_API_KEY (gateway coding agents setup).
-# We check LANGSMITH_API_KEY first so a stale direct provider key can't
-# shadow the gateway key in production.
+# In production (LSD), set LLM_GATEWAY_API_KEY (LANGSMITH_API_KEY is reserved
+# by LSD for its own use). In local dev, start.sh sets the per-provider
+# *_API_KEY env vars from the gateway key, and the shell may also export
+# ANTHROPIC_API_KEY (gateway coding agents setup).
 _API_KEY = (
-    os.environ.get("LANGSMITH_API_KEY")
+    os.environ.get("LLM_GATEWAY_API_KEY")
+    or os.environ.get("LANGSMITH_API_KEY")
     or os.environ.get("ANTHROPIC_API_KEY")
     or os.environ.get("OPENAI_API_KEY")
     or os.environ.get("FIREWORKS_API_KEY")
