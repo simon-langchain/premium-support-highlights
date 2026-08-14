@@ -188,6 +188,7 @@ export interface Schedule {
   schedule: string;
   next_run_date: string | null;
   created_at: string;
+  channel_warning: string | null; // set when the bot isn't a member of the target Slack channel
 }
 
 export interface CreateScheduleRequest {
@@ -329,6 +330,24 @@ export async function streamQbrSlides(
     }
   }
   return url;
+}
+
+/**
+ * Live pre-save check: is the bot a member of this Slack channel?
+ * Returns a human-readable warning message (with an /invite command) if not,
+ * or null if the bot is present, the channel couldn't be checked, or the
+ * check itself failed — always fails soft, never throws.
+ */
+export async function checkSlackChannel(channelId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/slack/channel-check?${new URLSearchParams({ channel_id: channelId })}`);
+    if (res.status === 401) { handleUnauthorized(res); return null; }
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data as { warning?: string | null }).warning ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteSchedule(cronId: string): Promise<void> {

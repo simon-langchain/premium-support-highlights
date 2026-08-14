@@ -1384,6 +1384,50 @@ async def get_slack_channel(
     }
 
 
+def _slack_not_in_channel_message(
+    slack_token: str,
+    channel_id: str,
+    channel_name: str | None,
+    bot_name: str | None = None,
+) -> str:
+    """Build the standard "bot isn't in this channel, here's how to invite it" message.
+
+    Shared by the manual-send error handler, the schedule list/create channel
+    warnings, and the live pre-save channel check, so the frontend's single
+    invite-command parser (SlackInviteWarning) renders all three identically.
+    bot_name can be pre-fetched by batch callers to avoid one auth.test call
+    per channel.
+    """
+    bot = bot_name or slack_client.get_bot_name(slack_token) or "lc-support-highlights"
+    channel_label = f"#{channel_name}" if channel_name else f"'{channel_id}'"
+    return f"The bot is not a member of channel {channel_label}. Invite it with /invite @{bot} in that channel, then try again."
+
+
+@app.get("/api/slack/channel-check")
+async def check_slack_channel(channel_id: str, _email: str = Depends(require_auth)) -> dict:
+    """Live pre-save check for the Schedule form: is the bot in this channel?
+
+    Checks the literal channel_id passed in (not resolved through
+    SLACK_OVERRIDE_CHANNEL) — this answers "is the bot in the channel I just
+    picked," which is what's useful while building a schedule. Fails soft:
+    missing token, network errors, or an inconclusive membership check all
+    just return no warning rather than an error the form has to handle.
+    """
+    slack_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    if not slack_token:
+        return {"warning": None}
+    try:
+        info = await asyncio.to_thread(slack_client.check_channel_membership, slack_token, channel_id)
+        if info.get("is_member") is not False:
+            return {"warning": None}
+        message = await asyncio.to_thread(
+            _slack_not_in_channel_message, slack_token, channel_id, info.get("name")
+        )
+        return {"warning": message}
+    except Exception:
+        return {"warning": None}
+
+
 @app.post("/api/accounts/{account_id}/slack-report")
 async def post_slack_report(
     account_id: str,
@@ -1447,16 +1491,8 @@ async def post_slack_report(
             ) from exc
         if "not_in_channel" in msg:
             channel_name = slack_client.get_channel_name(slack_token, channel_id)
-            bot_name = slack_client.get_bot_name(slack_token) or "lc-support-highlights"
-            channel_label = f"#{channel_name}" if channel_name else f"'{channel_id}'"
-            invite_cmd = f"/invite @{bot_name}"
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"The bot is not a member of channel {channel_label}. "
-                    f"Invite it with {invite_cmd} in that channel, then try again."
-                ),
-            ) from exc
+            detail = _slack_not_in_channel_message(slack_token, channel_id, channel_name)
+            raise HTTPException(status_code=422, detail=detail) from exc
         raise HTTPException(status_code=502, detail=f"Slack error: {msg}") from exc
 
     await asyncio.to_thread(
@@ -1848,6 +1884,66 @@ def _format_schedule(cron: dict) -> dict:
     }
 
 
+async def _annotate_channel_warnings(schedules: list[dict]) -> None:
+    """Mutate each schedule dict in place, adding channel_warning (None or a message).
+
+    Live-checks whether the bot is actually a member of each schedule's
+    literal configured Slack channel, so a broken channel (e.g. never
+    invited, kicked, Slack Connect channel needing approval) is visible in
+    the list view rather than only discovered when a scheduled send silently
+    fails. Deliberately does NOT resolve through SLACK_OVERRIDE_CHANNEL —
+    that's a local-testing-only redirect for actual sends (report_dispatcher.py
+    still honors it there, unchanged), and this warning should always describe
+    the channel the schedule is actually configured for, matching the live
+    pre-save check in the create/edit form.
+
+    Fails soft everywhere: any unexpected error here must never break
+    GET /api/schedules, since that would take down schedule management for
+    reasons unrelated to the schedules themselves.
+    """
+    for s in schedules:
+        s["channel_warning"] = None
+
+    try:
+        slack_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+        if not slack_token:
+            return
+
+        def target_channel(s: dict) -> str | None:
+            if s.get("destination_type") == "slack":
+                return s.get("channel_id")
+            if s.get("destination_type") == "qbr" and s.get("qbr_notify_type") == "slack":
+                return s.get("qbr_notify_channel_id")
+            return None
+
+        by_channel: dict[str, list[dict]] = {}
+        for s in schedules:
+            ch = target_channel(s)
+            if ch:
+                by_channel.setdefault(ch, []).append(s)
+        if not by_channel:
+            return
+
+        channel_ids = list(by_channel.keys())
+        results = await asyncio.gather(
+            *[asyncio.to_thread(slack_client.check_channel_membership, slack_token, ch) for ch in channel_ids],
+            return_exceptions=True,
+        )
+        bad = [(ch, info) for ch, info in zip(channel_ids, results) if isinstance(info, dict) and info.get("is_member") is False]
+        if not bad:
+            return
+
+        # Fetch the bot's name once for the whole batch rather than once per channel.
+        bot_name = await asyncio.to_thread(slack_client.get_bot_name, slack_token)
+        for ch, info in bad:
+            message = _slack_not_in_channel_message(slack_token, ch, info.get("name"), bot_name=bot_name)
+            for s in by_channel[ch]:
+                s["channel_warning"] = message
+    except Exception:
+        for s in schedules:
+            s["channel_warning"] = None
+
+
 def _lg_client():
     """Return a LangGraph SDK client pointed at the local/deployed server.
 
@@ -1885,6 +1981,8 @@ async def list_schedules(
         if account_id and formatted.get("account_id") != account_id:
             continue
         result.append(formatted)
+
+    await _annotate_channel_warnings(result)
     return result
 
 
@@ -1939,7 +2037,9 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
             "schedule": cron_expr,
         },
     )
-    return _format_schedule(cron)
+    formatted = _format_schedule(cron)
+    await _annotate_channel_warnings([formatted])
+    return formatted
 
 
 # ---------------------------------------------------------------------------

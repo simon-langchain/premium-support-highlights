@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Trash2, Pencil, Plus, Check, ChevronDown, Search, AlertCircle, RefreshCw, ArrowLeft, Mail, Presentation } from "lucide-react";
+import { X, Trash2, Pencil, Plus, Check, ChevronDown, Search, AlertCircle, AlertTriangle, RefreshCw, ArrowLeft, Mail, Presentation } from "lucide-react";
 import SlackIcon from "./SlackIcon";
+import SlackInviteWarning from "./SlackInviteWarning";
 import {
   fetchSchedules,
   createSchedule,
   deleteSchedule,
+  checkSlackChannel,
   type Schedule,
 } from "@/lib/api";
 import { getTzAbbr, tzShort } from "@/lib/timezone";
@@ -488,8 +490,27 @@ export default function ScheduleModal({
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [channelWarning, setChannelWarning] = useState<string | null>(null);
 
   useEffect(() => { setSelectedChannel(channelId); }, [channelId]);
+
+  // Live pre-save check: is the bot in the currently-selected Slack channel
+  // (either the "slack" destination's channel, or the QBR Slack-notify
+  // channel)? Re-runs whenever that selection changes so switching accounts,
+  // channels, or editing an existing broken schedule all reflect immediately.
+  const activeChannelId =
+    mode === "slack" ? selectedChannel :
+    mode === "qbr" && qbrNotifyType === "slack" ? qbrNotifyChannel :
+    null;
+
+  useEffect(() => {
+    if (view !== "form" || !activeChannelId) { setChannelWarning(null); return; }
+    let cancelled = false;
+    checkSlackChannel(activeChannelId).then((warning) => {
+      if (!cancelled) setChannelWarning(warning);
+    });
+    return () => { cancelled = true; };
+  }, [view, activeChannelId]);
 
   function loadSchedules() {
     setLoadingList(true);
@@ -796,6 +817,8 @@ export default function ScheduleModal({
                               {s.created_by && <span>{s.next_run_date ? " · " : ""}by {s.created_by}</span>}
                             </p>
                           )}
+                          {/* Row 5: bot-not-in-channel warning */}
+                          {s.channel_warning && <SlackInviteWarning message={s.channel_warning} />}
                         </div>
                       );
                     })}
@@ -858,9 +881,12 @@ export default function ScheduleModal({
                   ))}
                 </div>
                 {mode === "slack" && (
-                  availableChannels.length > 0
-                    ? <ChannelPicker channels={availableChannels} selected={selectedChannel} onSelect={setSelectedChannel} />
-                    : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>
+                  <>
+                    {availableChannels.length > 0
+                      ? <ChannelPicker channels={availableChannels} selected={selectedChannel} onSelect={setSelectedChannel} />
+                      : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>}
+                    {channelWarning && <SlackInviteWarning message={channelWarning} />}
+                  </>
                 )}
                 {mode === "email" && (
                   <EmailTagInput emails={emails} onChange={setEmails} />
@@ -883,9 +909,12 @@ export default function ScheduleModal({
                       ))}
                     </div>
                     {qbrNotifyType === "slack" ? (
-                      internalChannels.length > 0
-                        ? <ChannelPicker channels={internalChannels} selected={qbrNotifyChannel} onSelect={setQbrNotifyChannel} />
-                        : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>
+                      <>
+                        {internalChannels.length > 0
+                          ? <ChannelPicker channels={internalChannels} selected={qbrNotifyChannel} onSelect={setQbrNotifyChannel} />
+                          : <p className="text-xs" style={{ color: "var(--text-caption)" }}>No Slack channels — check SLACK_BOT_TOKEN.</p>}
+                        {channelWarning && <SlackInviteWarning message={channelWarning} />}
+                      </>
                     ) : (
                       <>
                         <EmailTagInput emails={qbrNotifyEmails} onChange={setQbrNotifyEmails} placeholder="name@langchain.dev" />
@@ -1092,17 +1121,19 @@ export default function ScheduleModal({
                 </div>
               )}
 
-              {/* Submit */}
+              {/* Submit — relabels to "Save Anyway" as an explicit acknowledgment
+                  when the bot isn't in the selected channel. Same click, same
+                  submit action either way; saving was never blocked by this. */}
               <button
                 type="submit"
                 disabled={creating}
                 className="w-full flex items-center justify-center gap-1.5 text-xs rounded px-3 py-2 disabled:opacity-50 transition-opacity hover:opacity-90"
                 style={{ background: "var(--accent)", color: "#fff" }}
               >
-                <Plus size={12} />
+                {channelWarning ? <AlertTriangle size={12} /> : <Plus size={12} />}
                 {creating
-                  ? (editingId ? "Updating…" : "Scheduling…")
-                  : (editingId ? "Update Schedule" : "Add Schedule")}
+                  ? (channelWarning ? "Saving anyway…" : editingId ? "Updating…" : "Scheduling…")
+                  : (channelWarning ? "Save Anyway" : editingId ? "Update Schedule" : "Add Schedule")}
               </button>
             </form>
           )}

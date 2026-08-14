@@ -81,6 +81,38 @@ def get_channel_name(token: str, channel_id: str) -> str | None:
     return None
 
 
+def check_channel_membership(token: str, channel_id: str, timeout: float = 5.0) -> dict:
+    """Check whether the bot is a member of a channel.
+
+    Returns {"is_member": bool | None, "name": str | None}. is_member is
+    None when the check itself was inconclusive (network error, missing
+    scope, unexpected response) — callers should treat None as "unknown"
+    and not raise a warning, to avoid false positives. A "channel_not_found"
+    response (typically a private/Connect channel the bot can't see) is
+    treated as is_member=False since either way the bot can't post there.
+    """
+    try:
+        resp = httpx.get(
+            f"{_SLACK_API}/conversations.info",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"channel": channel_id},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            if data.get("error") == "channel_not_found":
+                return {"is_member": False, "name": None}
+            return {"is_member": None, "name": None}
+        ch = data.get("channel", {})
+        name = ch.get("name")
+        if name:
+            _channel_name_cache[channel_id] = name
+        return {"is_member": bool(ch.get("is_member")), "name": name}
+    except Exception:
+        return {"is_member": None, "name": None}
+
+
 def get_bot_name(token: str) -> str | None:
     """Return the bot's Slack username via auth.test."""
     try:

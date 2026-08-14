@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Share2, Send, X, Check, AlertCircle, ChevronDown, Search, Mail } from "lucide-react";
+import { Share2, Send, X, Check, ChevronDown, Search, Mail } from "lucide-react";
 import SlackIcon from "./SlackIcon";
+import SlackInviteWarning from "./SlackInviteWarning";
 
 const SECTIONS = [
   { id: "key_metrics", label: "Key Metrics" },
@@ -289,26 +290,9 @@ export default function ShareButton({
                 <Check size={11} />
                 {status.message}
               </p>
-            ) : (() => {
-              const inviteMatch = status.message.match(/(.*?\.).*?(\/invite\s+\S+)/);
-              return inviteMatch ? (
-                <div className="mt-2 rounded-md px-2.5 py-2 text-xs" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
-                  <div className="flex items-start gap-1.5 mb-2" style={{ color: "#ef4444" }}>
-                    <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
-                    <span>{inviteMatch[1]}</span>
-                  </div>
-                  <div style={{ color: "var(--text-muted)" }} className="mb-1">Run in that channel:</div>
-                  <code className="block px-2 py-1 rounded text-xs" style={{ background: "var(--bg-tertiary)", color: "var(--text-primary)" }}>
-                    {inviteMatch[2]}
-                  </code>
-                </div>
-              ) : (
-                <p className="text-xs mt-1.5 flex items-center gap-1" style={{ color: "#ef4444" }}>
-                  <AlertCircle size={11} />
-                  {status.message}
-                </p>
-              );
-            })()
+            ) : (
+              <SlackInviteWarning message={status.message} />
+            )
           )}
         </div>
       )}
