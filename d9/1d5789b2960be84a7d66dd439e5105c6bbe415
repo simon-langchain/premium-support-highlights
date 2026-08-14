@@ -1,0 +1,51 @@
+frontend/src/lib/api.ts
+  s_82c8dfe5f3c843::t_4b30959db89db4 335-352
+  s_82c8dfe5f3c843::t_92408b697a10aa 191
+backend/slack_client.py
+  s_82c8dfe5f3c843::t_dff8de2a935669 84-115
+frontend/src/components/ScheduleModal.tsx
+  s_82c8dfe5f3c843::t_378baca0fc9944 4
+  s_82c8dfe5f3c843::t_3533098de74202 912-917
+  s_82c8dfe5f3c843::t_74b6e5f2da5195 6,11
+  s_82c8dfe5f3c843::t_7e356a6e87bc1d 1124-1126,1133,1135-1136
+  s_82c8dfe5f3c843::t_b94af5bdddfed1 821
+  s_82c8dfe5f3c843::t_41aa811a8fdd21 884-889
+  s_82c8dfe5f3c843::t_9ca277c3563038 493,497-513
+  s_82c8dfe5f3c843::t_7b5ea8b4d6b826 820
+  s_82c8dfe5f3c843::t_535501bda97f9f 514
+frontend/src/components/ShareButton.tsx
+  s_82c8dfe5f3c843::t_7d1e8058cf2653 4
+  s_82c8dfe5f3c843::t_5de97d537df732 293-295
+  s_82c8dfe5f3c843::t_137ea61d7c4297 6
+frontend/src/components/SlackInviteWarning.tsx
+  s_82c8dfe5f3c843::t_a7a818f2f7bf59 1-44
+backend/main.py
+  s_82c8dfe5f3c843::t_3770acb83fc139 1494-1495
+  s_82c8dfe5f3c843::t_aad1ac455e8e0f 1932-1939,1941
+  s_82c8dfe5f3c843::t_259a3163321e75 1387-1430
+  s_82c8dfe5f3c843::t_7735ba13cec60b 2040-2042
+  s_82c8dfe5f3c843::t_813602660a3319 1890-1898
+  s_82c8dfe5f3c843::t_bd6ee240e08c7f 1887-1889,1899-1931,1940,1942-1946
+  s_82c8dfe5f3c843::t_7d1aef3a38ad4d 1984-1985
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d91d5789b2960be84a7d66dd439e5105c6bbe415",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
