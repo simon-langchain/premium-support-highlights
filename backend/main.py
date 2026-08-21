@@ -23,6 +23,7 @@ import hmac
 import logging
 import os
 import re
+import statistics
 import time
 import asyncio
 import json
@@ -30,6 +31,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import zoneinfo
+from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs, urlencode
 
@@ -52,6 +54,7 @@ import auth as auth_mod
 import pylon_client
 import slack_client
 import metrics as metrics_mod
+import message_activity
 import audit
 import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights, generate_usage_insights
@@ -59,7 +62,96 @@ from report import generate_report_html
 from ticket_summarizer import parse_ticket_output
 from llm import AVAILABLE_MODELS, DEFAULT_MODEL_ID
 
-app = FastAPI(title="Premium Support Highlights API", version="0.1.0")
+_IDLE_POLL_INTERVAL = 15 * 60  # how long to sleep once backfill and incremental sync are both idle
+
+
+async def _message_sync_loop() -> None:
+    """Background task: interleaves the staged newest-first backfill with a
+    regular incremental catch-up.
+
+    The two run interleaved in a single loop (not as separate concurrent
+    tasks) so they never race on the shared store file — each iteration
+    does at most one backfill step and/or one incremental sync step,
+    sequentially. Both steps are bounded/chunked (see
+    message_activity.run_backfill_step / run_incremental_sync_step) so
+    neither can starve the other of a turn. The incremental step's "is a
+    new cycle due" gate is persisted to disk rather than an in-process
+    timer, so a backend restart doesn't reset the clock.
+
+    Runs for the lifetime of the app. Every Pylon call this makes is already
+    paced under Pylon's 20/min message-fetch cap, so it never competes with
+    foreground requests for that budget — the dashboard just reads whatever
+    is synced so far.
+    """
+    while True:
+        backfill_done = await asyncio.to_thread(message_activity.backfill_complete)
+        if not backfill_done:
+            try:
+                await message_activity.run_backfill_step()
+            except Exception:
+                # A single step failing (transient Pylon timeout/5xx, etc.) must not
+                # abandon the rest of the backfill — retry that step after a short
+                # pause rather than skipping ahead.
+                _log.exception("message_activity backfill step failed — retrying shortly")
+                await asyncio.sleep(30)
+
+        try:
+            incremental_has_more = await message_activity.run_incremental_sync_step()
+        except Exception:
+            _log.exception("message_activity incremental sync step failed")
+            incremental_has_more = False
+
+        if backfill_done and not incremental_has_more:
+            # Nothing to do right now — idle until the next incremental cycle is due.
+            await asyncio.sleep(_IDLE_POLL_INTERVAL)
+
+
+# Narrowest to broadest — warmed in this order so the periods people look at
+# most often become fast first, matching message_activity's newest-first
+# backfill philosophy.
+_TEAM_CACHE_WARM_PERIODS = ["7d", "1m", "3m", "6m", "1y"]
+_TEAM_CACHE_WARM_INTERVAL = 4 * 3600  # well inside the 8-hour cache TTL
+
+
+async def _team_cache_warmer_loop() -> None:
+    """Keep the team-dashboard's org-wide Pylon caches from ever going stale
+    during a live request.
+
+    get_team_period_issues/get_team_backlog_issues serve a stale cache rather
+    than block a request on a live fetch (a 6m/1y org-wide search can take
+    several minutes — long enough to exceed the frontend's fetch timeout and
+    500 the whole page, which is exactly what was happening before this loop
+    existed). This is what actually keeps that served copy fresh: refreshes
+    every period, plus the backlog, well inside their TTL. Runs immediately
+    on startup (pre-warming before real traffic typically arrives) and then
+    on a fixed interval — each refresh's own failure is independent, so one
+    period timing out doesn't stop the others from refreshing.
+    """
+    while True:
+        for period in _TEAM_CACHE_WARM_PERIODS:
+            try:
+                await asyncio.to_thread(pylon_client.get_team_period_issues, period, True)
+            except Exception:
+                _log.exception("team cache warmer: failed to refresh period=%s", period)
+        try:
+            await asyncio.to_thread(pylon_client.get_team_backlog_issues, OPEN_STATES, True)
+        except Exception:
+            _log.exception("team cache warmer: failed to refresh backlog")
+        await asyncio.sleep(_TEAM_CACHE_WARM_INTERVAL)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    task = asyncio.create_task(_message_sync_loop())
+    warmer_task = asyncio.create_task(_team_cache_warmer_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        warmer_task.cancel()
+
+
+app = FastAPI(title="Premium Support Highlights API", version="0.1.0", lifespan=_lifespan)
 
 # ALLOWED_ORIGINS: comma-separated list of allowed origins.
 # Set this in the deployment env to your Vercel frontend URL.
@@ -181,6 +273,35 @@ async def require_auth(request: Request) -> str:
     email = auth_mod.validate_session(token)
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return email
+
+
+async def require_support_team(email: str = Depends(require_auth)) -> str:
+    """Gate for the internal Support-team dashboard.
+
+    Checks live (1hr-cached) Pylon "Support" team membership on top of the
+    normal session check — separate from the customer-dashboard routes,
+    which only require require_auth.
+    """
+    if _LOCAL_TEST_MODE:
+        return email
+    if not await asyncio.to_thread(pylon_client.is_support_team_member, email):
+        raise HTTPException(status_code=403, detail="Not a member of the Support team")
+    return email
+
+
+async def require_admin(email: str = Depends(require_support_team)) -> str:
+    """Gate for team-dashboard admin routes.
+
+    Composing on require_support_team (rather than require_auth directly)
+    means admin access is automatically revoked the moment someone is
+    removed from the Pylon "Support" team, with no separate sync needed.
+    """
+    if _LOCAL_TEST_MODE:
+        return email
+    admin_emails = await asyncio.to_thread(auth_mod.get_admin_emails)
+    if email.strip().lower() not in admin_emails:
+        raise HTTPException(status_code=403, detail="Not a team-dashboard admin")
     return email
 
 
@@ -631,6 +752,32 @@ async def auth_logout(request: Request):
     return response
 
 
+@app.get("/api/me")
+async def get_me(email: str = Depends(require_auth)):
+    """Return the current session's email and team-dashboard authorization flags.
+
+    Used by the frontend chooser page to decide whether to show the internal
+    dashboard option, and by /team pages to decide whether to show admin UI.
+    """
+    if _LOCAL_TEST_MODE:
+        return {"email": email, "is_support_team_member": True, "is_admin": True}
+    try:
+        is_support = await asyncio.to_thread(pylon_client.is_support_team_member, email)
+    except Exception:
+        # Fail open to "not on the Support team" — a Pylon hiccup shouldn't
+        # 500 the whole app for every logged-in user, just hide the
+        # internal-dashboard option for them until it recovers.
+        is_support = False
+    is_admin = False
+    if is_support:
+        try:
+            admin_emails = await asyncio.to_thread(auth_mod.get_admin_emails)
+            is_admin = email.strip().lower() in admin_emails
+        except Exception:
+            is_admin = False
+    return {"email": email, "is_support_team_member": is_support, "is_admin": is_admin}
+
+
 @app.get("/api/tiers")
 def get_tiers(_email: str = Depends(require_auth)):
     """Return sorted list of available Support Tier values from Pylon."""
@@ -656,6 +803,452 @@ def get_accounts(tier: str = "Premium", _email: str = Depends(require_auth)):
     result = [{"id": a.get("id", ""), "name": a.get("name", "")} for a in accounts]
     result.sort(key=lambda a: a["name"].lower())
     return result
+
+
+## ---------------------------------------------------------------------------
+## Internal Support-Team Dashboard
+## ---------------------------------------------------------------------------
+
+_NUMERIC_REP_METRIC_KEYS = [
+    "avg_response_time", "sla_compliance_pct", "avg_resolution_time", "avg_csat", "avg_reply_time",
+    "median_response_time", "median_resolution_time", "median_reply_time", "median_csat",
+]
+
+
+def _resolve_member_by_email(email: str) -> tuple[str | None, str]:
+    """Look up (pylon_user_id, display_name) for an email via GET /users.
+
+    Falls back to the email itself as the display name if not found. Returns
+    an id even for members with zero metrics this period (they may simply
+    not appear in member_results if they have no period/backlog activity —
+    that's a separate "no data" case from "this isn't a real user").
+    """
+    email_norm = email.strip().lower()
+    for member in pylon_client.get_team_members():
+        candidates = [member.get("email"), *(member.get("emails") or [])]
+        if any((c or "").strip().lower() == email_norm for c in candidates):
+            return member.get("id"), member.get("name") or member.get("email") or email
+    return None, email
+
+
+def _build_rep_metrics(
+    issues: list[dict],
+    open_issues: list[dict],
+    update_count: int = 0,
+    avg_reply_time: float | None = None,
+    median_reply_time: float | None = None,
+) -> dict:
+    """Compute a RepMetrics dict for one Support-team member's issue subset.
+
+    update_count and avg/median_reply_time are period-totals from
+    message_activity's synced data — passed in rather than computed here
+    since they come from a completely separate data source (message sync,
+    scoped by ticket assignment/update time) than issues/open_issues
+    (scoped by ticket creation time).
+    """
+    state_breakdown = metrics_mod.get_state_breakdown(open_issues)
+    return {
+        "tickets_taken": len(issues),
+        "avg_response_time": metrics_mod.compute_avg_response_time(issues),
+        "median_response_time": metrics_mod.compute_median_response_time(issues),
+        "sla_compliance_pct": metrics_mod.compute_sla_compliance(issues),
+        "avg_resolution_time": metrics_mod.compute_avg_resolution_time(issues),
+        "median_resolution_time": metrics_mod.compute_median_resolution_time(issues),
+        "backlog_count": state_breakdown.get("waiting_on_you", 0),
+        "avg_csat": metrics_mod.compute_avg_csat(issues),
+        "median_csat": metrics_mod.compute_median_csat(issues),
+        "update_count": update_count,
+        "avg_reply_time": avg_reply_time,
+        "median_reply_time": median_reply_time,
+        "state_breakdown": state_breakdown,
+        "pending_wait": metrics_mod.compute_pending_wait_stats(open_issues),
+    }
+
+
+_TEAM_AGGREGATE_KEYS = ["tickets_taken", "backlog_count", "update_count", *_NUMERIC_REP_METRIC_KEYS]
+
+
+def _average_rep_metrics(all_metrics: list[dict], method: Literal["mean", "median"]) -> dict:
+    """Combine RepMetrics dicts across members into the "Team" figure.
+
+    `method` picks how N reps' numbers combine into one team figure —
+    "mean" (a straight average across reps) or "median" (outlier-resistant:
+    one rep having an unusually quiet or busy period can't swing what
+    "Team" means for everyone else). Applies uniformly to every field,
+    including metrics that don't have a per-rep avg/median toggle
+    (tickets_taken, sla_compliance_pct, etc.) — the caller computes both
+    variants so the frontend's Average/Median toggle can pick whichever
+    matches what it's showing for "me". Skips None per-metric, not per-member.
+    """
+    if not all_metrics:
+        return {key: (0 if key in ("tickets_taken", "backlog_count", "update_count") else None)
+                for key in _TEAM_AGGREGATE_KEYS} | {"state_breakdown": {}, "pending_wait": {}}
+    agg = statistics.median if method == "median" else (lambda values: sum(values) / len(values))
+    result: dict[str, Any] = {}
+    for key in _TEAM_AGGREGATE_KEYS:
+        values = [m[key] for m in all_metrics if m.get(key) is not None]
+        result[key] = round(agg(values), 1) if values else None
+    result["pending_wait"] = {}
+    combined_breakdown: dict[str, int] = {}
+    for m in all_metrics:
+        for state, count in (m.get("state_breakdown") or {}).items():
+            combined_breakdown[state] = combined_breakdown.get(state, 0) + count
+    result["state_breakdown"] = combined_breakdown
+    return result
+
+
+async def _fetch_team_raw(
+    period: str, force_refresh: bool = False
+) -> tuple[dict[str, str], list[dict], list[dict]]:
+    """Fetch (member_id->email map, period issues, backlog issues), in-memory cached.
+
+    Layers on top of pylon_client's own disk cache — same two-tier pattern as
+    _fetch_raw_data — and uses the same per-key asyncio.Lock dedup so
+    concurrent requests from multiple reps don't trigger duplicate
+    multi-thousand-row Pylon fetches.
+
+    force_refresh mirrors the account dashboard's force=true handling in
+    get_account_data: evict the in-memory entry and force pylon_client past
+    its own disk cache too, so the manual refresh button actually refreshes.
+    """
+    cache_key = f"team_raw:{period}"
+
+    if force_refresh:
+        _data_cache.pop(cache_key, None)
+    else:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached["members"], cached["period_issues"], cached["backlog_issues"]
+
+    if cache_key not in _fetch_locks:
+        _fetch_locks[cache_key] = asyncio.Lock()
+
+    async with _fetch_locks[cache_key]:
+        if not force_refresh:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached["members"], cached["period_issues"], cached["backlog_issues"]
+
+        try:
+            members, period_issues, backlog_issues = await asyncio.gather(
+                asyncio.to_thread(pylon_client.get_support_team_member_ids, force_refresh),
+                asyncio.to_thread(pylon_client.get_team_period_issues, period, force_refresh),
+                asyncio.to_thread(pylon_client.get_team_backlog_issues, OPEN_STATES, force_refresh),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+
+        _cache_set(cache_key, {
+            "members": members,
+            "period_issues": period_issues,
+            "backlog_issues": backlog_issues,
+        })
+        return members, period_issues, backlog_issues
+
+
+_TREND_METRIC_KEYS = [
+    "tickets_taken", "avg_response_time", "avg_resolution_time", "update_count", "avg_reply_time",
+    "median_response_time", "median_resolution_time", "median_reply_time",
+]
+
+
+def _average_rep_trends(trends: list[list[dict]], method: Literal["mean", "median"]) -> list[dict]:
+    """Combine N members' per-bucket trend series into one team series —
+    `method` picks mean-across-reps or median-across-reps per bucket, same
+    as _average_rep_metrics.
+
+    All trend series for the same period share identical bucket labels/order
+    (same windowing logic in compute_rep_trend), so buckets align by index.
+    """
+    if not trends:
+        return []
+    agg = statistics.median if method == "median" else (lambda values: sum(values) / len(values))
+    result: list[dict] = []
+    for i in range(len(trends[0])):
+        row: dict[str, Any] = {"label": trends[0][i]["label"]}
+        for key in _TREND_METRIC_KEYS:
+            values = [t[i][key] for t in trends if t[i].get(key) is not None]
+            row[key] = round(agg(values), 1) if values else None
+        result.append(row)
+    return result
+
+
+# Bounded so a manual "Refresh Data" click can never hang the way a full
+# org-wide Pylon search could (see pylon_client's stale-while-revalidate fix
+# for that exact problem on the issue-data side) — an incremental sync is
+# normally fast (a handful of changed tickets since the last 15-minute
+# background pass), but this caps it just in case.
+_MESSAGE_ACTIVITY_REFRESH_TIMEOUT = 12.0
+
+
+async def _maybe_refresh_message_activity(force: bool) -> None:
+    """On a manual refresh, opportunistically pull messages for tickets that
+    changed since the last incremental sync, so the response reflects fresh
+    update/reply-time data — not just fresh issue counts. Never wipes or
+    resets anything (that's message_activity's schema-version migration,
+    unrelated to this); if it doesn't finish within the timeout, it's simply
+    left for the next scheduled background pass rather than blocking the
+    request further.
+    """
+    if not force:
+        return
+    try:
+        await asyncio.wait_for(
+            message_activity.run_incremental_sync_step(), timeout=_MESSAGE_ACTIVITY_REFRESH_TIMEOUT
+        )
+    except TimeoutError:
+        pass
+    except Exception:
+        _log.exception("message_activity: manual-refresh incremental sync failed")
+
+
+async def _compute_all_member_metrics(
+    period: str, force_refresh: bool = False, granularity: str | None = None
+) -> tuple[dict[str, dict], dict, list[dict], dict, list[dict]]:
+    """Return ({member_id: {email, name, is_admin, metrics, trend}}, team_average,
+    team_average_trend, team_median, team_median_trend).
+
+    team_average/team_average_trend combine reps via mean; team_median/
+    team_median_trend combine the same reps via median — both are always
+    computed so the frontend's Average/Median toggle can pick whichever
+    matches what it's showing for "me", for every tile, not just the ones
+    with a per-rep avg/median split.
+
+    Shared by /api/team-dashboard/data (slices out just the caller) and the
+    admin-only /api/team-dashboard/team (returns everyone) — same underlying
+    fetch, sliced differently depending on who's asking.
+
+    granularity ("day" | "week" | "month") overrides the period's default
+    trend bucketing; None keeps the existing per-period default. Only affects
+    the trend series — metrics (period totals) are unaffected.
+
+    Admins are excluded from both team_average*/team_median* (but still
+    appear in member_results, e.g. for the admin table) — admins often
+    aren't doing frontline ticket work at the same volume as individual
+    reps, so folding them into the benchmark reps are compared against
+    would skew it.
+    """
+    members, period_issues, backlog_issues = await _fetch_team_raw(period, force_refresh)
+    admin_emails = await asyncio.to_thread(auth_mod.get_admin_emails)
+    message_daily_counts = await asyncio.to_thread(
+        message_activity.get_member_daily_counts, list(members.keys())
+    )
+    message_response_seconds = await asyncio.to_thread(
+        message_activity.get_member_response_seconds, list(members.keys())
+    )
+
+    period_by_member: dict[str, list[dict]] = {mid: [] for mid in members}
+    backlog_by_member: dict[str, list[dict]] = {mid: [] for mid in members}
+
+    for issue in period_issues:
+        mid = (issue.get("assignee") or {}).get("id")
+        if mid in period_by_member:
+            period_by_member[mid].append(issue)
+
+    for issue in backlog_issues:
+        mid = (issue.get("assignee") or {}).get("id")
+        if mid in backlog_by_member:
+            backlog_by_member[mid].append(issue)
+
+    names_by_id: dict[str, str] = {}
+    try:
+        for u in await asyncio.to_thread(pylon_client.get_team_members):
+            uid = u.get("id")
+            if uid:
+                names_by_id[uid] = u.get("name") or u.get("email") or ""
+    except Exception:
+        pass
+
+    member_results: dict[str, dict] = {}
+    for mid, email in members.items():
+        p_issues = period_by_member.get(mid, [])
+        b_issues = backlog_by_member.get(mid, [])
+        activity_trend = metrics_mod.compute_message_activity_trend(
+            message_daily_counts.get(mid, {}), period, granularity
+        )
+        update_total = sum(b["update_count"] for b in activity_trend)
+        response_trend = metrics_mod.compute_response_time_trend(
+            message_response_seconds.get(mid, {}), period, granularity
+        )
+        total_replies = sum(b["reply_count"] for b in response_trend)
+        reply_summary = metrics_mod.compute_response_time_summary(
+            message_response_seconds.get(mid, {}), period
+        )
+        if not p_issues and not b_issues and not update_total and not total_replies:
+            continue  # no activity this period — excluded from results and the average
+        trend = metrics_mod.compute_rep_trend(p_issues, period, granularity)
+        for bucket, activity_bucket, response_bucket in zip(trend, activity_trend, response_trend):
+            bucket["update_count"] = activity_bucket["update_count"]
+            bucket["avg_reply_time"] = response_bucket["avg_reply_time"]
+            bucket["median_reply_time"] = response_bucket["median_reply_time"]
+        member_results[mid] = {
+            "email": email,
+            "name": names_by_id.get(mid, email),
+            "is_admin": email.strip().lower() in admin_emails,
+            "metrics": _build_rep_metrics(
+                p_issues, b_issues, update_total, reply_summary["avg"], reply_summary["median"]
+            ),
+            "trend": trend,
+        }
+
+    non_admin_results = [r for r in member_results.values() if not r["is_admin"]]
+    non_admin_metrics = [r["metrics"] for r in non_admin_results]
+    non_admin_trends = [r["trend"] for r in non_admin_results]
+    team_average = _average_rep_metrics(non_admin_metrics, method="mean")
+    team_median = _average_rep_metrics(non_admin_metrics, method="median")
+    team_average_trend = _average_rep_trends(non_admin_trends, method="mean")
+    team_median_trend = _average_rep_trends(non_admin_trends, method="median")
+    return member_results, team_average, team_average_trend, team_median, team_median_trend
+
+
+@app.get("/api/team-dashboard/data")
+async def get_team_dashboard_data(
+    period: str = Query("1m"),
+    as_email: str | None = Query(None, alias="as"),
+    force: bool = Query(False),
+    granularity: str | None = Query(None),
+    email: str = Depends(require_support_team),
+):
+    """Return the caller's own metrics vs. the Support-team average.
+
+    Never includes another member's individual numbers — except when an
+    admin passes `as`, which lets them view any single member's metrics
+    through this same "me vs average" view (still never exposes everyone's
+    numbers at once — that's what the admin-only /api/team-dashboard/team
+    route is for).
+
+    force=true mirrors GET /api/accounts/{id}/data?force=true — bypasses
+    both the in-memory and disk caches for a manual refresh.
+
+    granularity ("day" | "week" | "month") overrides the period's default
+    trend-chart bucketing; anything else (including omitted) keeps the
+    existing per-period default.
+    """
+    if period not in VALID_PERIODS:
+        period = "1m"
+    if granularity not in ("day", "week", "month"):
+        granularity = None
+    await _maybe_refresh_message_activity(force)
+    try:
+        member_results, team_average, team_average_trend, team_median, team_median_trend = (
+            await _compute_all_member_metrics(period, force, granularity)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+
+    target_email = email
+    viewing_as = None
+    if as_email:
+        if not _LOCAL_TEST_MODE:
+            admin_emails = await asyncio.to_thread(auth_mod.get_admin_emails)
+            if email.strip().lower() not in admin_emails:
+                raise HTTPException(status_code=403, detail="Only admins can view another member's metrics")
+        target_email = as_email
+
+    my_id, resolved_name = await asyncio.to_thread(_resolve_member_by_email, target_email)
+    my_entry = member_results.get(my_id) if my_id else None
+    me_metrics = my_entry["metrics"] if my_entry else _average_rep_metrics([], method="median")
+    # Even a real member with zero activity this period should still get a
+    # correctly-shaped (all-empty) trend series, not just an empty list —
+    # keeps "viewing a quiet rep" visually distinct from "no data at all".
+    me_trend = my_entry["trend"] if my_entry else metrics_mod.compute_rep_trend([], period, granularity)
+    if as_email:
+        viewing_as = {"email": target_email, "name": my_entry["name"] if my_entry else resolved_name}
+
+    return {
+        "me": me_metrics,
+        "me_trend": me_trend,
+        "team_average": team_average,
+        "team_average_trend": team_average_trend,
+        "team_median": team_median,
+        "team_median_trend": team_median_trend,
+        "team_member_count": len(member_results),
+        "viewing_as": viewing_as,
+    }
+
+
+@app.get("/api/team-dashboard/team")
+async def get_team_dashboard_team(
+    period: str = Query("1m"),
+    member: str | None = Query(None),
+    force: bool = Query(False),
+    _email: str = Depends(require_admin),
+):
+    """Admin-only: every Support-team member's individual metrics + team average."""
+    if period not in VALID_PERIODS:
+        period = "1m"
+    await _maybe_refresh_message_activity(force)
+    try:
+        member_results, team_average, team_average_trend, team_median, team_median_trend = (
+            await _compute_all_member_metrics(period, force)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
+
+    members_out = [
+        {"email": r["email"], "name": r["name"], "is_admin": r["is_admin"], "metrics": r["metrics"]}
+        for r in member_results.values()
+    ]
+    if member:
+        members_out = [m for m in members_out if m["email"].strip().lower() == member.strip().lower()]
+    members_out.sort(key=lambda m: m["name"].lower())
+
+    return {
+        "members": members_out,
+        "team_average": team_average,
+        "team_average_trend": team_average_trend,
+        "team_median": team_median,
+        "team_median_trend": team_median_trend,
+    }
+
+
+@app.get("/api/team-dashboard/sync-status")
+async def get_team_dashboard_sync_status(_email: str = Depends(require_support_team)):
+    """Progress of the background message-activity backfill (see message_activity.py).
+
+    Read-only aggregate counters only — no ticket/message content.
+    """
+    return await asyncio.to_thread(message_activity.get_backfill_status)
+
+
+class AdminEmailBody(BaseModel):
+    email: str
+
+
+@app.get("/api/team-dashboard/admins")
+async def list_team_dashboard_admins(_email: str = Depends(require_admin)):
+    """Admin-only: list current team-dashboard admin emails."""
+    admins = await asyncio.to_thread(auth_mod.get_admin_emails)
+    return {"admins": sorted(admins)}
+
+
+@app.post("/api/team-dashboard/admins")
+async def add_team_dashboard_admin(body: AdminEmailBody, _email: str = Depends(require_admin)):
+    """Admin-only: add an email to the team-dashboard admin list."""
+    candidate = body.email.strip().lower()
+    if not candidate or "@" not in candidate:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    await asyncio.to_thread(auth_mod.add_admin, candidate)
+    admins = await asyncio.to_thread(auth_mod.get_admin_emails)
+    return {"admins": sorted(admins)}
+
+
+@app.delete("/api/team-dashboard/admins/{admin_email}")
+async def remove_team_dashboard_admin(admin_email: str, _email: str = Depends(require_admin)):
+    """Admin-only: remove an email from the team-dashboard admin list.
+
+    Refuses to remove the last remaining admin (400).
+    """
+    try:
+        await asyncio.to_thread(auth_mod.remove_admin, admin_email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    admins = await asyncio.to_thread(auth_mod.get_admin_emails)
+    return {"admins": sorted(admins)}
 
 
 @app.get("/api/accounts/{account_id}/data")

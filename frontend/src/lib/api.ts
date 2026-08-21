@@ -358,3 +358,177 @@ export async function deleteSchedule(cronId: string): Promise<void> {
     throw new Error((err as { detail?: string }).detail ?? `Failed to delete schedule: ${res.status}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Internal Support-Team Dashboard
+// ---------------------------------------------------------------------------
+
+export interface MeInfo {
+  email: string;
+  is_support_team_member: boolean;
+  is_admin: boolean;
+}
+
+/** Fetch the current session's email and team-dashboard authorization flags. */
+export async function fetchMe(): Promise<MeInfo | null> {
+  const res = await fetch("/api/me");
+  if (res.status === 401) { handleUnauthorized(res); return null; }
+  if (!res.ok) {
+    throw new Error(`Failed to fetch current user: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export interface RepMetrics {
+  tickets_taken: number;
+  avg_response_time: number | null;
+  median_response_time: number | null;
+  sla_compliance_pct: number | null;
+  avg_resolution_time: number | null;
+  median_resolution_time: number | null;
+  backlog_count: number;
+  avg_csat: number | null;
+  median_csat: number | null;
+  update_count: number;
+  avg_reply_time: number | null;
+  median_reply_time: number | null;
+  state_breakdown: Record<string, number>;
+  pending_wait: Record<string, { count: number; avg_wait_hours: number; median_wait_hours: number }>;
+}
+
+export interface RepTrendPoint {
+  label: string;
+  tickets_taken: number;
+  avg_response_time: number | null;
+  median_response_time: number | null;
+  avg_resolution_time: number | null;
+  median_resolution_time: number | null;
+  update_count: number;
+  avg_reply_time: number | null;
+  median_reply_time: number | null;
+}
+
+export interface TeamDashboardData {
+  me: RepMetrics;
+  me_trend: RepTrendPoint[];
+  team_average: RepMetrics;
+  team_average_trend: RepTrendPoint[];
+  team_median: RepMetrics;
+  team_median_trend: RepTrendPoint[];
+  team_member_count: number;
+  viewing_as: { email: string; name: string } | null;
+}
+
+/**
+ * Fetch a member's metrics vs. the Support-team average for a period.
+ * Pass `asEmail` (admin-only, 403 otherwise) to view another member's metrics
+ * instead of the caller's own. Pass `force=true` (mirrors fetchAccountData's
+ * force param) to bypass the cache and refetch from Pylon. Pass `granularity`
+ * ("day" | "week" | "month") to override the period's default trend-chart
+ * bucketing; omit to keep that default.
+ */
+export async function fetchTeamDashboardData(
+  period: string,
+  asEmail?: string,
+  force = false,
+  granularity?: "day" | "week" | "month",
+): Promise<TeamDashboardData> {
+  const params = new URLSearchParams({ period });
+  if (asEmail) params.set("as", asEmail);
+  if (force) params.set("force", "true");
+  if (granularity) params.set("granularity", granularity);
+  const res = await fetch(`/api/team-dashboard/data?${params}`);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to fetch team dashboard data: ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface TeamMember {
+  email: string;
+  name: string;
+  is_admin: boolean;
+  metrics: RepMetrics;
+}
+
+export interface TeamOverview {
+  members: TeamMember[];
+  team_average: RepMetrics;
+  team_average_trend: RepTrendPoint[];
+  team_median: RepMetrics;
+  team_median_trend: RepTrendPoint[];
+}
+
+/** Admin-only: every Support-team member's individual metrics + team average. */
+export async function fetchTeamOverview(period: string, member?: string, force = false): Promise<TeamOverview> {
+  const params = new URLSearchParams({ period });
+  if (member) params.set("member", member);
+  if (force) params.set("force", "true");
+  const res = await fetch(`/api/team-dashboard/team?${params}`);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to fetch team overview: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Admin-only: list current team-dashboard admin emails. */
+export async function fetchAdmins(): Promise<string[]> {
+  const res = await fetch("/api/team-dashboard/admins");
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to fetch admins: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.admins ?? [];
+}
+
+/** Admin-only: add an email to the team-dashboard admin list. */
+export async function addAdmin(email: string): Promise<string[]> {
+  const res = await fetch("/api/team-dashboard/admins", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to add admin: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.admins ?? [];
+}
+
+/** Admin-only: remove an email from the team-dashboard admin list. */
+export async function removeAdmin(email: string): Promise<string[]> {
+  const res = await fetch(`/api/team-dashboard/admins/${encodeURIComponent(email)}`, { method: "DELETE" });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? `Failed to remove admin: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.admins ?? [];
+}
+
+export interface MessageActivitySyncStatus {
+  stage: "7d" | "1m" | "3m" | "6m" | "1y" | null;
+  stages_completed: string[];
+  current_stage_synced: number;
+  current_stage_total: number;
+  complete: boolean;
+  started_at: string | null;
+  last_incremental_sync_at: string | null;
+}
+
+/** Progress of the background ticket-update-history backfill (see message_activity.py). */
+export async function fetchMessageActivitySyncStatus(): Promise<MessageActivitySyncStatus | null> {
+  const res = await fetch("/api/team-dashboard/sync-status");
+  if (res.status === 401) { handleUnauthorized(res); return null; }
+  if (!res.ok) return null;
+  return res.json();
+}

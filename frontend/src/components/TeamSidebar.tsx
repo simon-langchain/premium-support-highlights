@@ -1,31 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard } from "lucide-react";
+import { ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard, UserRound, Users } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useRouter } from "next/navigation";
-import type { Account, LlmModel } from "@/lib/api";
+import { useRouter, usePathname } from "next/navigation";
 import OptionPicker from "@/components/OptionPicker";
-import AccountPicker from "@/components/AccountPicker";
 import RefreshButton from "@/components/RefreshButton";
 
-interface SidebarProps {
-  accounts: Account[];
-  selected: Account | null;
-  onSelect: (account: Account) => void;
-  onRefresh: () => void;
-  dataUpdatedAt: Date | null;
-  selectedProvider: string;
-  selectedModelName: string;
-  onProviderChange: (provider: string) => void;
-  onModelChange: (model: string) => void;
-  models: LlmModel[];
+interface TeamSidebarProps {
   period: string;
   onPeriodChange: (period: string) => void;
-  onSetup: () => void;
-  tiers: string[];
-  selectedTier: string;
-  onTierChange: (tier: string) => void;
+  isAdmin: boolean;
+  onRefresh: () => void;
+  dataUpdatedAt: Date | null;
 }
 
 const PERIODS = [
@@ -37,14 +24,7 @@ const PERIODS = [
 ];
 
 const Logo = () => (
-  <svg
-    width="22"
-    height="22"
-    viewBox="0 0 128 128"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className="flex-shrink-0"
-  >
+  <svg width="22" height="22" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
     <path d="M40.1024 85.0722C47.6207 77.5537 51.8469 67.3453 51.8469 56.7136C51.8469 46.0818 47.617 35.8734 40.1024 28.355L11.7446 0C4.22995 7.5185 0 17.7269 0 28.3586C0 38.9903 4.22995 49.1987 11.7446 56.7172L40.0987 85.0722H40.1024Z" fill="white" />
     <path d="M99.4385 87.698C91.9239 80.1832 81.7121 75.9531 71.0844 75.9531C60.4566 75.9531 50.2448 80.1832 42.7266 87.698L71.0844 116.057C78.599 123.571 88.8107 127.802 99.4421 127.802C110.074 127.802 120.282 123.571 127.8 116.057L99.4421 87.698H99.4385Z" fill="white" />
     <path d="M11.8146 115.987C19.3329 123.502 29.541 127.732 40.1724 127.732V87.6289H0.0664062C0.0700559 98.2606 4.29635 108.469 11.8146 115.987Z" fill="white" />
@@ -52,29 +32,12 @@ const Logo = () => (
   </svg>
 );
 
-
-export default function Sidebar({
-  accounts,
-  selected,
-  onSelect,
-  onRefresh,
-  dataUpdatedAt,
-  selectedProvider,
-  selectedModelName,
-  onProviderChange,
-  onModelChange,
-  models,
-  period,
-  onPeriodChange,
-  onSetup,
-  tiers,
-  selectedTier,
-  onTierChange,
-}: SidebarProps) {
+export default function TeamSidebar({ period, onPeriodChange, isAdmin, onRefresh, dataUpdatedAt }: TeamSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
   const router = useRouter();
+  const pathname = usePathname();
 
   async function handleSignOut() {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -97,6 +60,7 @@ export default function Sidebar({
   }, []);
 
   const isDark = resolvedTheme === "dark";
+  const onAdminView = pathname?.startsWith("/team/admin");
 
   return (
     <aside
@@ -108,7 +72,6 @@ export default function Sidebar({
       }}
       className="relative flex flex-col h-screen transition-[width,min-width] duration-200 ease-in-out print:hidden"
     >
-      {/* Toggle button */}
       <button
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -118,46 +81,22 @@ export default function Sidebar({
         {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
       </button>
 
-      {/* Inner content — overflow-hidden here so text clips during collapse animation */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-        {/* Collapsed: logo at top, spacer */}
         {collapsed && (
           <div className="flex flex-col items-center flex-1 pt-[18px]">
             <Logo />
           </div>
         )}
 
-        {/* Expanded content */}
         {!collapsed && (
           <>
-            {/* Logo + title */}
             <div className="px-4 pt-5 pb-4 pr-8">
               <div className="flex items-center gap-2 mb-1">
                 <Logo />
                 <span style={{ color: "var(--text-primary)" }} className="font-semibold text-sm leading-tight whitespace-nowrap">
-                  Support Highlights
+                  Internal Metrics
                 </span>
               </div>
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Support Tier
-              </label>
-              <OptionPicker
-                options={tiers.length > 0
-                  ? tiers.map((t) => ({ value: t, label: t }))
-                  : [{ value: "Premium", label: "Premium" }]}
-                value={selectedTier}
-                onChange={onTierChange}
-              />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Account
-              </label>
-              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} />
             </div>
 
             <div className="px-4 pb-3">
@@ -167,46 +106,46 @@ export default function Sidebar({
               <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
             </div>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Provider
-              </label>
-              <OptionPicker
-                options={[...new Set(models.map((m) => m.provider))].map((p) => ({
-                  value: p,
-                  label: p.charAt(0).toUpperCase() + p.slice(1),
-                }))}
-                value={selectedProvider}
-                onChange={onProviderChange}
-              />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Model
-              </label>
-              <OptionPicker
-                options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
-                value={selectedModelName}
-                onChange={onModelChange}
-              />
-            </div>
-
             <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
 
             <RefreshButton onRefresh={onRefresh} dataUpdatedAt={dataUpdatedAt} />
+
+            {isAdmin && (
+              <>
+                <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
+                <div className="px-4 py-3 flex flex-col gap-1.5">
+                  <button
+                    onClick={() => router.push("/team")}
+                    style={{
+                      background: !onAdminView ? "var(--bg-tertiary)" : "transparent",
+                      color: "var(--text-primary)",
+                    }}
+                    className="flex items-center gap-2 text-sm rounded px-3 py-1.5 transition-colors hover:bg-[var(--bg-tertiary)] text-left"
+                  >
+                    <UserRound size={14} />
+                    My Metrics
+                  </button>
+                  <button
+                    onClick={() => router.push("/team/admin")}
+                    style={{
+                      background: onAdminView ? "var(--bg-tertiary)" : "transparent",
+                      color: "var(--text-primary)",
+                    }}
+                    className="flex items-center gap-2 text-sm rounded px-3 py-1.5 transition-colors hover:bg-[var(--bg-tertiary)] text-left"
+                  >
+                    <Users size={14} />
+                    Team View
+                  </button>
+                </div>
+              </>
+            )}
 
             <div className="flex-1" />
           </>
         )}
       </div>
 
-      {/* Settings footer — outside overflow-hidden so the popover can escape */}
-      <div
-        ref={menuRef}
-        className="relative"
-        style={{ borderTop: "1px solid var(--border)" }}
-      >
+      <div ref={menuRef} className="relative" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={() => setMenuOpen((o) => !o)}
           style={{
@@ -239,7 +178,7 @@ export default function Sidebar({
             </button>
             <div style={{ borderColor: "var(--border)" }} className="border-t" />
             <button
-              onClick={() => { setMenuOpen(false); onSetup(); }}
+              onClick={() => { setMenuOpen(false); router.push("/"); }}
               style={{ color: "var(--text-primary)" }}
               className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-[var(--bg-tertiary)] transition-colors"
             >
