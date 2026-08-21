@@ -268,22 +268,51 @@ export default function TeamDashboardPage() {
 
   const me = data?.me;
   const avg = statMode === "median" ? data?.team_median : data?.team_average;
+  // Admins aren't individual reps in this view — with no one specifically
+  // selected, they see team-wide figures ("Team Metrics") rather than their
+  // own numbers. Non-admins can only ever view themselves, so this is always
+  // false for them.
+  const teamView = isAdmin && !data?.viewing_as;
 
   const memberOptions = useMemo(
-    () => [{ value: SELF, label: "Me" }, ...members
-      .filter((m) => !m.is_admin)
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((m) => ({ value: m.email, label: m.name }))],
-    [members]
+    () => [
+      // Admins aren't a rep to view "as" — the SELF slot instead represents
+      // the team-wide aggregate view, so it needs its own label rather than
+      // "Me" (which would be wrong) or no entry at all (which would leave
+      // OptionPicker showing a blank button once viewAsEmail resets to SELF).
+      { value: SELF, label: isAdmin ? "Team (All Reps)" : "Me" },
+      ...members
+        .filter((m) => !m.is_admin)
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((m) => ({ value: m.email, label: m.name })),
+    ],
+    [members, isAdmin]
   );
 
   const trendCharts = useMemo(() => {
-    if (!data || data.me_trend.length === 0) return null;
+    if (!data) return null;
     const avgTrend = statMode === "median" ? data.team_median_trend : data.team_average_trend;
     const responseKey: TrendKey = statMode === "median" ? "median_response_time" : "avg_response_time";
     const resolutionKey: TrendKey = statMode === "median" ? "median_resolution_time" : "avg_resolution_time";
     const replyTimeKey: TrendKey = statMode === "median" ? "median_reply_time" : "avg_reply_time";
+
+    if (teamView) {
+      // No individual to compare against — plot the team trend itself as the
+      // single series (zipTrend's "me" slot), with no "avg" comparison line.
+      if (avgTrend.length === 0) return null;
+      const single = (key: TrendKey): TrendMiniChartPoint[] =>
+        avgTrend.map((point) => ({ label: point.label, me: point[key], avg: null }));
+      return {
+        tickets: single("tickets_taken"),
+        response: single(responseKey),
+        resolution: single(resolutionKey),
+        updates: single("update_count"),
+        replyTime: single(replyTimeKey),
+      };
+    }
+
+    if (data.me_trend.length === 0) return null;
     return {
       tickets: zipTrend(data.me_trend, avgTrend, "tickets_taken"),
       response: zipTrend(data.me_trend, avgTrend, responseKey),
@@ -291,7 +320,7 @@ export default function TeamDashboardPage() {
       updates: zipTrend(data.me_trend, avgTrend, "update_count"),
       replyTime: zipTrend(data.me_trend, avgTrend, replyTimeKey),
     };
-  }, [data, statMode]);
+  }, [data, statMode, teamView]);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -313,17 +342,23 @@ export default function TeamDashboardPage() {
                   style={{ color: "var(--accent)" }}
                 >
                   <ArrowLeft size={12} />
-                  Back to my metrics
+                  Back to Team Metrics
                 </button>
                 <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
                   {data.viewing_as.name}&apos;s Metrics
                 </h1>
               </>
             ) : (
-              <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>My Metrics</h1>
+              <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
+                {isAdmin ? "Team Metrics" : "My Metrics"}
+              </h1>
             )}
             <p className="text-sm mt-0.5 flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
-              {data ? `Compared against ${data.team_member_count} Support team members` : "Loading…"}
+              {data
+                ? teamView
+                  ? `Team ${statMode} across ${data.team_member_count} Support team members`
+                  : `Compared against ${data.team_member_count} Support team members`
+                : "Loading…"}
               {loading && data && (
                 <span className="flex items-center gap-1">
                   <Loader2 size={11} className="animate-spin" />
@@ -333,7 +368,7 @@ export default function TeamDashboardPage() {
             </p>
           </div>
 
-          {isAdmin && memberOptions.length > 1 && (
+          {isAdmin && memberOptions.length > 0 && (
             <div className="w-52 shrink-0">
               <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
                 Viewing As
@@ -354,7 +389,13 @@ export default function TeamDashboardPage() {
             <Loader2 size={18} className="animate-spin" />
             <span className="text-sm">Loading metrics…</span>
           </div>
-        ) : me && avg ? (
+        ) : me && avg ? (() => {
+          // In team view (admin, no rep selected) the "primary" figure IS
+          // the team average/median itself — narrowed here from the
+          // already-checked me/avg so every card below can read it without
+          // repeating the teamView ternary per field.
+          const primary = teamView ? avg : me;
+          return (
           <>
             <div className="flex items-center justify-end gap-1 mb-3">
               <span className="text-xs mr-1" style={{ color: "var(--text-muted)" }}>
@@ -380,21 +421,21 @@ export default function TeamDashboardPage() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
               <MetricCard
                 label="Tickets Taken"
-                value={me.tickets_taken}
-                sub={`Team ${statMode}: ${avg.tickets_taken}`}
-                delta={delta(me.tickets_taken, avg.tickets_taken)}
+                value={primary.tickets_taken}
+                sub={teamView ? undefined : `Team ${statMode}: ${avg.tickets_taken}`}
+                delta={teamView ? undefined : delta(me.tickets_taken, avg.tickets_taken)}
                 deltaLabel={`vs team ${statMode}`}
               />
               <MetricCard
                 label="First Response Time"
-                value={round1(statMode === "median" ? me.median_response_time : me.avg_response_time)}
+                value={round1(statMode === "median" ? primary.median_response_time : primary.avg_response_time)}
                 unit="hrs"
                 sub={
-                  (statMode === "median" ? avg.median_response_time : avg.avg_response_time) !== null
-                    ? `Team ${statMode}: ${round1(statMode === "median" ? avg.median_response_time : avg.avg_response_time)} hrs`
-                    : undefined
+                  teamView || (statMode === "median" ? avg.median_response_time : avg.avg_response_time) === null
+                    ? undefined
+                    : `Team ${statMode}: ${round1(statMode === "median" ? avg.median_response_time : avg.avg_response_time)} hrs`
                 }
-                delta={delta(
+                delta={teamView ? undefined : delta(
                   statMode === "median" ? me.median_response_time : me.avg_response_time,
                   statMode === "median" ? avg.median_response_time : avg.avg_response_time
                 )}
@@ -403,22 +444,22 @@ export default function TeamDashboardPage() {
               />
               <MetricCard
                 label="First Response SLA"
-                value={me.sla_compliance_pct}
+                value={primary.sla_compliance_pct}
                 unit="%"
-                sub={avg.sla_compliance_pct !== null ? `Team ${statMode}: ${avg.sla_compliance_pct}%` : undefined}
-                delta={delta(me.sla_compliance_pct, avg.sla_compliance_pct)}
+                sub={teamView || avg.sla_compliance_pct === null ? undefined : `Team ${statMode}: ${avg.sla_compliance_pct}%`}
+                delta={teamView ? undefined : delta(me.sla_compliance_pct, avg.sla_compliance_pct)}
                 deltaLabel={`vs team ${statMode}`}
               />
               <MetricCard
                 label="Reply Time"
-                value={round1(statMode === "median" ? me.median_reply_time : me.avg_reply_time)}
+                value={round1(statMode === "median" ? primary.median_reply_time : primary.avg_reply_time)}
                 unit="hrs"
                 sub={
-                  (statMode === "median" ? avg.median_reply_time : avg.avg_reply_time) !== null
-                    ? `Team ${statMode}: ${round1(statMode === "median" ? avg.median_reply_time : avg.avg_reply_time)} hrs`
-                    : undefined
+                  teamView || (statMode === "median" ? avg.median_reply_time : avg.avg_reply_time) === null
+                    ? undefined
+                    : `Team ${statMode}: ${round1(statMode === "median" ? avg.median_reply_time : avg.avg_reply_time)} hrs`
                 }
-                delta={delta(
+                delta={teamView ? undefined : delta(
                   statMode === "median" ? me.median_reply_time : me.avg_reply_time,
                   statMode === "median" ? avg.median_reply_time : avg.avg_reply_time
                 )}
@@ -430,14 +471,14 @@ export default function TeamDashboardPage() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
               <MetricCard
                 label="Resolution Time"
-                value={round1(statMode === "median" ? me.median_resolution_time : me.avg_resolution_time)}
+                value={round1(statMode === "median" ? primary.median_resolution_time : primary.avg_resolution_time)}
                 unit="hrs"
                 sub={
-                  (statMode === "median" ? avg.median_resolution_time : avg.avg_resolution_time) !== null
-                    ? `Team ${statMode}: ${round1(statMode === "median" ? avg.median_resolution_time : avg.avg_resolution_time)} hrs`
-                    : undefined
+                  teamView || (statMode === "median" ? avg.median_resolution_time : avg.avg_resolution_time) === null
+                    ? undefined
+                    : `Team ${statMode}: ${round1(statMode === "median" ? avg.median_resolution_time : avg.avg_resolution_time)} hrs`
                 }
-                delta={delta(
+                delta={teamView ? undefined : delta(
                   statMode === "median" ? me.median_resolution_time : me.avg_resolution_time,
                   statMode === "median" ? avg.median_resolution_time : avg.avg_resolution_time
                 )}
@@ -445,30 +486,30 @@ export default function TeamDashboardPage() {
                 lowerIsBetter
               />
               <MetricCard
-                label="Backlog (Waiting on You)"
-                value={me.backlog_count}
-                sub={`Team ${statMode}: ${avg.backlog_count}`}
-                delta={delta(me.backlog_count, avg.backlog_count)}
+                label={teamView ? "Backlog (Waiting on Team)" : "Backlog (Waiting on You)"}
+                value={primary.backlog_count}
+                sub={teamView ? undefined : `Team ${statMode}: ${avg.backlog_count}`}
+                delta={teamView ? undefined : delta(me.backlog_count, avg.backlog_count)}
                 deltaLabel={`vs team ${statMode}`}
                 lowerIsBetter
               />
               <MetricCard
                 label="Ticket Updates"
-                value={me.update_count}
-                sub={`Team ${statMode}: ${avg.update_count}`}
-                delta={delta(me.update_count, avg.update_count)}
+                value={primary.update_count}
+                sub={teamView ? undefined : `Team ${statMode}: ${avg.update_count}`}
+                delta={teamView ? undefined : delta(me.update_count, avg.update_count)}
                 deltaLabel={`vs team ${statMode}`}
               />
               <MetricCard
                 label="CSAT"
-                value={round1(statMode === "median" ? me.median_csat : me.avg_csat)}
+                value={round1(statMode === "median" ? primary.median_csat : primary.avg_csat)}
                 unit="/ 5"
                 sub={
-                  (statMode === "median" ? avg.median_csat : avg.avg_csat) !== null
-                    ? `Team ${statMode}: ${round1(statMode === "median" ? avg.median_csat : avg.avg_csat)} / 5`
-                    : undefined
+                  teamView || (statMode === "median" ? avg.median_csat : avg.avg_csat) === null
+                    ? undefined
+                    : `Team ${statMode}: ${round1(statMode === "median" ? avg.median_csat : avg.avg_csat)} / 5`
                 }
-                delta={delta(
+                delta={teamView ? undefined : delta(
                   statMode === "median" ? me.median_csat : me.avg_csat,
                   statMode === "median" ? avg.median_csat : avg.avg_csat
                 )}
@@ -501,31 +542,36 @@ export default function TeamDashboardPage() {
                       title="Tickets Taken Over Time"
                       data={trendCharts.tickets}
                       avgLabel={statMode === "median" ? "Team median" : "Team avg"}
+                      singleSeriesLabel={teamView ? "Team" : undefined}
                     />
                     <TrendMiniChart
                       title="First Response Time Over Time"
                       data={trendCharts.response}
                       unit="hrs"
                       avgLabel={statMode === "median" ? "Team median" : "Team avg"}
+                      singleSeriesLabel={teamView ? "Team" : undefined}
                     />
                     <TrendMiniChart
                       title="Reply Time Over Time"
                       data={trendCharts.replyTime}
                       unit="hrs"
                       avgLabel={statMode === "median" ? "Team median" : "Team avg"}
+                      singleSeriesLabel={teamView ? "Team" : undefined}
                     />
                     <TrendMiniChart
                       title="Resolution Time Over Time"
                       data={trendCharts.resolution}
                       unit="hrs"
                       avgLabel={statMode === "median" ? "Team median" : "Team avg"}
+                      singleSeriesLabel={teamView ? "Team" : undefined}
                     />
                     <TrendMiniChart
                       title="Ticket Updates Over Time"
                       data={trendCharts.updates}
                       avgLabel={statMode === "median" ? "Team median" : "Team avg"}
+                      singleSeriesLabel={teamView ? "Team" : undefined}
                     />
-                    <StateBreakdownCard breakdown={me.state_breakdown} pendingWait={me.pending_wait} statMode={statMode} />
+                    <StateBreakdownCard breakdown={primary.state_breakdown} pendingWait={primary.pending_wait} statMode={statMode} />
                   </div>
                   {syncStatus && (
                     <p className="text-xs mt-1.5 pl-0.5" style={{ color: "var(--text-muted)" }}>
@@ -537,15 +583,16 @@ export default function TeamDashboardPage() {
 
               {!trendCharts && (
                 <StateBreakdownCard
-                  breakdown={me.state_breakdown}
-                  pendingWait={me.pending_wait}
+                  breakdown={primary.state_breakdown}
+                  pendingWait={primary.pending_wait}
                   statMode={statMode}
                   className="max-w-md"
                 />
               )}
             </div>
           </>
-        ) : null}
+          );
+        })() : null}
       </main>
     </div>
   );
