@@ -20,6 +20,11 @@ interface TrendMiniChartProps {
   /** Label for the "avg" series in the tooltip/legend. Defaults to "Team avg" —
    * override when this chart is plotting a different stat (e.g. "Team median"). */
   avgLabel?: string;
+  /** When set, renders only the "me" series as a single solid line labeled
+   * with this text — no secondary dashed "avg" line or legend entry. Used
+   * for the admin Team Metrics view, where the "me" series already IS the
+   * team's own trend and there's no individual to compare it against. */
+  singleSeriesLabel?: string;
 }
 
 /**
@@ -46,9 +51,10 @@ interface CustomTooltipProps {
   label?: string;
   unit?: string;
   avgLabel?: string;
+  meLabel?: string;
 }
 
-function CustomTooltip({ active, payload, label, unit, avgLabel = "Team avg" }: CustomTooltipProps) {
+function CustomTooltip({ active, payload, label, unit, avgLabel = "Team avg", meLabel = "You" }: CustomTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   return (
     <div
@@ -62,7 +68,7 @@ function CustomTooltip({ active, payload, label, unit, avgLabel = "Team avg" }: 
       <p className="font-semibold mb-1">{label}</p>
       {payload.map((entry) => (
         <p key={entry.name} style={{ color: entry.color }}>
-          {entry.name === "me" ? "You" : avgLabel}:{" "}
+          {entry.name === "me" ? meLabel : avgLabel}:{" "}
           <span className="font-bold">{entry.value === null || entry.value === undefined ? "—" : entry.value}{unit ? ` ${unit}` : ""}</span>
         </p>
       ))}
@@ -70,7 +76,7 @@ function CustomTooltip({ active, payload, label, unit, avgLabel = "Team avg" }: 
   );
 }
 
-export default function TrendMiniChart({ title, data, unit, avgLabel = "Team avg" }: TrendMiniChartProps) {
+export default function TrendMiniChart({ title, data, unit, avgLabel = "Team avg", singleSeriesLabel }: TrendMiniChartProps) {
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -99,13 +105,15 @@ export default function TrendMiniChart({ title, data, unit, avgLabel = "Team avg
             interval={labelInterval(data.length)}
           />
           <YAxis tick={{ fill: tickColor, fontSize: 11 }} axisLine={false} tickLine={false} />
-          <Tooltip content={<CustomTooltip unit={unit} avgLabel={avgLabel} />} />
+          <Tooltip content={<CustomTooltip unit={unit} avgLabel={avgLabel} meLabel={singleSeriesLabel} />} />
           <Legend
             wrapperStyle={{ fontSize: 11, color: tickColor, paddingTop: 4 }}
-            formatter={(value) => value === "me" ? "You" : avgLabel}
+            formatter={(value) => value === "me" ? (singleSeriesLabel ?? "You") : avgLabel}
           />
           <Line type="monotone" dataKey="me" stroke="#006ddd" strokeWidth={2} dot={{ fill: "#006ddd", r: 2.5 }} activeDot={{ r: 5, fill: "#006ddd" }} connectNulls />
-          <Line type="monotone" dataKey="avg" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 3" dot={false} activeDot={{ r: 4, fill: "#94a3b8" }} connectNulls />
+          {!singleSeriesLabel && (
+            <Line type="monotone" dataKey="avg" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 3" dot={false} activeDot={{ r: 4, fill: "#94a3b8" }} connectNulls />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>
