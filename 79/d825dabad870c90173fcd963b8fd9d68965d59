@@ -1,0 +1,19 @@
+backend/llm.py
+  s_82c8dfe5f3c843::t_e61d6e5e994e9d 250-252,260-266,268-270,285,291-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "79d825dabad870c90173fcd963b8fd9d68965d59",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
