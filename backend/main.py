@@ -2131,7 +2131,7 @@ async def _do_qbr_generation(account_id: str, account_name: str, template_type: 
     if template_type not in ("support_highlights", "full_deck"):
         template_type = "full_deck"
     is_full_deck = template_type == "full_deck"
-    resolved_template_id = slides_mod.resolve_template_id(template_type)
+    resolved_template_id = await asyncio.to_thread(slides_mod.resolve_template_id, template_type)
     _ctx_token = slides_mod._template_ctx.set(resolved_template_id)
 
     # If a slide for this month already exists (e.g. a parallel schedule triggered
@@ -2474,7 +2474,7 @@ async def create_qbr_slides(
     import slides_client as slides_mod
     import roadmap_client as roadmap_mod
 
-    resolved_template_id = slides_mod.resolve_template_id(template_type)
+    resolved_template_id = await asyncio.to_thread(slides_mod.resolve_template_id, template_type)
 
     quarter_start, quarter_end, quarter_label = slides_mod.get_last_quarter()
     chart_start = slides_mod.get_chart_start(6)
