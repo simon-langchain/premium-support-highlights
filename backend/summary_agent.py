@@ -329,6 +329,38 @@ async def generate_usage_insights(
     recent = monthly[-3:] if monthly else []
     seats = int(enablement.get("billable_seats") or 0)
 
+    def _is_snapshot_only(rows: list[dict], *fields: str) -> bool:
+        """True if only the latest row has any nonzero value across the given
+        fields — e.g. self-hosted customers whose experiments/prompt hub/dataset
+        counts are tracked only as a current snapshot, not historical monthly
+        series (see bigquery_client's monthly_usage query). Mirrors the same
+        detection hex_client.py uses to decide whether to render a single
+        "Current" bar instead of a month-by-month chart."""
+        if not rows:
+            return False
+        nonzero_idxs = {
+            i for i, r in enumerate(rows)
+            if any(float(r.get(f) or 0) > 0 for f in fields)
+        }
+        return nonzero_idxs == {len(rows) - 1}
+
+    def _eval_is_snapshot_only(rows: list[dict]) -> bool:
+        """Same idea as _is_snapshot_only, but for evaluator_usage rows, which
+        are keyed by (month_start, eval_category) rather than one row per month."""
+        if not rows:
+            return False
+        by_month: dict[str, float] = {}
+        for r in rows:
+            by_month[r["month_start"]] = by_month.get(r["month_start"], 0) + float(r.get("rules") or 0)
+        months_sorted = sorted(by_month)
+        nonzero = [m for m in months_sorted if by_month[m] > 0]
+        return len(nonzero) == 1 and nonzero[0] == months_sorted[-1]
+
+    feature_snapshot_only = _is_snapshot_only(
+        monthly, "total_experiments", "total_prompt_commits", "total_prompt_pulls", "total_datasets"
+    )
+    eval_snapshot_only = _eval_is_snapshot_only(evaluators)
+
     # Slide 22 — Commit Usage: contract KPI tiles + cumulative trace chart
     s22_lines = []
     if contract.get("pct_into_contract") is not None:
@@ -380,7 +412,8 @@ async def generate_usage_insights(
     if pv_lines:
         s23_parts.append("LangSmith page views (last 3 months):\n" + "\n".join(pv_lines))
     if evaluators:
-        s23_parts.append(f"Total evaluator rules (12-month): {total_eval_rules:,}")
+        _eval_span = "current" if eval_snapshot_only else "12-month"
+        s23_parts.append(f"Total evaluator rules ({_eval_span}): {total_eval_rules:,}")
     if seats:
         s23_parts.append(f"Active LangSmith users (MAU): {seats}")
     slide23_block = (
@@ -389,25 +422,46 @@ async def generate_usage_insights(
     )
 
     # Slide 24 — Feature Adoption: experiments, Prompt Hub, datasets, evaluator rules by category
-    s24_lines = []
-    for r in recent:
-        month = str(r.get("month_start", "?"))[:7]
-        experiments = int(r.get("total_experiments") or 0)
-        commits = int(r.get("total_prompt_commits") or 0)
-        pulls = int(r.get("total_prompt_pulls") or 0)
-        datasets = int(r.get("total_datasets") or 0)
-        s24_lines.append(
-            f"  {month}: experiments={experiments}, prompt_commits={commits},"
+    s24_parts = []
+    if feature_snapshot_only:
+        last = monthly[-1]
+        experiments = int(last.get("total_experiments") or 0)
+        commits = int(last.get("total_prompt_commits") or 0)
+        pulls = int(last.get("total_prompt_pulls") or 0)
+        datasets = int(last.get("total_datasets") or 0)
+        s24_parts.append(
+            "Feature usage (CURRENT SNAPSHOT ONLY — this account's historical monthly "
+            "trend for these features is not tracked upstream, only today's totals. Do "
+            "NOT describe growth, decline, a surge, or any month-over-month comparison; "
+            "describe adoption breadth/depth using only these current totals):\n"
+            f"  experiments={experiments}, prompt_commits={commits},"
             f" prompt_pulls={pulls}, datasets={datasets}"
         )
-    eval_lines = [f"  {cat}: {cnt:,} rules" for cat, cnt in sorted(eval_totals.items())]
-    s24_parts = []
-    if s24_lines:
+    elif recent:
+        s24_lines = []
+        for r in recent:
+            month = str(r.get("month_start", "?"))[:7]
+            experiments = int(r.get("total_experiments") or 0)
+            commits = int(r.get("total_prompt_commits") or 0)
+            pulls = int(r.get("total_prompt_pulls") or 0)
+            datasets = int(r.get("total_datasets") or 0)
+            s24_lines.append(
+                f"  {month}: experiments={experiments}, prompt_commits={commits},"
+                f" prompt_pulls={pulls}, datasets={datasets}"
+            )
         s24_parts.append("Feature usage (last 3 months):\n" + "\n".join(s24_lines))
     else:
         s24_parts.append("Feature usage: NO DATA RECEIVED (tracking/sync gap, not necessarily zero usage)")
+
+    eval_lines = [f"  {cat}: {cnt:,} rules" for cat, cnt in sorted(eval_totals.items())]
     if eval_lines:
-        s24_parts.append("Evaluator rules by type (12-month totals):\n" + "\n".join(eval_lines))
+        _eval_header = (
+            "Evaluator rules by type (CURRENT SNAPSHOT ONLY — not a 12-month total, do "
+            "not describe change over time):"
+            if eval_snapshot_only else
+            "Evaluator rules by type (12-month totals):"
+        )
+        s24_parts.append(_eval_header + "\n" + "\n".join(eval_lines))
     else:
         s24_parts.append("Evaluator rules by type: NO DATA RECEIVED (tracking/sync gap, not necessarily zero usage)")
     slide24_block = "\n\n".join(s24_parts)
@@ -462,6 +516,7 @@ Rules:
 - Academy/training topics belong on the Enablement slide, not here
 - CRITICAL — "NO DATA RECEIVED" handling (slide 24 only): slide 24's chart always renders a "No data" placeholder for any empty panel, so a viewer could misread that as "customer doesn't use this feature." When a slide 24 data line is marked "NO DATA RECEIVED", that means LangChain is not currently receiving that data, NOT that the customer has zero usage. Never write or imply "no usage", "not using X", "limited adoption" for that metric. Instead hedge: say we are not receiving that data and suggest confirming tracking/instrumentation is set up correctly. If slide 24's data is entirely "NO DATA RECEIVED", its summary/observations should focus on the data gap itself rather than fabricating a usage narrative, and its opportunities should be about validating the data pipeline, not about feature adoption
 - Slides 22 and 23 are different: their charts silently omit whatever has no data (or skip the whole chart) rather than showing a misleading placeholder, so the absence is already self-evident. Never mention missing data, tracking gaps, or data pipeline issues for slides 22 or 23 — if either has little or no underlying data, keep that slide's summary/observations/opportunities brief and neutral instead
+- CRITICAL — "CURRENT SNAPSHOT ONLY" handling (slide 24 only): when a slide 24 data line is marked this way, the chart itself now shows a single "Current" bar, not a month-by-month trend — the data source only has today's totals, not history. Never write or imply a trend word for that metric: no "surged", "grew", "declined", "sustain momentum", "up/down from last month", no naming specific months (e.g. "zero in June and July"). Describe only the current level itself (e.g. adoption breadth across current totals, which features are and aren't in use right now)
 
 Return ONLY valid JSON (no markdown, no code block):
 {{"commit_summary": "...", "tracing_summary": "...", "feature_summary": "...", "usage_summary": "...", "slide22": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide23": {{"observations": ["...", "..."], "opportunities": ["..."]}}, "slide24": {{"observations": ["...", "..."], "opportunities": ["..."]}}}}"""
