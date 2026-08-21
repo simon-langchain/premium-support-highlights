@@ -1,0 +1,23 @@
+backend/bigquery_client.py
+  s_82c8dfe5f3c843::t_4474eaac92706f 154,157
+  s_82c8dfe5f3c843::t_cd6d95c5ab538a 238
+backend/main.py
+  s_82c8dfe5f3c843::t_5ef67a571ada5c 3070
+  s_82c8dfe5f3c843::t_f95fe5a1865766 2727
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "dd157e2f39aefcc001fd43b39ff78814afce0959",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
