@@ -75,6 +75,7 @@ def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_na
                 if cached:
                     return number, cached
             try:
+                await pylon_client.acquire_messages_slot(background=False)
                 messages = await asyncio.to_thread(pylon_client.get_issue_messages, issue_id)
                 summary = await summarize_ticket(
                     title=issue.get("title", ""),

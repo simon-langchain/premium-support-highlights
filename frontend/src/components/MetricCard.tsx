@@ -4,10 +4,16 @@ interface MetricCardProps {
   delta?: number;
   unit?: string;
   sub?: string;
+  /** Trailing text after the delta value. Defaults to "vs last period". */
+  deltaLabel?: string;
+  /** Flip green/red coloring so a lower delta (e.g. faster response time) renders green. */
+  lowerIsBetter?: boolean;
 }
 
-export default function MetricCard({ label, value, delta, unit, sub }: MetricCardProps) {
+export default function MetricCard({ label, value, delta, unit, sub, deltaLabel, lowerIsBetter }: MetricCardProps) {
   const displayValue = value === null || value === undefined ? "—" : value;
+  const isGood = delta !== undefined && (lowerIsBetter ? delta < 0 : delta > 0);
+  const isBad = delta !== undefined && (lowerIsBetter ? delta > 0 : delta < 0);
 
   return (
     <div
@@ -31,11 +37,11 @@ export default function MetricCard({ label, value, delta, unit, sub }: MetricCar
       {delta !== undefined && (
         <p
           className={`text-xs mt-1.5 font-medium ${
-            delta > 0 ? "text-green-500" : delta < 0 ? "text-red-500" : ""
+            isGood ? "text-green-500" : isBad ? "text-red-500" : ""
           }`}
-          style={delta === 0 ? { color: "var(--text-muted)" } : undefined}
+          style={!isGood && !isBad ? { color: "var(--text-muted)" } : undefined}
         >
-          {delta > 0 ? "+" : ""}{delta.toFixed(1)}{unit ? ` ${unit}` : ""} vs last period
+          {delta > 0 ? "+" : ""}{delta.toFixed(1)}{unit ? ` ${unit}` : ""} {deltaLabel ?? "vs last period"}
         </p>
       )}
     </div>
