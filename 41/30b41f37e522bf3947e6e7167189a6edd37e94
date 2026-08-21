@@ -1,0 +1,32 @@
+frontend/src/lib/syncStatus.ts
+  s_82c8dfe5f3c843::t_655130c1c51ec7 1-18
+frontend/src/app/team/admin/page.tsx
+  s_82c8dfe5f3c843::t_b65a33b8de4c50 3,5,14,17,19
+  s_82c8dfe5f3c843::t_0825cf1a0b51d0 80,168
+  s_82c8dfe5f3c843::t_45fae6602bd545 147-167,169-176
+  s_82c8dfe5f3c843::t_a04d2deec321f6 211-228
+  s_82c8dfe5f3c843::t_35a909dc57e4f6 79,81
+  s_82c8dfe5f3c843::t_488d9a6dcdc9aa 251-255
+  s_82c8dfe5f3c843::t_6b12514f5986c7 303-316,318-331
+  s_82c8dfe5f3c843::t_1d6d0ae1fc7dd0 349
+  s_82c8dfe5f3c843::t_173bd90ee42206 27-39,42
+  s_82c8dfe5f3c843::t_b9322ea6635050 383
+frontend/src/app/team/page.tsx
+  s_82c8dfe5f3c843::t_84a1cc3b7f628e 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4130b41f37e522bf3947e6e7167189a6edd37e94",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
