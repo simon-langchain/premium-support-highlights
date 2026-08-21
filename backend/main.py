@@ -70,13 +70,13 @@ async def _message_sync_loop() -> None:
     regular incremental catch-up.
 
     The two run interleaved in a single loop (not as separate concurrent
-    tasks) so they never race on the shared store file — each iteration
+    tasks) so they never race on the shared store record — each iteration
     does at most one backfill step and/or one incremental sync step,
     sequentially. Both steps are bounded/chunked (see
     message_activity.run_backfill_step / run_incremental_sync_step) so
     neither can starve the other of a turn. The incremental step's "is a
-    new cycle due" gate is persisted to disk rather than an in-process
-    timer, so a backend restart doesn't reset the clock.
+    new cycle due" gate is persisted to the store rather than an in-process
+    timer, so a backend restart (or redeploy) doesn't reset the clock.
 
     Runs for the lifetime of the app. Every Pylon call this makes is already
     paced under Pylon's 20/min message-fetch cap, so it never competes with
@@ -84,7 +84,14 @@ async def _message_sync_loop() -> None:
     is synced so far.
     """
     while True:
-        backfill_done = await asyncio.to_thread(message_activity.backfill_complete)
+        try:
+            backfill_done = await message_activity.backfill_complete()
+        except Exception:
+            # Transient store read failure — assume not-done so the loop still
+            # attempts a backfill step below rather than getting stuck; that
+            # step has its own try/except and retry pacing.
+            _log.exception("message_activity backfill-complete check failed — assuming not done")
+            backfill_done = False
         if not backfill_done:
             try:
                 await message_activity.run_backfill_step()
@@ -1030,12 +1037,8 @@ async def _compute_all_member_metrics(
     """
     members, period_issues, backlog_issues = await _fetch_team_raw(period, force_refresh)
     admin_emails = await asyncio.to_thread(auth_mod.get_admin_emails)
-    message_daily_counts = await asyncio.to_thread(
-        message_activity.get_member_daily_counts, list(members.keys())
-    )
-    message_response_seconds = await asyncio.to_thread(
-        message_activity.get_member_response_seconds, list(members.keys())
-    )
+    message_daily_counts = await message_activity.get_member_daily_counts(list(members.keys()))
+    message_response_seconds = await message_activity.get_member_response_seconds(list(members.keys()))
 
     period_by_member: dict[str, list[dict]] = {mid: [] for mid in members}
     backlog_by_member: dict[str, list[dict]] = {mid: [] for mid in members}
@@ -1216,7 +1219,7 @@ async def get_team_dashboard_sync_status(_email: str = Depends(require_support_t
 
     Read-only aggregate counters only — no ticket/message content.
     """
-    return await asyncio.to_thread(message_activity.get_backfill_status)
+    return await message_activity.get_backfill_status()
 
 
 class AdminEmailBody(BaseModel):
