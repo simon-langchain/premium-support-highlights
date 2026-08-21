@@ -247,6 +247,9 @@ def _provider_base_url(provider: str) -> str:
 # Factory: BaseChatModel (for deepagents / LangChain / all LLM calls)
 # ---------------------------------------------------------------------------
 
+_chat_model_cache: dict[str, BaseChatModel] = {}
+
+
 def get_chat_model(model_id: str) -> BaseChatModel:
     """Return a BaseChatModel configured to route through the gateway.
 
@@ -254,7 +257,17 @@ def get_chat_model(model_id: str) -> BaseChatModel:
     raw model string in provider:model format. The model is initialised with
     explicit base_url and api_key so it always goes through the gateway
     regardless of what env vars are set.
+
+    Cached per model_id and reused — this is called once per ticket/insight
+    generation (potentially dozens of times per account), and each fresh
+    init_chat_model() call constructs its own underlying async HTTP client
+    that's never explicitly closed, showing up as "Unclosed connector"
+    warnings once garbage-collected. Chat model instances are safe to share
+    across concurrent calls, so caching avoids the churn entirely.
     """
+    if model_id in _chat_model_cache:
+        return _chat_model_cache[model_id]
+
     info = get_model_info(model_id)
     if info:
         provider = info["provider"]
@@ -269,9 +282,11 @@ def get_chat_model(model_id: str) -> BaseChatModel:
     base_url = _provider_base_url(provider)
     lc_provider = _PROVIDER_TO_LANGCHAIN.get(provider, provider)
 
-    return init_chat_model(
+    chat_model = init_chat_model(
         model=model,
         model_provider=lc_provider,
         base_url=base_url,
         api_key=_API_KEY,
     )
+    _chat_model_cache[model_id] = chat_model
+    return chat_model
