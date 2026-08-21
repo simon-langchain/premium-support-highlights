@@ -544,6 +544,21 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         values   = [float(r.get(y_field) or 0) for r in rows]
         if not any(v > 0 for v in values):
             return None
+        nonzero = [i for i, v in enumerate(values) if v > 0]
+        if len(nonzero) == 1 and nonzero[0] == len(values) - 1:
+            # Only the latest month has a real number — e.g. self-hosted
+            # customers, whose historical experiments/prompt/dataset counts
+            # aren't tracked upstream, only a current-state snapshot (see
+            # bigquery_client's monthly_usage query). A month-by-month bar
+            # chart here would be almost entirely empty bars implying a
+            # trend that doesn't exist; show the one real number as a
+            # single current-usage bar instead.
+            return {
+                "title":         title,
+                "snapshot_only": True,
+                "value":         values[-1],
+                "_cell_id":      cell_id,
+            }
         return {
             "title":    title,
             "x_labels": x_labels,
@@ -628,6 +643,18 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
                     ha="center", va="center", color=MUTED, fontsize=14)
             ax.set_xticks([])
             ax.set_yticks([])
+            continue
+
+        if data.get("snapshot_only"):
+            value = data["value"]
+            color = _HEX_CELL_STATIC_COLORS.get(cell_id) or _HEX_DEFAULT_PALETTE[0]
+            ax.bar([0], [value], width=0.4, color=color, alpha=0.9, zorder=2)
+            ax.text(0, value * 0.96, _fmt(value), ha="center", va="top",
+                    color="white", fontsize=12, fontweight="bold", zorder=3)
+            ax.set_xticks([0])
+            ax.set_xticklabels(["Current"], color=MUTED, fontsize=11)
+            ax.set_xlim(-1, 1)
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
             continue
 
         x_labels = data.get("x_labels", [])
