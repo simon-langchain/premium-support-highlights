@@ -1,0 +1,19 @@
+frontend/src/app/team/admin/page.tsx
+  s_82c8dfe5f3c843::t_ec83c9b8474839 157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f9c8822e41012d1f5e39eb0a7e3efba1f4d48a4e",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
