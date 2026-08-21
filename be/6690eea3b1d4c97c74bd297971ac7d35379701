@@ -1,0 +1,20 @@
+backend/hex_client.py
+  s_82c8dfe5f3c843::t_388d09217e75f9 547-561
+  s_82c8dfe5f3c843::t_89b6cac423ebb2 648-659
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "be6690eea3b1d4c97c74bd297971ac7d35379701",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
