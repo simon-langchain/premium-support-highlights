@@ -513,6 +513,7 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
     All 5 slots are always rendered — charts with no data show a "No data" placeholder.
     Uses the exact same dark-theme 3+2 grid rendering as create_feature_usage_composite.
     """
+    import math
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -532,6 +533,24 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         if abs(v) >= 1e6: return f"{v / 1e6:.0f}M"
         if abs(v) >= 1e3: return f"{v / 1e3:.0f}K"
         return str(int(v))
+
+    def _nice_ceiling(value: float) -> float:
+        """Round up to a "nice" axis max (1/2/5 x a power of 10).
+
+        A single-bar chart's y-axis would otherwise auto-scale tightly to
+        that one value, making the bar fill ~95% of the panel regardless of
+        whether the number is actually large or small. Rounding to a nice
+        ceiling gives real headroom, so fill % roughly tracks magnitude
+        instead of always looking "full".
+        """
+        if value <= 0:
+            return 1.0
+        exponent = math.floor(math.log10(value))
+        base = 10 ** exponent
+        for mult in (1, 2, 5, 10):
+            if value <= mult * base:
+                return mult * base
+        return 10 * base
 
     monthly = chart_data.get("monthly_usage", [])
     evaluator_rows = chart_data.get("evaluator_usage", [])
@@ -654,6 +673,7 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
             ax.set_xticks([0])
             ax.set_xticklabels(["Current"], color=MUTED, fontsize=11)
             ax.set_xlim(-1, 1)
+            ax.set_ylim(0, _nice_ceiling(value))
             ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
             continue
 
