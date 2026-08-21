@@ -1164,7 +1164,11 @@ async def get_team_dashboard_data(
         "team_average_trend": team_average_trend,
         "team_median": team_median,
         "team_median_trend": team_median_trend,
-        "team_member_count": len(member_results),
+        # Admins are excluded from team_average/team_median (see
+        # _compute_all_member_metrics), so the count shown alongside those
+        # figures must match — len(member_results) would include admins and
+        # overstate who's actually being averaged.
+        "team_member_count": sum(1 for r in member_results.values() if not r["is_admin"]),
         "viewing_as": viewing_as,
     }
 
