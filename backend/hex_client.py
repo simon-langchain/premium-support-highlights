@@ -555,6 +555,16 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
     monthly = chart_data.get("monthly_usage", [])
     evaluator_rows = chart_data.get("evaluator_usage", [])
 
+    def _snapshot_title(title: str) -> str:
+        """Drop the trailing 'Monthly'/'by Month' qualifier for a single
+        current-value bar — those words describe a trend that isn't being
+        shown, and left in place they misleadingly imply history the chart
+        no longer displays."""
+        for suffix in (" Monthly", " by Month"):
+            if title.endswith(suffix):
+                return title[: -len(suffix)]
+        return title
+
     def _simple_chart(rows, x_field, y_field, title, cell_id):
         """Return chart dict or None if all values are zero / no rows."""
         if not rows:
@@ -573,7 +583,7 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
             # trend that doesn't exist; show the one real number as a
             # single current-usage bar instead.
             return {
-                "title":         title,
+                "title":         _snapshot_title(title),
                 "snapshot_only": True,
                 "value":         values[-1],
                 "_cell_id":      cell_id,
@@ -606,6 +616,19 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         # Return None if truly all zeros
         if not any(v > 0 for s in series for v in s["values"]):
             return None
+        # Same self-hosted snapshot limitation as _simple_chart above, but
+        # per-category rather than a single series — show each category's
+        # current total as its own "Current" bar instead of an
+        # almost-entirely-empty month-by-month series.
+        nonzero_months = {i for s in series for i, v in enumerate(s["values"]) if v > 0}
+        if nonzero_months == {len(x_labels) - 1}:
+            categories = [(s["name"], s["values"][-1]) for s in series if s["values"][-1] > 0]
+            return {
+                "title":         _snapshot_title(FEATURE_USAGE_CHART_META[EVALUATOR_RULES_CELL_ID]),
+                "snapshot_only": True,
+                "categories":    categories,
+                "_cell_id":      EVALUATOR_RULES_CELL_ID,
+            }
         return {
             "title":    FEATURE_USAGE_CHART_META[EVALUATOR_RULES_CELL_ID],
             "x_labels": x_labels,
@@ -650,9 +673,9 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
             spine.set_linewidth(0.8)
         ax.tick_params(colors=MUTED, labelsize=11)
 
-        title   = FEATURE_USAGE_CHART_META.get(cell_id, "")
         y_label = _HEX_CHART_Y_LABELS.get(cell_id, "")
-        ax.set_title(title, color=TEXT, fontsize=13, pad=5)
+        ax.set_title((data or {}).get("title") or FEATURE_USAGE_CHART_META.get(cell_id, ""),
+                     color=TEXT, fontsize=13, pad=5)
         if y_label:
             ax.set_ylabel(y_label, color=MUTED, fontsize=11)
         ax.grid(axis="y", color=BORDER, linewidth=0.5, alpha=0.7, zorder=0)
@@ -662,6 +685,31 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
                     ha="center", va="center", color=MUTED, fontsize=14)
             ax.set_xticks([])
             ax.set_yticks([])
+            continue
+
+        if data.get("snapshot_only") and "categories" in data:
+            categories = data["categories"]
+            n = len(categories)
+            values = [v for _, v in categories]
+            max_val = max(values) if values else 0
+            for i, (name, value) in enumerate(categories):
+                color = (
+                    _HEX_SERIES_COLORS.get(name)
+                    or _HEX_CELL_STATIC_COLORS.get(cell_id)
+                    or _HEX_DEFAULT_PALETTE[i % len(_HEX_DEFAULT_PALETTE)]
+                )
+                ax.bar([i], [value], width=0.5, color=color, alpha=0.9, zorder=2)
+                ax.text(i, value * 0.96, _fmt(value), ha="center", va="top",
+                        color="white", fontsize=12, fontweight="bold", zorder=3)
+            ax.set_xticks(range(n))
+            if n > 1:
+                ax.set_xticklabels([name for name, _ in categories], color=MUTED,
+                                    fontsize=10, rotation=15, ha="right")
+            else:
+                ax.set_xticklabels(["Current"], color=MUTED, fontsize=11)
+            ax.set_xlim(-1, n)
+            ax.set_ylim(0, _nice_ceiling(max_val))
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
             continue
 
         if data.get("snapshot_only"):
