@@ -1,0 +1,32 @@
+frontend/src/components/TrendMiniChart.tsx
+  s_82c8dfe5f3c843::t_bbe82c698a2674 54
+  s_82c8dfe5f3c843::t_7a7d6b83111ae6 108,111,114-116
+  s_82c8dfe5f3c843::t_ecd065762add83 23-27
+  s_82c8dfe5f3c843::t_ad99920d5969fb 57,71,79
+frontend/src/app/team/page.tsx
+  s_82c8dfe5f3c843::t_9faf6cad79a44d 271-275,278,284-290
+  s_82c8dfe5f3c843::t_a061c6428168c1 545,552,559,566,572,574,586-587,594
+  s_82c8dfe5f3c843::t_660aed8be34ef1 595
+  s_82c8dfe5f3c843::t_38c1ffd74a0018 345,352-354,357-361
+  s_82c8dfe5f3c843::t_5c3b5b1dab4177 392-398
+  s_82c8dfe5f3c843::t_904f77be3b33c2 424-426,431,434-436,438,447,449-450,455,458-460,462,474,477-479,481,489-492,498-500,505,508-510,512
+  s_82c8dfe5f3c843::t_a040051e759631 279-283
+  s_82c8dfe5f3c843::t_42da53ce662140 371
+  s_82c8dfe5f3c843::t_e5aa9ff6facf1c 294,299-315,323
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0ebc381b35d19c860624611994f3dd596010290e",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
