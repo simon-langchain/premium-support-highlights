@@ -141,12 +141,21 @@ def get_team_members() -> list[dict]:
 
 
 _SUPPORT_TEAM_NAME = "Support"
+# Some reps are only added to their regional routing team in Pylon, not to
+# "Support" itself (e.g. a rep who only shows up in "Region - Europe") —
+# treat any team named "Region - <name>" as a Support sub-team so those reps
+# aren't silently excluded from dashboard access and metrics. Pylon's /teams
+# API has no parent/child field to derive this from structurally, so it's
+# matched by name prefix.
+_SUPPORT_SUBTEAM_PREFIX = "region - "
 _SUPPORT_TEAM_TTL_SECONDS = 3600  # 1 hour
 _SUPPORT_TEAM_CACHE_FILE = _CACHE_DIR / "support_team.json"
 
 
 def get_support_team_member_ids(force_refresh: bool = False) -> dict[str, str]:
-    """Return {pylon_user_id: email} for members of the Pylon "Support" team.
+    """Return {pylon_user_id: email} for members of the Pylon "Support" team
+    and its regional sub-teams (any "Region - <name>" team, e.g. "Region -
+    Europe" or "Region - US Central").
 
     Uses GET /teams (org-level team membership — distinct from the per-issue
     `team` field, which is a routing/region queue, not org membership).
@@ -163,13 +172,14 @@ def get_support_team_member_ids(force_refresh: bool = False) -> dict[str, str]:
     members: dict[str, str] = {}
     data = _get("/teams")
     for team in data.get("data", []):
-        if str(team.get("name", "")).strip().lower() == _SUPPORT_TEAM_NAME.lower():
-            for user in team.get("users") or []:
-                uid = user.get("id")
-                email = user.get("email")
-                if uid and email:
-                    members[uid] = email
-            break
+        name = str(team.get("name", "")).strip().lower()
+        if name != _SUPPORT_TEAM_NAME.lower() and not name.startswith(_SUPPORT_SUBTEAM_PREFIX):
+            continue
+        for user in team.get("users") or []:
+            uid = user.get("id")
+            email = user.get("email")
+            if uid and email:
+                members[uid] = email
 
     _SUPPORT_TEAM_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _SUPPORT_TEAM_CACHE_FILE.write_text(
