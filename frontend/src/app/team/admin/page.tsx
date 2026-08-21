@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Trash2, Plus, Eye } from "lucide-react";
+import { Loader2, Trash2, Plus, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import TeamSidebar from "@/components/TeamSidebar";
 import OptionPicker from "@/components/OptionPicker";
 import {
@@ -11,9 +11,12 @@ import {
   fetchAdmins,
   addAdmin,
   removeAdmin,
+  fetchMessageActivitySyncStatus,
   type TeamOverview,
   type RepMetrics,
+  type MessageActivitySyncStatus,
 } from "@/lib/api";
+import { formatSyncStatus } from "@/lib/syncStatus";
 
 function round1(n: number | null): string {
   return n === null ? "—" : (Math.round(n * 10) / 10).toString();
@@ -21,9 +24,22 @@ function round1(n: number | null): string {
 
 type StatMode = "avg" | "median";
 
+/** The RepMetrics fields actually used as table columns — excludes the
+ * object-valued fields (state_breakdown, pending_wait) so sort comparisons
+ * can assume every column value is a plain number | null. */
+type MetricColumnKey =
+  | "tickets_taken"
+  | "avg_response_time" | "median_response_time"
+  | "sla_compliance_pct"
+  | "avg_resolution_time" | "median_resolution_time"
+  | "backlog_count"
+  | "avg_csat" | "median_csat";
+
+type SortKey = "name" | MetricColumnKey;
+
 function getMetricColumns(
   statMode: StatMode
-): { key: keyof RepMetrics; label: string; unit?: string; decimals?: boolean }[] {
+): { key: MetricColumnKey; label: string; unit?: string; decimals?: boolean }[] {
   return [
     { key: "tickets_taken", label: "Tickets" },
     {
@@ -60,6 +76,9 @@ export default function TeamAdminPage() {
   const [filter, setFilter] = useState("__all__");
   const [dataUpdatedAt, setDataUpdatedAt] = useState<Date | null>(null);
   const [statMode, setStatMode] = useState<StatMode>("median");
+  const [syncStatus, setSyncStatus] = useState<MessageActivitySyncStatus | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const [admins, setAdmins] = useState<string[]>([]);
   const [adminsLoading, setAdminsLoading] = useState(true);
@@ -125,6 +144,36 @@ export default function TeamAdminPage() {
       .finally(() => setAdminsLoading(false));
   }, []);
 
+  // Polls backfill progress until it's fully synced, then stops — same
+  // pattern as /team, so admins see the same "how complete is the update
+  // history" signal the per-rep view already shows.
+  useEffect(() => {
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    const check = () => {
+      fetchMessageActivitySyncStatus().then((status) => {
+        if (cancelled || !status) return;
+        setSyncStatus(status);
+        if (status.complete && intervalId) {
+          clearInterval(intervalId);
+          intervalId = undefined;
+        }
+      }).catch(() => {});
+    };
+    check();
+    intervalId = setInterval(check, 60_000);
+    return () => { cancelled = true; if (intervalId) clearInterval(intervalId); };
+  }, []);
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
   async function handleAddAdmin() {
     const email = newAdminEmail.trim();
     if (!email) return;
@@ -159,6 +208,24 @@ export default function TeamAdminPage() {
   const metricColumns = getMetricColumns(statMode);
   const teamRow = overview ? (statMode === "median" ? overview.team_median : overview.team_average) : null;
 
+  const sortedMembers = useMemo(() => {
+    const arr = [...filteredMembers];
+    arr.sort((a, b) => {
+      const av: string | number | null = sortKey === "name" ? a.name.toLowerCase() : a.metrics[sortKey];
+      const bv: string | number | null = sortKey === "name" ? b.name.toLowerCase() : b.metrics[sortKey];
+      // Missing metrics always sort last, regardless of direction — a "—"
+      // cell isn't meaningfully high or low, so it shouldn't get sorted
+      // to the top just because descending order treats null as -Infinity.
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [filteredMembers, sortKey, sortDir]);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <TeamSidebar
@@ -181,6 +248,11 @@ export default function TeamAdminPage() {
                 </span>
               )}
             </p>
+            {syncStatus && (
+              <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                {formatSyncStatus(syncStatus)}
+              </p>
+            )}
           </div>
           <div className="w-56">
             <OptionPicker
@@ -228,10 +300,35 @@ export default function TeamAdminPage() {
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border)" }}>
-                  <th className="text-left px-4 py-2.5 font-medium" style={{ color: "var(--text-muted)" }}>Rep</th>
+                  <th
+                    className="text-left px-4 py-2.5 font-medium cursor-pointer select-none hover:opacity-80 transition-opacity"
+                    style={{ color: "var(--text-muted)" }}
+                    onClick={() => handleSort("name")}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      Rep
+                      {sortKey === "name" ? (
+                        sortDir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />
+                      ) : (
+                        <ArrowUpDown size={11} className="opacity-40" />
+                      )}
+                    </span>
+                  </th>
                   {metricColumns.map((col) => (
-                    <th key={col.key} className="text-right px-4 py-2.5 font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
-                      {col.label}{col.unit ? ` (${col.unit})` : ""}
+                    <th
+                      key={col.key}
+                      className="text-right px-4 py-2.5 font-medium whitespace-nowrap cursor-pointer select-none hover:opacity-80 transition-opacity"
+                      style={{ color: "var(--text-muted)" }}
+                      onClick={() => handleSort(col.key)}
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        {col.label}{col.unit ? ` (${col.unit})` : ""}
+                        {sortKey === col.key ? (
+                          sortDir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />
+                        ) : (
+                          <ArrowUpDown size={11} className="opacity-40" />
+                        )}
+                      </span>
                     </th>
                   ))}
                   <th className="px-4 py-2.5" />
@@ -249,7 +346,7 @@ export default function TeamAdminPage() {
                   ))}
                   <td className="px-4 py-2.5" />
                 </tr>
-                {filteredMembers.map((m) => (
+                {sortedMembers.map((m) => (
                   <tr key={m.email} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td className="px-4 py-2.5" style={{ color: "var(--text-primary)" }}>
                       <div className="flex items-center gap-1.5">
@@ -283,7 +380,7 @@ export default function TeamAdminPage() {
                     </td>
                   </tr>
                 ))}
-                {filteredMembers.length === 0 && (
+                {sortedMembers.length === 0 && (
                   <tr>
                     <td colSpan={metricColumns.length + 2} className="px-4 py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
                       No members match this filter for this period.
