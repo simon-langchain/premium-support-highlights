@@ -513,6 +513,7 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
     All 5 slots are always rendered — charts with no data show a "No data" placeholder.
     Uses the exact same dark-theme 3+2 grid rendering as create_feature_usage_composite.
     """
+    import math
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -533,8 +534,36 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         if abs(v) >= 1e3: return f"{v / 1e3:.0f}K"
         return str(int(v))
 
+    def _nice_ceiling(value: float) -> float:
+        """Round up to a "nice" axis max (1/2/5 x a power of 10).
+
+        A single-bar chart's y-axis would otherwise auto-scale tightly to
+        that one value, making the bar fill ~95% of the panel regardless of
+        whether the number is actually large or small. Rounding to a nice
+        ceiling gives real headroom, so fill % roughly tracks magnitude
+        instead of always looking "full".
+        """
+        if value <= 0:
+            return 1.0
+        exponent = math.floor(math.log10(value))
+        base = 10 ** exponent
+        for mult in (1, 2, 5, 10):
+            if value <= mult * base:
+                return mult * base
+        return 10 * base
+
     monthly = chart_data.get("monthly_usage", [])
     evaluator_rows = chart_data.get("evaluator_usage", [])
+
+    def _snapshot_title(title: str) -> str:
+        """Drop the trailing 'Monthly'/'by Month' qualifier for a single
+        current-value bar — those words describe a trend that isn't being
+        shown, and left in place they misleadingly imply history the chart
+        no longer displays."""
+        for suffix in (" Monthly", " by Month"):
+            if title.endswith(suffix):
+                return title[: -len(suffix)]
+        return title
 
     def _simple_chart(rows, x_field, y_field, title, cell_id):
         """Return chart dict or None if all values are zero / no rows."""
@@ -544,6 +573,21 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         values   = [float(r.get(y_field) or 0) for r in rows]
         if not any(v > 0 for v in values):
             return None
+        nonzero = [i for i, v in enumerate(values) if v > 0]
+        if len(nonzero) == 1 and nonzero[0] == len(values) - 1:
+            # Only the latest month has a real number — e.g. self-hosted
+            # customers, whose historical experiments/prompt/dataset counts
+            # aren't tracked upstream, only a current-state snapshot (see
+            # bigquery_client's monthly_usage query). A month-by-month bar
+            # chart here would be almost entirely empty bars implying a
+            # trend that doesn't exist; show the one real number as a
+            # single current-usage bar instead.
+            return {
+                "title":         _snapshot_title(title),
+                "snapshot_only": True,
+                "value":         values[-1],
+                "_cell_id":      cell_id,
+            }
         return {
             "title":    title,
             "x_labels": x_labels,
@@ -572,6 +616,19 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
         # Return None if truly all zeros
         if not any(v > 0 for s in series for v in s["values"]):
             return None
+        # Same self-hosted snapshot limitation as _simple_chart above, but
+        # per-category rather than a single series — show each category's
+        # current total as its own "Current" bar instead of an
+        # almost-entirely-empty month-by-month series.
+        nonzero_months = {i for s in series for i, v in enumerate(s["values"]) if v > 0}
+        if nonzero_months == {len(x_labels) - 1}:
+            categories = [(s["name"], s["values"][-1]) for s in series if s["values"][-1] > 0]
+            return {
+                "title":         _snapshot_title(FEATURE_USAGE_CHART_META[EVALUATOR_RULES_CELL_ID]),
+                "snapshot_only": True,
+                "categories":    categories,
+                "_cell_id":      EVALUATOR_RULES_CELL_ID,
+            }
         return {
             "title":    FEATURE_USAGE_CHART_META[EVALUATOR_RULES_CELL_ID],
             "x_labels": x_labels,
@@ -616,9 +673,9 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
             spine.set_linewidth(0.8)
         ax.tick_params(colors=MUTED, labelsize=11)
 
-        title   = FEATURE_USAGE_CHART_META.get(cell_id, "")
         y_label = _HEX_CHART_Y_LABELS.get(cell_id, "")
-        ax.set_title(title, color=TEXT, fontsize=13, pad=5)
+        ax.set_title((data or {}).get("title") or FEATURE_USAGE_CHART_META.get(cell_id, ""),
+                     color=TEXT, fontsize=13, pad=5)
         if y_label:
             ax.set_ylabel(y_label, color=MUTED, fontsize=11)
         ax.grid(axis="y", color=BORDER, linewidth=0.5, alpha=0.7, zorder=0)
@@ -628,6 +685,44 @@ def create_feature_usage_composite_from_bq(chart_data: dict) -> bytes:
                     ha="center", va="center", color=MUTED, fontsize=14)
             ax.set_xticks([])
             ax.set_yticks([])
+            continue
+
+        if data.get("snapshot_only") and "categories" in data:
+            categories = data["categories"]
+            n = len(categories)
+            values = [v for _, v in categories]
+            max_val = max(values) if values else 0
+            for i, (name, value) in enumerate(categories):
+                color = (
+                    _HEX_SERIES_COLORS.get(name)
+                    or _HEX_CELL_STATIC_COLORS.get(cell_id)
+                    or _HEX_DEFAULT_PALETTE[i % len(_HEX_DEFAULT_PALETTE)]
+                )
+                ax.bar([i], [value], width=0.5, color=color, alpha=0.9, zorder=2)
+                ax.text(i, value * 0.96, _fmt(value), ha="center", va="top",
+                        color="white", fontsize=12, fontweight="bold", zorder=3)
+            ax.set_xticks(range(n))
+            if n > 1:
+                ax.set_xticklabels([name for name, _ in categories], color=MUTED,
+                                    fontsize=10, rotation=15, ha="right")
+            else:
+                ax.set_xticklabels(["Current"], color=MUTED, fontsize=11)
+            ax.set_xlim(-1, n)
+            ax.set_ylim(0, _nice_ceiling(max_val))
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
+            continue
+
+        if data.get("snapshot_only"):
+            value = data["value"]
+            color = _HEX_CELL_STATIC_COLORS.get(cell_id) or _HEX_DEFAULT_PALETTE[0]
+            ax.bar([0], [value], width=0.4, color=color, alpha=0.9, zorder=2)
+            ax.text(0, value * 0.96, _fmt(value), ha="center", va="top",
+                    color="white", fontsize=12, fontweight="bold", zorder=3)
+            ax.set_xticks([0])
+            ax.set_xticklabels(["Current"], color=MUTED, fontsize=11)
+            ax.set_xlim(-1, 1)
+            ax.set_ylim(0, _nice_ceiling(value))
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
             continue
 
         x_labels = data.get("x_labels", [])

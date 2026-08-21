@@ -675,6 +675,29 @@ def _upload_chart(drive, chart_bytes: bytes, parent_folder_id: str | None) -> st
     return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
+def _batch_update_with_image_retry(slides_svc, pres_id: str, requests: list[dict]) -> dict:
+    """batchUpdate wrapper with retry for requests that reference a Drive image
+    just uploaded by _upload_chart.
+
+    Drive's "anyone: reader" permission can take a moment to propagate, and
+    Slides' image fetcher occasionally loses that race — failing with a 400
+    "provided image should be publicly accessible" error on a file that's
+    correctly public a second later. Retries only that specific error.
+    """
+    from googleapiclient.errors import HttpError
+
+    for attempt in range(3):
+        try:
+            return slides_svc.presentations().batchUpdate(
+                presentationId=pres_id, body={"requests": requests},
+            ).execute()
+        except HttpError as exc:
+            if attempt == 2 or "problem retrieving the image" not in str(exc):
+                raise
+            _log.warning("batchUpdate image request failed (attempt %d), retrying: %s", attempt + 1, exc)
+            time.sleep(2 ** attempt)
+
+
 def _find_image_object_id(slides_svc, pres_id: str, slide_index: int = 0) -> str | None:
     """Return the objectId of the first image on the given slide (0-based index)."""
     pres = slides_svc.presentations().get(presentationId=pres_id).execute()
@@ -688,16 +711,13 @@ def _find_image_object_id(slides_svc, pres_id: str, slide_index: int = 0) -> str
 
 
 def _replace_chart_image(slides_svc, pres_id: str, object_id: str, chart_url: str) -> None:
-    slides_svc.presentations().batchUpdate(
-        presentationId=pres_id,
-        body={"requests": [{
-            "replaceImage": {
-                "imageObjectId": object_id,
-                "url": chart_url,
-                "imageReplaceMethod": "CENTER_INSIDE",
-            }
-        }]},
-    ).execute()
+    _batch_update_with_image_retry(slides_svc, pres_id, [{
+        "replaceImage": {
+            "imageObjectId": object_id,
+            "url": chart_url,
+            "imageReplaceMethod": "CENTER_INSIDE",
+        }
+    }])
 
 
 def _add_fr_second_column(slides_svc, pres_id: str, col2_titles: list[str]) -> None:
@@ -1046,42 +1066,36 @@ def _insert_chart_at_slide(
         None,
     )
     if existing_img_id:
-        slides.presentations().batchUpdate(
-            presentationId=pres_id,
-            body={"requests": [{
-                "replaceImage": {
-                    "imageObjectId": existing_img_id,
-                    "url": chart_url,
-                    "imageReplaceMethod": "CENTER_INSIDE",
-                }
-            }]},
-        ).execute()
+        _batch_update_with_image_retry(slides, pres_id, [{
+            "replaceImage": {
+                "imageObjectId": existing_img_id,
+                "url": chart_url,
+                "imageReplaceMethod": "CENTER_INSIDE",
+            }
+        }])
     else:
         page_size = pres.get("pageSize", {})
         w = page_size.get("width", {}).get("magnitude", 9_144_000)
         h = page_size.get("height", {}).get("magnitude", 5_143_500)
         img_w, img_h = w * 0.6, h * 0.6
-        slides.presentations().batchUpdate(
-            presentationId=pres_id,
-            body={"requests": [{
-                "createImage": {
-                    "url": chart_url,
-                    "elementProperties": {
-                        "pageObjectId": slide_id,
-                        "size": {
-                            "width": {"magnitude": img_w, "unit": "EMU"},
-                            "height": {"magnitude": img_h, "unit": "EMU"},
-                        },
-                        "transform": {
-                            "scaleX": 1, "scaleY": 1,
-                            "translateX": (w - img_w) / 2,
-                            "translateY": (h - img_h) / 2,
-                            "unit": "EMU",
-                        },
+        _batch_update_with_image_retry(slides, pres_id, [{
+            "createImage": {
+                "url": chart_url,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {
+                        "width": {"magnitude": img_w, "unit": "EMU"},
+                        "height": {"magnitude": img_h, "unit": "EMU"},
                     },
-                }
-            }]},
-        ).execute()
+                    "transform": {
+                        "scaleX": 1, "scaleY": 1,
+                        "translateX": (w - img_w) / 2,
+                        "translateY": (h - img_h) / 2,
+                        "unit": "EMU",
+                    },
+                },
+            }
+        }])
     _log.info("_insert_chart_at_slide: inserted chart into slide %d of %s", slide_index, pres_id)
 
 
@@ -1196,10 +1210,7 @@ def add_academy_table(pres_id: str, customer_folder_id: str, chart_bytes: bytes)
         }
     })
 
-    slides.presentations().batchUpdate(
-        presentationId=pres_id,
-        body={"requests": requests},
-    ).execute()
+    _batch_update_with_image_retry(slides, pres_id, requests)
     _log.info("add_academy_table: inserted table into slide %d of %s", slide_index, pres_id)
 
 
@@ -1399,9 +1410,7 @@ def add_customer_logo(pres_id: str, logo_url: str, customer_folder_id: str | Non
             })
 
     if requests:
-        slides_svc.presentations().batchUpdate(
-            presentationId=pres_id, body={"requests": requests},
-        ).execute()
+        _batch_update_with_image_retry(slides_svc, pres_id, requests)
 
     _log.info("add_customer_logo: applied logo to %s", pres_id)
 

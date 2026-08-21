@@ -3186,82 +3186,91 @@ async def create_qbr_slides(
                 else:
                     _log.info("No Metronome ID for %s — skipping chart fetch", account_name)
 
-                if _bq_chart_data:
-                    try:
-                        _usage_ins = await generate_usage_insights(
-                            account_name, quarter_label, _bq_chart_data, _maturity_data, model=qbr_model
-                        )
-                        slide14.update(_usage_ins)
-                    except Exception:
-                        _log.exception("Usage insights generation failed for %s — continuing", account_name)
-
                 yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "done"})
             else:
                 yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "done"})
 
-            # Step 4: roadmap lookup and AI item selection (non-fatal)
+            # Step 4: usage insights (AI) and roadmap lookup run concurrently — neither
+            # depends on the other's output, and usage insights alone can take 2+
+            # minutes. Serializing them risks the platform's ~300s request timeout
+            # cutting the request off before chart insertion (the actually valuable
+            # part of the deck) ever runs.
             yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "running"})
-            roadmap_items: list[dict] = []
-            try:
-                from datetime import date as _date
-                _today = _date.today()
-                _slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
-                _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
 
-                # Build list of months: current + last 3 (= last quarter)
-                _months: list[_date] = []
-                _m, _y = _today.month, _today.year
-                for _ in range(4):
-                    _months.append(_date(_y, _m, 1))
-                    _m -= 1
-                    if _m == 0:
-                        _m, _y = 12, _y - 1
+            from datetime import date as _date
+            _today = _date.today()
 
-                def _fetch_all_roadmaps() -> list[tuple[str, _date]]:
-                    from googleapiclient.discovery import build as _build
-                    from google.oauth2 import service_account as _sa
-                    import json as _json
-                    _creds = _sa.Credentials.from_service_account_info(
-                        _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
-                        scopes=["https://www.googleapis.com/auth/drive"],
+            async def _run_usage_insights() -> dict:
+                if not _bq_chart_data:
+                    return {}
+                try:
+                    return await generate_usage_insights(
+                        account_name, quarter_label, _bq_chart_data, _maturity_data, model=qbr_model
                     )
-                    _drive = _build("drive", "v3", credentials=_creds, cache_discovery=False)
-                    found: list[tuple[str, _date]] = []
-                    seen_ids: set[str] = set()
-                    for month in _months:
-                        pres_id = roadmap_mod.find_roadmap_in_drive(_drive, month)
-                        if not pres_id and _slack_token and month == _months[0]:
-                            url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
-                            if url:
-                                try:
-                                    pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
-                                except Exception as _copy_exc:
-                                    _log.warning("Could not copy roadmap for %s (%s) — skipping", month, _copy_exc)
-                                    pres_id = None
-                        if pres_id and pres_id not in seen_ids:
-                            seen_ids.add(pres_id)
-                            found.append((pres_id, month))
-                    return found
+                except Exception:
+                    _log.exception("Usage insights generation failed for %s — continuing", account_name)
+                    return {}
 
-                def _extract_all(roadmap_list: list[tuple[str, _date]]) -> list[dict]:
-                    from googleapiclient.discovery import build as _build
-                    from google.oauth2 import service_account as _sa
-                    import json as _json
-                    _creds = _sa.Credentials.from_service_account_info(
-                        _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
-                        scopes=["https://www.googleapis.com/auth/presentations"],
-                    )
-                    _slides = _build("slides", "v1", credentials=_creds, cache_discovery=False)
-                    all_items: list[dict] = []
-                    for pres_id, month in roadmap_list:
-                        try:
-                            all_items.extend(roadmap_mod.extract_roadmap_items(_slides, pres_id, month))
-                        except Exception as exc:
-                            _log.warning("Could not extract roadmap from %s: %s", pres_id, exc)
-                    return all_items
+            async def _run_roadmap() -> list[dict]:
+                try:
+                    _slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+                    _shared_drive_id = os.environ.get("QBR_SHARED_DRIVE_ID", "").strip() or None
 
-                roadmap_list = await asyncio.to_thread(_fetch_all_roadmaps)
-                if roadmap_list:
+                    # Build list of months: current + last 3 (= last quarter)
+                    _months: list[_date] = []
+                    _m, _y = _today.month, _today.year
+                    for _ in range(4):
+                        _months.append(_date(_y, _m, 1))
+                        _m -= 1
+                        if _m == 0:
+                            _m, _y = 12, _y - 1
+
+                    def _fetch_all_roadmaps() -> list[tuple[str, _date]]:
+                        from googleapiclient.discovery import build as _build
+                        from google.oauth2 import service_account as _sa
+                        import json as _json
+                        _creds = _sa.Credentials.from_service_account_info(
+                            _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                            scopes=["https://www.googleapis.com/auth/drive"],
+                        )
+                        _drive = _build("drive", "v3", credentials=_creds, cache_discovery=False)
+                        found: list[tuple[str, _date]] = []
+                        seen_ids: set[str] = set()
+                        for month in _months:
+                            pres_id = roadmap_mod.find_roadmap_in_drive(_drive, month)
+                            if not pres_id and _slack_token and month == _months[0]:
+                                url = roadmap_mod.fetch_roadmap_link_from_slack(_slack_token, month)
+                                if url:
+                                    try:
+                                        pres_id = roadmap_mod.copy_roadmap_to_drive(_drive, url, month, _shared_drive_id)
+                                    except Exception as _copy_exc:
+                                        _log.warning("Could not copy roadmap for %s (%s) — skipping", month, _copy_exc)
+                                        pres_id = None
+                            if pres_id and pres_id not in seen_ids:
+                                seen_ids.add(pres_id)
+                                found.append((pres_id, month))
+                        return found
+
+                    def _extract_all(roadmap_list: list[tuple[str, _date]]) -> list[dict]:
+                        from googleapiclient.discovery import build as _build
+                        from google.oauth2 import service_account as _sa
+                        import json as _json
+                        _creds = _sa.Credentials.from_service_account_info(
+                            _json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+                            scopes=["https://www.googleapis.com/auth/presentations"],
+                        )
+                        _slides = _build("slides", "v1", credentials=_creds, cache_discovery=False)
+                        all_items: list[dict] = []
+                        for pres_id, month in roadmap_list:
+                            try:
+                                all_items.extend(roadmap_mod.extract_roadmap_items(_slides, pres_id, month))
+                            except Exception as exc:
+                                _log.warning("Could not extract roadmap from %s: %s", pres_id, exc)
+                        return all_items
+
+                    roadmap_list = await asyncio.to_thread(_fetch_all_roadmaps)
+                    if not roadmap_list:
+                        return []
                     raw_items = await asyncio.to_thread(_extract_all, roadmap_list)
                     # Deduplicate by title — keep only the latest month's version
                     from datetime import datetime as _dt
@@ -3288,9 +3297,14 @@ async def create_qbr_slides(
                                     _dt.strptime(item["month"], "%B %Y").month)
                         except (ValueError, KeyError):
                             return (9999, 99)
-                    roadmap_items = sorted(selected, key=_month_key)
-            except Exception:
-                _log.exception("Roadmap lookup failed — continuing without roadmap items")
+                    return sorted(selected, key=_month_key)
+                except Exception:
+                    _log.exception("Roadmap lookup failed — continuing without roadmap items")
+                    return []
+
+            _usage_ins, roadmap_items = await asyncio.gather(_run_usage_insights(), _run_roadmap())
+            slide14.update(_usage_ins)
+
             yield _sse("progress", {"step": "roadmap", "label": "Finding roadmap items", "status": "done"})
 
             # Step 5: create slide deck (copy template + text replacements)
@@ -3317,6 +3331,7 @@ async def create_qbr_slides(
                     account_name, slide14, slide15, quarter_label, _month_label,
                 )
             except Exception as exc:
+                _log.exception("Slides creation failed for %s", account_name)
                 yield _sse("error", {"detail": f"Slides creation failed: {exc}"})
                 return
             _domain = ((_account.get("primary_domain") or _account.get("domain") or "") if _account else "").strip()
