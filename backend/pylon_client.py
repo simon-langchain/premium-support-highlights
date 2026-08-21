@@ -6,6 +6,7 @@ and fetching messages/custom-fields for metrics computation.
 Rate limits (read-only): search 20/min, get issue 60/min, get messages 20/min.
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -594,6 +595,51 @@ def get_team_backlog_issues(states: list[str], force_refresh: bool = False) -> l
     return trimmed
 
 
+# Pylon rate-limits GET /issues/{id}/messages to 20/min (see module docstring).
+# Two very different callers hit this endpoint: the customer-facing "Generate
+# AI Summary" feature (summary_agent.py), which fires a burst of parallel
+# calls on demand and is latency-sensitive, and the team-dashboard's always-on
+# background sync (message_activity.py), which is high-volume but has no
+# urgency. Each used to pace itself independently, so together they could
+# exceed Pylon's limit — worse, the background sync alone was tuned to
+# consume ~94% of the budget continuously, leaving almost nothing for the
+# foreground feature and causing it to silently drop per-ticket summaries to
+# swallowed 429s. This single shared limiter keeps combined throughput under
+# the cap and gives foreground callers priority: a background caller always
+# yields to any foreground caller currently waiting for a slot, so the
+# always-on sync can never starve the user-facing feature.
+_MESSAGES_MIN_INTERVAL = 3.2  # ~18.75 calls/min, under the 20/min cap
+_messages_lock = asyncio.Lock()
+_messages_next_slot = 0.0
+_messages_foreground_waiting = 0
+
+
+async def acquire_messages_slot(*, background: bool) -> None:
+    """Wait for the next available call slot on the get-messages endpoint.
+
+    Call this immediately before get_issue_messages(). Pass background=True
+    for high-volume, non-urgent callers (e.g. the team-dashboard sync) —
+    they yield to any background=False (foreground, user-triggered) caller
+    currently waiting, so background load can never delay a foreground call
+    beyond the shared pacing floor.
+    """
+    global _messages_next_slot, _messages_foreground_waiting
+    if not background:
+        _messages_foreground_waiting += 1
+    try:
+        while True:
+            async with _messages_lock:
+                now = time.monotonic()
+                yielding = background and _messages_foreground_waiting > 0
+                if not yielding and now >= _messages_next_slot:
+                    _messages_next_slot = max(_messages_next_slot, now) + _MESSAGES_MIN_INTERVAL
+                    return
+            await asyncio.sleep(0.1 if yielding else max(0.01, _messages_next_slot - time.monotonic()))
+    finally:
+        if not background:
+            _messages_foreground_waiting -= 1
+
+
 def get_issue_messages(issue_id: str) -> list[dict]:
     """Get the message history for a Pylon issue.
 
@@ -604,6 +650,9 @@ def get_issue_messages(issue_id: str) -> list[dict]:
         List of message dicts. Never None — Pylon has been observed returning
         {"data": null} (not just an absent key) for at least one ticket, and
         `.get("data", [])` only covers the absent-key case.
+
+    Callers should await acquire_messages_slot() first — this function makes
+    the (synchronous) HTTP call only, it does not pace itself.
     """
     data = _get(f"/issues/{issue_id}/messages")
     return data.get("data") or []

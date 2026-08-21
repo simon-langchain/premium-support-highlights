@@ -16,15 +16,17 @@ internal-authored messages (author.user) count as "updates".
 Sync strategy: a staged, newest-first backfill (7d -> 1m -> 3m -> 6m -> 1y)
 so the dashboard has useful recent data almost immediately while older
 history fills in behind it, followed by a periodic incremental pass that
-only re-checks tickets updated since the last run. Both share one paced
-rate limiter so they can never combine to exceed Pylon's limit. Driven by
-a background asyncio loop started from main.py's app lifespan — see
-run_backfill_step() / run_incremental_sync_step() / backfill_complete().
+only re-checks tickets updated since the last run. Both stages call
+pylon_client.acquire_messages_slot(background=True) before every message
+fetch — a single limiter shared with the customer-facing AI summary feature
+(summary_agent.py), which gets priority, so this always-on sync can never
+starve that on-demand, latency-sensitive feature of Pylon's rate budget.
+Driven by a background asyncio loop started from main.py's app lifespan —
+see run_backfill_step() / run_incremental_sync_step() / backfill_complete().
 """
 
 import asyncio
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,13 +40,6 @@ _STORE_FILE = _CACHE_DIR / "team_message_activity.json"
 # immediately; each later stage only fetches the *delta* beyond the previous
 # stage's boundary, so nothing already-synced gets re-fetched.
 _STAGES = ["7d", "1m", "3m", "6m", "1y"]
-
-# ~18.75 calls/min — under Pylon's documented 20/min cap for GET /issues/{id}/messages,
-# with headroom for clock/network jitter. Shared by the backfill and the
-# incremental pass so the two can never combine to exceed the limit.
-_MIN_CALL_INTERVAL = 3.2
-_rate_lock = asyncio.Lock()
-_next_call_at = 0.0
 
 # How many tickets to sync per run_backfill_step() call — keeps each call
 # short (~1 min at the pacing above) so progress persists to disk regularly
@@ -111,17 +106,13 @@ def _new_backfill_state() -> dict:
 async def _throttled_get_messages(issue_id: str) -> list[dict]:
     """Rate-limited wrapper around pylon_client.get_issue_messages.
 
-    Reserves the next call slot before releasing the lock (not after the
-    network call returns), so pacing holds regardless of how long any
-    individual request takes.
+    Paced through pylon_client's shared, foreground-priority limiter
+    (background=True) rather than an independent local pacer — this sync
+    runs continuously for the app's lifetime, and the customer-facing AI
+    summary feature (summary_agent.py) hits the same endpoint on demand, so
+    both need to share one rate budget with the summary feature prioritised.
     """
-    global _next_call_at
-    async with _rate_lock:
-        now = time.monotonic()
-        wait = _next_call_at - now
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _next_call_at = max(_next_call_at, time.monotonic()) + _MIN_CALL_INTERVAL
+    await pylon_client.acquire_messages_slot(background=True)
     return await asyncio.to_thread(pylon_client.get_issue_messages, issue_id)
 
 
