@@ -286,6 +286,7 @@ export default function TeamDashboardPage() {
 
   const memberOptions = useMemo(
     () => [{ value: SELF, label: "Me" }, ...members
+      .filter((m) => !m.is_admin)
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((m) => ({ value: m.email, label: m.name }))],
