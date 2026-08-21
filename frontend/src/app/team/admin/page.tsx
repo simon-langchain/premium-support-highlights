@@ -154,7 +154,7 @@ export default function TeamAdminPage() {
     }
   }
 
-  const members = overview?.members ?? [];
+  const members = (overview?.members ?? []).filter((m) => !m.is_admin);
   const filteredMembers = filter === "__all__" ? members : members.filter((m) => m.email === filter);
   const metricColumns = getMetricColumns(statMode);
   const teamRow = overview ? (statMode === "median" ? overview.team_median : overview.team_average) : null;
