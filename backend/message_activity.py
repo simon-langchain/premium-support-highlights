@@ -26,15 +26,19 @@ see run_backfill_step() / run_incremental_sync_step() / backfill_complete().
 """
 
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import auth as auth_mod
 import pylon_client
 
-_CACHE_DIR = Path(__file__).parent / ".cache"
-_STORE_FILE = _CACHE_DIR / "team_message_activity.json"
+# Persisted via LangGraph Platform's long-term memory store (Postgres-backed
+# in LSD, in-memory under local `langgraph dev`) rather than the local
+# filesystem — the deployed container's disk is ephemeral and gets wiped on
+# every redeploy, which previously meant every deploy silently restarted the
+# whole multi-day backfill from scratch. The store survives redeploys because
+# it lives in the platform's managed database, not the container.
+_KV_NAMESPACE = ("team_dashboard",)
+_KV_KEY = "message_activity"
 
 # Newest-first so the most-used dashboard views (7d/1m) become accurate almost
 # immediately; each later stage only fetches the *delta* beyond the previous
@@ -42,9 +46,9 @@ _STORE_FILE = _CACHE_DIR / "team_message_activity.json"
 _STAGES = ["7d", "1m", "3m", "6m", "1y"]
 
 # How many tickets to sync per run_backfill_step() call — keeps each call
-# short (~1 min at the pacing above) so progress persists to disk regularly
-# and the loop stays responsive to a restart rather than running for hours
-# inside one call.
+# short (~1 min at the pacing above) so progress persists to the store
+# regularly and the loop stays responsive to a restart rather than running
+# for hours inside one call.
 _BACKFILL_CHUNK_SIZE = 20
 
 # Bump whenever stored data can't be trusted or migrated under the new code
@@ -62,7 +66,7 @@ _BACKFILL_CHUNK_SIZE = 20
 _SCHEMA_VERSION = 4
 
 # How often to fetch a fresh incremental-sync candidate list. Gated here
-# (persisted, disk-backed) rather than by an in-process timer in main.py, so
+# (persisted to the store) rather than by an in-process timer in main.py, so
 # a backend restart doesn't reset the clock and immediately trigger a fresh
 # pass.
 _INCREMENTAL_QUEUE_INTERVAL_SECONDS = 15 * 60
@@ -72,22 +76,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _load() -> dict:
-    if not _STORE_FILE.exists():
+async def _load() -> dict:
+    from langgraph_api.store import get_store
+
+    kv = await get_store()
+    item = await kv.aget(_KV_NAMESPACE, _KV_KEY)
+    if item is None:
         return {"schema_version": _SCHEMA_VERSION}
-    try:
-        store = json.loads(_STORE_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"schema_version": _SCHEMA_VERSION}
+    store = item.value
     if store.get("schema_version") != _SCHEMA_VERSION:
         return {"schema_version": _SCHEMA_VERSION}
     return store
 
 
-def _save(store: dict) -> None:
+async def _save(store: dict) -> None:
     store["schema_version"] = _SCHEMA_VERSION
-    _STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _STORE_FILE.write_text(json.dumps(store, default=str))
+    from langgraph_api.store import get_store
+
+    kv = await get_store()
+    # index=False: this blob is aggregate counts, nothing here is meant to be
+    # searched/embedded — skip the (costly, pointless) indexing pass.
+    await kv.aput(_KV_NAMESPACE, _KV_KEY, store, index=False)
 
 
 def _new_backfill_state() -> dict:
@@ -309,11 +318,11 @@ async def run_backfill_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> bool:
     """Process one bounded chunk of the backfill. Returns True if there's more work to do.
 
     Safe to call repeatedly in a loop (main.py does exactly that) — each call
-    is short, persists progress to disk as it goes, and picks up wherever the
+    is short, persists progress to the store as it goes, and picks up wherever the
     stored state left off, so a restart mid-backfill resumes rather than
     starting over.
     """
-    store = await asyncio.to_thread(_load)
+    store = await _load()
     backfill = store.setdefault("backfill", _new_backfill_state())
     if backfill.get("complete"):
         return False
@@ -324,14 +333,14 @@ async def run_backfill_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> bool:
         has_more_stages = await _populate_next_stage(store, backfill)
         if not has_more_stages:
             backfill["complete"] = True
-            await asyncio.to_thread(_save, store)
+            await _save(store)
             return False
-        await asyncio.to_thread(_save, store)
+        await _save(store)
         if not backfill["pending"]:
             # This stage had no candidates — advance immediately, more work may remain.
             backfill["stages_completed"].append(backfill["stages"][backfill["stage_index"]])
             backfill["stage_index"] += 1
-            await asyncio.to_thread(_save, store)
+            await _save(store)
             return True
 
     for _ in range(chunk_size):
@@ -340,18 +349,18 @@ async def run_backfill_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> bool:
         ticket = backfill["pending"].pop(0)
         await _sync_one_ticket(ticket["id"], ticket.get("updated_at"), store, tracked_member_ids)
         backfill["current_stage_synced"] += 1
-        await asyncio.to_thread(_save, store)
+        await _save(store)
 
     if not backfill["pending"]:
         backfill["stages_completed"].append(backfill["stages"][backfill["stage_index"]])
         backfill["stage_index"] += 1
-        await asyncio.to_thread(_save, store)
+        await _save(store)
 
     return True
 
 
-def backfill_complete() -> bool:
-    store = _load()
+async def backfill_complete() -> bool:
+    store = await _load()
     return (store.get("backfill") or {}).get("complete", False)
 
 
@@ -386,12 +395,12 @@ async def run_incremental_sync_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> b
     queue is empty and a new one isn't due yet.
 
     Chunked exactly like run_backfill_step, for the same reason: keeping
-    each call short means progress persists to disk regularly and
+    each call short means progress persists to the store regularly and
     _message_sync_loop's sequential backfill-step/incremental-step calls
     both get a turn rather than one blocking the other for an unbounded
     duration.
     """
-    store = await asyncio.to_thread(_load)
+    store = await _load()
 
     if not store.get("incremental_pending"):
         last_raw = store.get("last_incremental_sync_at")
@@ -400,7 +409,7 @@ async def run_incremental_sync_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> b
         if not due:
             return False
         await _populate_incremental_queue(store)
-        await asyncio.to_thread(_save, store)
+        await _save(store)
         if not store.get("incremental_pending"):
             return False
 
@@ -413,14 +422,14 @@ async def run_incremental_sync_step(chunk_size: int = _BACKFILL_CHUNK_SIZE) -> b
         ticket_id = info.get("id")
         if ticket_id and _needs_sync(store, ticket_id, info.get("updated_at")):
             await _sync_one_ticket(ticket_id, info.get("updated_at"), store, tracked_member_ids)
-        await asyncio.to_thread(_save, store)
+        await _save(store)
 
     return bool(pending)
 
 
-def get_member_daily_counts(member_ids: list[str]) -> dict[str, dict[str, int]]:
+async def get_member_daily_counts(member_ids: list[str]) -> dict[str, dict[str, int]]:
     """{member_id: {"YYYY-MM-DD": count}}, summed across all tracked tickets."""
-    store = _load()
+    store = await _load()
     result: dict[str, dict[str, int]] = {mid: {} for mid in member_ids}
     for ticket in store.get("tickets", {}).values():
         for member_id, day_counts in (ticket.get("counts") or {}).items():
@@ -432,12 +441,12 @@ def get_member_daily_counts(member_ids: list[str]) -> dict[str, dict[str, int]]:
     return result
 
 
-def get_member_response_seconds(member_ids: list[str]) -> dict[str, dict[str, list[float]]]:
+async def get_member_response_seconds(member_ids: list[str]) -> dict[str, dict[str, list[float]]]:
     """{member_id: {"YYYY-MM-DD": [gap_seconds, ...]}}, pooled across all
     tracked tickets — mirrors get_member_daily_counts. Raw values (not just
     a sum/count) are kept so avg AND median can both be computed at read
     time — see metrics.compute_response_time_trend / compute_response_time_summary."""
-    store = _load()
+    store = await _load()
     result: dict[str, dict[str, list[float]]] = {mid: {} for mid in member_ids}
     for ticket in store.get("tickets", {}).values():
         for member_id, day_values in (ticket.get("response_seconds") or {}).items():
@@ -449,8 +458,8 @@ def get_member_response_seconds(member_ids: list[str]) -> dict[str, dict[str, li
     return result
 
 
-def get_backfill_status() -> dict:
-    store = _load()
+async def get_backfill_status() -> dict:
+    store = await _load()
     backfill = store.get("backfill") or _new_backfill_state()
     stage_index = backfill.get("stage_index", 0)
     stages = backfill.get("stages", _STAGES)
