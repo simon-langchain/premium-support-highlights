@@ -23,12 +23,7 @@ export default function ChooserPage() {
     fetchMe()
       .then((me) => {
         if (cancelled) return;
-        if (me?.is_admin) {
-          // Admins go straight to Team View rather than the chooser — they're
-          // not typically the audience for the customer-facing dashboards,
-          // and can still reach /customers directly if they need to.
-          router.replace("/team");
-        } else if (me?.is_support_team_member) {
+        if (me?.is_support_team_member) {
           setIsSupportTeam(true);
         } else {
           // Not on the Support team, or the call failed — fail open to the
