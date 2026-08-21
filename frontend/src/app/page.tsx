@@ -17,6 +17,7 @@ const Logo = () => (
 export default function ChooserPage() {
   const router = useRouter();
   const [isSupportTeam, setIsSupportTeam] = useState<boolean | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +26,7 @@ export default function ChooserPage() {
         if (cancelled) return;
         if (me?.is_support_team_member) {
           setIsSupportTeam(true);
+          setIsAdmin(!!me.is_admin);
         } else {
           // Not on the Support team, or the call failed — fail open to the
           // customer dashboard rather than showing a chooser they can't use.
@@ -59,7 +61,7 @@ export default function ChooserPage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <button
-            onClick={() => router.push("/team")}
+            onClick={() => router.push(isAdmin ? "/team/admin" : "/team")}
             className="flex flex-col items-start gap-3 rounded-xl px-6 py-6 text-left transition-colors hover:bg-[var(--bg-tertiary)] cursor-pointer"
             style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
           >
@@ -74,7 +76,9 @@ export default function ChooserPage() {
                 Internal Metrics
               </h2>
               <p className="text-sm leading-relaxed" style={{ color: "var(--text-muted)" }}>
-                Your performance vs. the Support team average.
+                {isAdmin
+                  ? "Every rep's performance vs. the Support team average."
+                  : "Your performance vs. the Support team average."}
               </p>
             </div>
           </button>
