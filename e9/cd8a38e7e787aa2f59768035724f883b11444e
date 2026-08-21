@@ -1,0 +1,36 @@
+backend/main.py
+  s_82c8dfe5f3c843::t_4d264691999e6a 87-94
+  s_82c8dfe5f3c843::t_2769bac532b908 1222
+  s_82c8dfe5f3c843::t_854fe1c8c3c3d8 73,78-79
+  s_82c8dfe5f3c843::t_057cd0e4e81582 1040-1041
+backend/message_activity.py
+  s_82c8dfe5f3c843::t_c2c9cfd0e6ae4e 34-41
+  s_82c8dfe5f3c843::t_431d342915bf4b 69
+  s_82c8dfe5f3c843::t_5c25f9b13b2894 444
+  s_82c8dfe5f3c843::t_df68536d18b53f 362
+  s_82c8dfe5f3c843::t_b65e4aaee5a770 325,403
+  s_82c8dfe5f3c843::t_eab1918cd13337 49-51
+  s_82c8dfe5f3c843::t_d17932fb666e3c 363,432,449,462
+  s_82c8dfe5f3c843::t_65d8717d61a21e 398
+  s_82c8dfe5f3c843::t_c9716e89dbed1b 430
+  s_82c8dfe5f3c843::t_9269cb41582f49 321
+  s_82c8dfe5f3c843::t_6efa62d442d0c5 336,338,343,352,357,412,425
+  s_82c8dfe5f3c843::t_467719df728d4b 461
+  s_82c8dfe5f3c843::t_100756a5b9f568 79-84,86,92,94-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e9cd8a38e7e787aa2f59768035724f883b11444e",
+  "prompts": {},
+  "sessions": {
+    "s_82c8dfe5f3c843": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b89a19-6309-4d48-b777-10d173f5ec27",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
