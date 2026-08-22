@@ -26,10 +26,13 @@ see run_backfill_step() / run_incremental_sync_step() / backfill_complete().
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 import auth as auth_mod
 import pylon_client
+
+_log = logging.getLogger(__name__)
 
 # Persisted via LangGraph Platform's long-term memory store (Postgres-backed
 # in LSD, in-memory under local `langgraph dev`) rather than the local
@@ -63,7 +66,16 @@ _BACKFILL_CHUNK_SIZE = 20
 # v4: response_seconds no longer includes a synthetic "ongoing wait" entry
 # for open tickets (that's now metrics.compute_pending_wait_stats, computed
 # live) — old entries can be contaminated with those values.
-_SCHEMA_VERSION = 4
+# v5: not a data-shape change, but stored data from before this version may
+# be silently incomplete for older months — search_issues_by_assignees and
+# _paginated_issue_search's page cap (20 pages, default limit=500) could
+# truncate a stage's own candidate list for a high-volume window, and
+# _sync_one_ticket's per-ticket failures were logged nowhere, so a systematic
+# failure for a batch of tickets left no trace. Both are fixed, but the fix
+# only prevents it going forward — a store already marked "fully synced"
+# under the old code needs a clean re-backfill to actually recover the
+# missing history, not just newly-recorded data.
+_SCHEMA_VERSION = 5
 
 # How often to fetch a fresh incremental-sync candidate list. Gated here
 # (persisted to the store) rather than by an in-process timer in main.py, so
@@ -264,13 +276,17 @@ async def _sync_one_ticket(
     would abort the step before the pop is saved — the same ticket then
     reappears at the front of the queue forever, stalling the rest of the
     backfill on one bad ticket. Any failure just leaves this ticket unsynced;
-    it's naturally retried next time something touches it.
+    it's naturally retried next time something touches it. Logged (not
+    silent) so a batch of tickets failing for the same underlying reason is
+    visible in the log as a run of warnings, rather than surfacing only as
+    "the dashboard is missing data for some period" with no trail back to why.
     """
     try:
         messages = await _throttled_get_messages(ticket_id)
         counts = _count_internal_messages_by_day(messages)
         response_seconds = _compute_response_times_by_day(messages, tracked_member_ids)
-    except Exception:
+    except Exception as exc:
+        _log.warning("Failed to sync ticket %s — will retry later: %s", ticket_id, exc)
         return
     store.setdefault("tickets", {})[ticket_id] = {
         "synced_updated_at": updated_at,
