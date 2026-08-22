@@ -8,6 +8,7 @@ Rate limits (read-only): search 20/min, get issue 60/min, get messages 20/min.
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import time
@@ -16,6 +17,8 @@ from pathlib import Path
 import httpx
 
 from cache import PAYLOAD_MAX_AGE_SECONDS
+
+_log = logging.getLogger(__name__)
 
 PYLON_BASE_URL = "https://api.usepylon.com"
 PYLON_API_TOKEN = os.getenv("PYLON_API_TOKEN", "")
@@ -295,16 +298,26 @@ _ISSUE_SEARCH_TIMEOUT = 90.0  # confirmed live: org-wide pages can take 10-15s+ 
 def _paginated_issue_search(filter_obj: dict, limit: int = 500) -> list[dict]:
     """POST /issues/search with the given filter, paginating through all results.
 
-    Shared by search_issues_for_account and search_all_issues.
+    Shared by search_issues_for_account and search_all_issues (and, via
+    search_issues_by_assignees, message_activity.py's staged backfill).
+
+    max_pages=60 at limit=1000 caps a single call at 60,000 rows. Confirmed
+    live: an org-wide 1-year window currently has ~20,000+ issues and was
+    silently truncating at the old cap (20 pages), which the caller had no
+    way to detect short of reading a print() statement in the server log —
+    that truncation cut off the OLDEST issues (Pylon returns newest-first),
+    producing exactly the "recent months look fine, everything older is
+    zero" pattern this was found from. 60k gives real headroom as ticket
+    volume grows, not just enough for today's count.
     """
     body: dict = {"filter": filter_obj, "limit": min(limit, 1000)}
 
     all_issues: list[dict] = []
-    max_pages = 20
+    max_pages = 60
     cursor: str | None = None
     pagination: dict = {}
 
-    for _ in range(max_pages):
+    for i in range(max_pages):
         if cursor:
             body["cursor"] = cursor
         data = _post("/issues/search", body, timeout=_ISSUE_SEARCH_TIMEOUT)
@@ -315,13 +328,21 @@ def _paginated_issue_search(filter_obj: dict, limit: int = 500) -> list[dict]:
         cursor = pagination.get("cursor")
         if not cursor:
             break
+        # Light pacing against Pylon's documented 20/min search cap — a
+        # single call here can now run up to 60 pages, and firing them
+        # back-to-back with no spacing risks a 429 storm this function
+        # only has 2 short retries to absorb.
+        if i > 0 and i % 15 == 0:
+            time.sleep(3.0)
     else:
         # Exhausted max_pages while more results were still available —
         # results are silently truncated; surface it so it isn't mistaken
         # for a complete result set.
         if pagination.get("has_next_page"):
-            print(f"pylon_client: _paginated_issue_search truncated at {max_pages} pages "
-                  f"({len(all_issues)} issues) — more results were available")
+            _log.warning(
+                "_paginated_issue_search truncated at %d pages (%d issues) — "
+                "more results were available", max_pages, len(all_issues)
+            )
 
     return all_issues
 
@@ -416,7 +437,7 @@ def search_issues_by_assignees(
     assignee_ids: list[str],
     updated_after: str | None = None,
     updated_before: str | None = None,
-    limit: int = 500,
+    limit: int = 1000,
 ) -> list[dict]:
     """Search issues assigned to any of the given Pylon user IDs, paginating through all results.
 
@@ -429,7 +450,9 @@ def search_issues_by_assignees(
         assignee_ids: Pylon user IDs to filter on (e.g. non-admin Support-team members).
         updated_after: ISO 8601 timestamp — only return issues updated after this.
         updated_before: ISO 8601 timestamp — only return issues updated before this.
-        limit: Max results per page (default 500, capped at 1000).
+        limit: Max results per page (default 1000, capped at 1000 — matches
+            search_all_issues, maximizing per-page throughput against
+            _paginated_issue_search's page-count cap).
 
     Returns:
         Flat list of all matching issue dicts across all pages.
