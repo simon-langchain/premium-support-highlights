@@ -966,15 +966,39 @@ def _average_rep_trends(trends: list[list[dict]], method: Literal["mean", "media
 
     All trend series for the same period share identical bucket labels/order
     (same windowing logic in compute_rep_trend), so buckets align by index.
+
+    A rep is excluded from every bucket before their first sign of activity
+    in this series (tickets_taken or update_count > 0) — not just buckets
+    where a field happens to be None. tickets_taken/update_count are real
+    counts that default to 0 for an inactive bucket, not None, so without
+    this a rep who joined the team partway through the window drags every
+    earlier bucket's median/average down to a hard 0 for months they simply
+    weren't part of the team yet — exactly the "flat zero, then a ramp"
+    pattern this was built to fix. Once a rep has started, a later quiet
+    bucket still correctly counts as a real 0 (they're active, just slow
+    that period) — only the pre-start buckets are excluded. A rep with no
+    activity anywhere in the window is excluded from the whole series.
     """
     if not trends:
         return []
     agg = statistics.median if method == "median" else (lambda values: sum(values) / len(values))
+
+    def _first_active_index(trend: list[dict]) -> int:
+        for i, bucket in enumerate(trend):
+            if (bucket.get("tickets_taken") or 0) > 0 or (bucket.get("update_count") or 0) > 0:
+                return i
+        return len(trend)
+
+    first_active = [_first_active_index(t) for t in trends]
+
     result: list[dict] = []
     for i in range(len(trends[0])):
         row: dict[str, Any] = {"label": trends[0][i]["label"]}
         for key in _TREND_METRIC_KEYS:
-            values = [t[i][key] for t in trends if t[i].get(key) is not None]
+            values = [
+                t[i][key] for t, fa in zip(trends, first_active)
+                if i >= fa and t[i].get(key) is not None
+            ]
             row[key] = round(agg(values), 1) if values else None
         result.append(row)
     return result
