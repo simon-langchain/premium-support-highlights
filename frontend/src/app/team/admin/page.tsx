@@ -391,9 +391,11 @@ export default function TeamAdminPage() {
             </table>
           </div>
         ) : null}
-        <p className="text-xs mb-8 -mt-6" style={{ color: "var(--text-muted)" }}>
-          Admins are excluded from the Team {statMode === "median" ? "Median" : "Average"} calculation.
-        </p>
+        {overview && (
+          <p className="text-xs mb-8 -mt-6" style={{ color: "var(--text-muted)" }}>
+            Admins are excluded from the Team {statMode === "median" ? "Median" : "Average"} calculation.
+          </p>
+        )}
 
         <div className="max-w-md rounded-lg px-4 py-4" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
           <h3 className="text-xs uppercase tracking-wider font-medium mb-3" style={{ color: "var(--text-muted)" }}>
