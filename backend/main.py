@@ -2195,8 +2195,8 @@ def _warning_blocks(text: str) -> list[dict]:
 # message that's later edited in place via chat.update. psh_post_issues_more only
 # paginates already-cached summaries, so it stays a single postMessage call.
 _SLACK_LOADING_TEXT = {
-    "psh_post_summary": ":hourglass_flowing_water: Generating summary...",
-    "psh_post_issues": ":hourglass_flowing_water: Loading open issues...",
+    "psh_post_summary": ":loading2: Generating summary...",
+    "psh_post_issues": ":loading2: Loading open issues...",
 }
 
 
