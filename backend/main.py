@@ -1450,7 +1450,7 @@ async def get_account_report(
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, DEFAULT_MODEL_ID)
             if raw:
                 s, ns = parse_ticket_output(raw)
                 if s or ns:
@@ -1510,7 +1510,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, DEFAULT_MODEL_ID)
             if raw:
                 s, ns = parse_ticket_output(raw)
                 if s or ns:
@@ -2217,7 +2217,7 @@ async def _handle_slack_action(
                     if number is None:
                         continue
                     latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest)
+                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest, DEFAULT_MODEL_ID)
                     if raw:
                         s, ns = parse_ticket_output(raw)
                         if s or ns:
