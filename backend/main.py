@@ -2192,12 +2192,39 @@ def _warning_blocks(text: str) -> list[dict]:
 
 
 # Actions slow enough (LLM generation) to warrant an immediate "loading" placeholder
-# message that's later edited in place via chat.update. psh_post_issues_more only
-# paginates already-cached summaries, so it stays a single postMessage call.
+# message. psh_post_issues_more only paginates already-cached summaries, so it
+# stays a single postMessage call with no placeholder.
 _SLACK_LOADING_TEXT = {
     "psh_post_summary": ":loading2: Generating summary...",
     "psh_post_issues": ":loading2: Loading open issues...",
 }
+
+
+async def _deliver_slack_result(
+    slack_token: str,
+    channel_id: str,
+    thread_ts: str | None,
+    placeholder_ts: str | None,
+    fallback_text: str,
+    blocks: list[dict],
+    attachments: list[dict] | None = None,
+) -> None:
+    """Post the final content as a fresh message, then remove the loading placeholder.
+
+    Posts fresh rather than editing the placeholder in place (chat.update):
+    chat.update has no unfurl_links/unfurl_media parameters, so ticket
+    permalinks embedded in summary/issues content would unfurl into preview
+    cards if delivered that way instead.
+    """
+    await asyncio.to_thread(
+        slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
+        attachments=attachments,
+    )
+    if placeholder_ts:
+        try:
+            await asyncio.to_thread(slack_client.delete_message, slack_token, channel_id, placeholder_ts)
+        except Exception:
+            _log.exception("Failed to delete Slack loading placeholder")
 
 
 async def _handle_slack_action(
@@ -2232,11 +2259,8 @@ async def _handle_slack_action(
                 account_id, account_name, period, payload, open_issues
             )
             if not account_summary:
-                await asyncio.to_thread(
-                    slack_client.update_message,
-                    slack_token,
-                    channel_id,
-                    placeholder_ts,
+                await _deliver_slack_result(
+                    slack_token, channel_id, thread_ts, placeholder_ts,
                     "Summary generation failed",
                     _warning_blocks("Summary generation failed. Please try again."),
                 )
@@ -2281,30 +2305,17 @@ async def _handle_slack_action(
         else:
             return
 
-        if placeholder_ts:
-            await asyncio.to_thread(
-                slack_client.update_message, slack_token, channel_id, placeholder_ts, fallback_text, blocks,
-                attachments=attachments,
-            )
-        else:
-            await asyncio.to_thread(
-                slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
-                attachments=attachments,
-            )
+        await _deliver_slack_result(slack_token, channel_id, thread_ts, placeholder_ts, fallback_text, blocks, attachments)
     except Exception:
         _log.exception("Failed to handle Slack action %s for account %s", action_id, account_id)
-        if placeholder_ts:
-            try:
-                await asyncio.to_thread(
-                    slack_client.update_message,
-                    slack_token,
-                    channel_id,
-                    placeholder_ts,
-                    "Something went wrong",
-                    _warning_blocks("Something went wrong. Please try again."),
-                )
-            except Exception:
-                _log.exception("Failed to update Slack placeholder with error message")
+        try:
+            await _deliver_slack_result(
+                slack_token, channel_id, thread_ts, placeholder_ts,
+                "Something went wrong",
+                _warning_blocks("Something went wrong. Please try again."),
+            )
+        except Exception:
+            _log.exception("Failed to deliver Slack error message")
         # Best-effort; failures silently dropped so Slack doesn't retry
 
 
