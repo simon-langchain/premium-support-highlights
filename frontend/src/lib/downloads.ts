@@ -129,9 +129,10 @@ export function downloadCsv(
   URL.revokeObjectURL(url);
 }
 
-export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[]): void {
+export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[], model?: string): void {
   const params = new URLSearchParams({ account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder });
   if (sections) sections.forEach(s => params.append("sections", s));
+  if (model) params.append("model", model);
   window.open(`/api/accounts/${accountId}/report?${params}`, "_blank");
 }
 
@@ -170,6 +171,7 @@ export async function emailReport(
   sortBy: string,
   sortOrder: string,
   sections?: string[],
+  model?: string,
 ): Promise<void> {
   const res = await fetch(`/api/accounts/${accountId}/email-report`, {
     method: "POST",
@@ -181,6 +183,7 @@ export async function emailReport(
       sort_by: sortBy,
       sort_order: sortOrder,
       ...(sections ? { sections } : {}),
+      ...(model ? { model } : {}),
     }),
   });
   if (!res.ok) {

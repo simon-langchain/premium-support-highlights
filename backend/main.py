@@ -214,6 +214,10 @@ ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_
 _METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"
 
 
+def _coerce_model_default(v: str | None) -> str:
+    return v if v else DEFAULT_MODEL_ID
+
+
 class SummaryRequest(BaseModel):
     account_name: str
     model: str = DEFAULT_MODEL_ID
@@ -223,16 +227,22 @@ class SummaryRequest(BaseModel):
     @field_validator("model", mode="before")
     @classmethod
     def _default_model(cls, v: str | None) -> str:
-        return v if v else DEFAULT_MODEL_ID
+        return _coerce_model_default(v)
 
 
 class EmailReportRequest(BaseModel):
     email: str
     account_name: str
+    model: str = DEFAULT_MODEL_ID
     period: str = "6m"
     sort_by: str = "priority"
     sort_order: str = "asc"
     sections: list[str] | None = None  # None = all sections
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _default_model(cls, v: str | None) -> str:
+        return _coerce_model_default(v)
 
 
 class SlackReportRequest(BaseModel):
@@ -1426,15 +1436,20 @@ async def get_account_report(
     sort_by: str = Query("priority"),
     sort_order: str = Query("asc"),
     sections: list[str] | None = Query(default=None),
+    model: str = Query(DEFAULT_MODEL_ID),
     _email: str = Depends(require_auth),
 ):
     """Return a self-contained HTML report for an account.
 
     Includes cached ticket summaries and the latest cached AI account summary
     if one exists. Suitable for printing to PDF or sending as an HTML email.
+    `model` selects which model-specific cache entries to read ticket summaries
+    from (defaults to DEFAULT_MODEL_ID) — pass the model the caller last used to
+    generate summaries for this account, if known.
     """
     if period not in VALID_PERIODS:
         period = "6m"
+    ticket_model = model or DEFAULT_MODEL_ID
 
     field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(
         account_id, period
@@ -1450,7 +1465,7 @@ async def get_account_report(
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, ticket_model)
             if raw:
                 s, ns = parse_ticket_output(raw)
                 if s or ns:
@@ -1459,7 +1474,7 @@ async def get_account_report(
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
     account_summary = await _get_or_regenerate_account_summary(
-        account_id, account_name, period, payload, open_issues
+        account_id, account_name, period, payload, open_issues, model=ticket_model
     )
 
     html = generate_report_html(
@@ -1510,7 +1525,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
             if number is None:
                 continue
             latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time)
+            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, body.model)
             if raw:
                 s, ns = parse_ticket_output(raw)
                 if s or ns:
@@ -1519,7 +1534,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
     account_summary = await _get_or_regenerate_account_summary(
-        account_id, body.account_name, period, payload, open_issues
+        account_id, body.account_name, period, payload, open_issues, model=body.model
     )
 
     logo_url = os.environ.get("REPORT_LOGO_URL") or None
@@ -2217,7 +2232,7 @@ async def _handle_slack_action(
                     if number is None:
                         continue
                     latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest)
+                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest, DEFAULT_MODEL_ID)
                     if raw:
                         s, ns = parse_ticket_output(raw)
                         if s or ns:

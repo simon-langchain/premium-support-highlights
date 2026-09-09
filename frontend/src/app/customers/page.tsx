@@ -866,13 +866,13 @@ export default function Home() {
                   </div>
                   <ShareButton
                     onSlackReport={(channelId, sections) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections)}
-                    onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections)}
+                    onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections, selectedModel)}
                     channelName={slackChannelName}
                     channelId={slackChannelId}
                     availableChannels={slackAvailableChannels}
                   />
                   <DownloadMenu
-                    onDownloadPdf={(sections) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections)}
+                    onDownloadPdf={(sections) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections, selectedModel)}
                     onDownloadCsv={(sections) => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections)}
                   />
                 </div>
