@@ -2183,6 +2183,23 @@ def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool
     return hmac.compare_digest(computed, signature)
 
 
+def _section_blocks(text: str) -> list[dict]:
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+
+
+def _warning_blocks(text: str) -> list[dict]:
+    return _section_blocks(f":warning: {text}")
+
+
+# Actions slow enough (LLM generation) to warrant an immediate "loading" placeholder
+# message that's later edited in place via chat.update. psh_post_issues_more only
+# paginates already-cached summaries, so it stays a single postMessage call.
+_SLACK_LOADING_TEXT = {
+    "psh_post_summary": ":hourglass_flowing_water: Generating summary...",
+    "psh_post_issues": ":hourglass_flowing_water: Loading open issues...",
+}
+
+
 async def _handle_slack_action(
     action_id: str,
     account_id: str,
@@ -2197,7 +2214,17 @@ async def _handle_slack_action(
     if not slack_token or not channel_id:
         return
     attachments: list[dict] | None = None
+    placeholder_ts: str | None = None
     try:
+        loading_text = _SLACK_LOADING_TEXT.get(action_id)
+        if loading_text:
+            placeholder = await asyncio.to_thread(
+                slack_client.post_message,
+                slack_token, channel_id, loading_text, _section_blocks(loading_text),
+                thread_ts,
+            )
+            placeholder_ts = placeholder.get("ts")
+
         if action_id == "psh_post_summary":
             field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
             payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
@@ -2206,12 +2233,12 @@ async def _handle_slack_action(
             )
             if not account_summary:
                 await asyncio.to_thread(
-                    slack_client.post_message,
+                    slack_client.update_message,
                     slack_token,
                     channel_id,
+                    placeholder_ts,
                     "Summary generation failed",
-                    [{"type": "section", "text": {"type": "mrkdwn", "text": ":warning: Summary generation failed. Please try again."}}],
-                    thread_ts,
+                    _warning_blocks("Summary generation failed. Please try again."),
                 )
                 return
             ticket_urls = {
@@ -2254,12 +2281,31 @@ async def _handle_slack_action(
         else:
             return
 
-        await asyncio.to_thread(
-            slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
-            attachments=attachments,
-        )
+        if placeholder_ts:
+            await asyncio.to_thread(
+                slack_client.update_message, slack_token, channel_id, placeholder_ts, fallback_text, blocks,
+                attachments=attachments,
+            )
+        else:
+            await asyncio.to_thread(
+                slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
+                attachments=attachments,
+            )
     except Exception:
-        pass  # Best-effort; failures silently dropped so Slack doesn't retry
+        _log.exception("Failed to handle Slack action %s for account %s", action_id, account_id)
+        if placeholder_ts:
+            try:
+                await asyncio.to_thread(
+                    slack_client.update_message,
+                    slack_token,
+                    channel_id,
+                    placeholder_ts,
+                    "Something went wrong",
+                    _warning_blocks("Something went wrong. Please try again."),
+                )
+            except Exception:
+                _log.exception("Failed to update Slack placeholder with error message")
+        # Best-effort; failures silently dropped so Slack doesn't retry
 
 
 @app.post("/api/slack/actions")
