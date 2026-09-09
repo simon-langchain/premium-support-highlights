@@ -1,0 +1,21 @@
+backend/main.py
+  s_1a91a4be98c5cc::t_abb1b20bd6d7fb 1513
+  s_1a91a4be98c5cc::t_7f0e9412b1eb0e 1453
+  s_1a91a4be98c5cc::t_fc108d5e3d4d35 2220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "056670b9579bf4061be4e9ce2a2e74340425e248",
+  "prompts": {},
+  "sessions": {
+    "s_1a91a4be98c5cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a9bb03e-9561-4366-b5bc-e5f9c503b7ce",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
