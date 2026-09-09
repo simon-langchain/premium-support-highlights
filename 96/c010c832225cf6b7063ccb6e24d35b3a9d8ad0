@@ -1,0 +1,27 @@
+backend/main.py
+  s_1a91a4be98c5cc::t_79de7117ac45f9 704,746
+  s_1a91a4be98c5cc::t_27741320d20bdc 728,731
+  s_1a91a4be98c5cc::t_19ebd98abeb288 744
+  s_1a91a4be98c5cc::t_bff6a0d14c4488 290
+  s_1a91a4be98c5cc::t_42891f730eaa35 766
+  s_1a91a4be98c5cc::t_e01066579d3094 648
+  s_1a91a4be98c5cc::t_a857eae1d67d02 665
+backend/auth.py
+  s_1a91a4be98c5cc::t_955d10c277d8b3 3-15,21,27-28,34-44,46-47,49-60,63-71,74-75,78-83,85-86,88-91,93,95-99,103,106,110,112,115-116,118,120,124,127-128,133,135,138-139,141,144,146,149,152,156,158-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "96c010c832225cf6b7063ccb6e24d35b3a9d8ad0",
+  "prompts": {},
+  "sessions": {
+    "s_1a91a4be98c5cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a9bb03e-9561-4366-b5bc-e5f9c503b7ce",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
