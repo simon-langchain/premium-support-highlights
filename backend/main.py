@@ -287,7 +287,14 @@ async def require_auth(request: Request) -> str:
     token = _get_session_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    email = await auth_mod.validate_session(token)
+    try:
+        email = await auth_mod.validate_session(token)
+    except Exception:
+        # Shared session store (LangGraph Platform) briefly unreachable --
+        # degrade to a clean "please log in again" rather than a 500 across
+        # every authenticated route.
+        _log.exception("Session validation failed")
+        raise HTTPException(status_code=401, detail="Invalid or expired session") from None
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return email

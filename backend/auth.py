@@ -84,17 +84,26 @@ async def _store_delete(namespace: tuple[str, ...], key: str) -> None:
 
 
 async def is_rate_limited(email: str) -> bool:
-    """Return True if this email has exceeded the OTP request rate limit."""
+    """Return True if this email has exceeded the OTP request rate limit.
+
+    Best-effort: the read-then-write against the shared Store isn't atomic
+    across replicas (unlike the old single-process in-memory version), so a
+    burst of truly concurrent requests for the same email could undercount
+    by a small amount. Acceptable here since this only gates OTP email
+    volume (a fallback login path, not the primary Google OAuth flow) --
+    not a hard security boundary.
+    """
     now = time.time()
     entry = await _store_get(_NS_RATE, email)
     if entry is None or now - entry.get("window_start", 0) > OTP_TTL:
         await _store_put(_NS_RATE, email, {"count": 1, "window_start": now}, _OTP_TTL_MIN)
         return False
-    if entry.get("count", 0) >= _MAX_OTP_REQUESTS:
+    count = entry.get("count", 0)
+    if count >= _MAX_OTP_REQUESTS:
         return True
     await _store_put(
         _NS_RATE, email,
-        {"count": entry["count"] + 1, "window_start": entry["window_start"]},
+        {"count": count + 1, "window_start": entry.get("window_start", now)},
         _OTP_TTL_MIN,
     )
     return False

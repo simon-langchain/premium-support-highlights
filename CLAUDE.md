@@ -68,10 +68,10 @@ Google OAuth login flow (restricted to `@langchain.dev` Google Workspace account
 4. Google redirects to `/auth/google/callback?code=...&state=...`
 5. Callback page POSTs `{code, state}` to `POST /api/auth/google/callback`
 6. Backend verifies CSRF state, exchanges code for ID token, validates `hd=langchain.dev` and `@langchain.dev` email domain, checks active Pylon membership
-7. Session token created (in-memory, 8-hour TTL), set as `HttpOnly; Secure; SameSite=Lax` cookie (`psh_session`)
+7. Session token created (8-hour TTL), set as `HttpOnly; Secure; SameSite=Lax` cookie (`psh_session`)
 8. Next.js middleware redirects unauthenticated requests to `/login`; `/auth/google/callback` and `/api/auth/*` are bypassed
 
-Sessions are in-memory — restarting the backend invalidates all sessions. State tokens expire in 10 minutes and are single-use.
+Sessions, OTPs, rate-limit counters, and OAuth CSRF state tokens live in the LangGraph Platform Store (Postgres-backed, shared across all API server replicas — see `_lg_client()` in `auth.py`), not in process memory, so they survive backend restarts and stay consistent when LSD autoscales to multiple replicas. State tokens expire in 10 minutes and are single-use.
 
 ### Backend (`backend/`)
 
