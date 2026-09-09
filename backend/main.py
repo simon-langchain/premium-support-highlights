@@ -287,7 +287,14 @@ async def require_auth(request: Request) -> str:
     token = _get_session_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    email = auth_mod.validate_session(token)
+    try:
+        email = await auth_mod.validate_session(token)
+    except Exception:
+        # Shared session store (LangGraph Platform) briefly unreachable --
+        # degrade to a clean "please log in again" rather than a 500 across
+        # every authenticated route.
+        _log.exception("Session validation failed")
+        raise HTTPException(status_code=401, detail="Invalid or expired session") from None
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return email
@@ -645,7 +652,7 @@ async def auth_google_start():
     client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
     if not client_id:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured")
-    state = auth_mod.generate_state()
+    state = await auth_mod.generate_state()
     params = urlencode({
         "client_id": client_id,
         "redirect_uri": _google_redirect_uri(),
@@ -662,7 +669,7 @@ async def auth_google_start():
 @app.post("/api/auth/google/callback")
 async def auth_google_callback(body: GoogleCallbackBody):
     """Exchange a Google auth code for a session cookie."""
-    if not auth_mod.consume_state(body.state):
+    if not await auth_mod.consume_state(body.state):
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
     client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
@@ -701,7 +708,7 @@ async def auth_google_callback(body: GoogleCallbackBody):
     if not email_verified or not email.endswith("@langchain.dev") or hd != "langchain.dev":
         raise HTTPException(status_code=403, detail="Access restricted to @langchain.dev accounts")
 
-    token = auth_mod.create_session(email)
+    token = await auth_mod.create_session(email)
     is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
     response = JSONResponse({"ok": True})
     response.set_cookie(
@@ -725,10 +732,10 @@ async def auth_request(body: AuthRequestBody):
     if not email.endswith("@langchain.dev"):
         return {"status": "not_authorized"}
 
-    if auth_mod.is_rate_limited(email):
+    if await auth_mod.is_rate_limited(email):
         return {"status": "rate_limited"}
 
-    code = auth_mod.generate_otp(email)
+    code = await auth_mod.generate_otp(email)
     try:
         await asyncio.to_thread(_send_otp_email, email, code)
     except Exception as exc:
@@ -741,9 +748,9 @@ async def auth_request(body: AuthRequestBody):
 async def auth_verify(body: AuthVerifyBody):
     """Validate a login OTP, create a session, and set the session cookie."""
     email = body.email.lower().strip()
-    if not auth_mod.verify_otp(email, body.code.strip()):
+    if not await auth_mod.verify_otp(email, body.code.strip()):
         raise HTTPException(status_code=401, detail="Invalid or expired code")
-    token = auth_mod.create_session(email)
+    token = await auth_mod.create_session(email)
     is_https = bool(os.environ.get("ALLOWED_ORIGINS"))
     response = JSONResponse({"ok": True})
     response.set_cookie(
@@ -763,7 +770,7 @@ async def auth_logout(request: Request):
     """Revoke the current session and clear the session cookie."""
     token = _get_session_token(request)
     if token:
-        auth_mod.revoke_session(token)
+        await auth_mod.revoke_session(token)
     response = JSONResponse({"ok": True})
     response.delete_cookie(key="psh_session", path="/")
     return response

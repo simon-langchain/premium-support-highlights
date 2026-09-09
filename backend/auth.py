@@ -1,119 +1,174 @@
 """Authentication: OTP generation/validation and session management.
 
-All state is in-memory — restarting the server invalidates all sessions
-and pending OTPs. Sessions are intentionally short-lived (8 hours).
+Sessions, OTPs, rate-limit counters, and OAuth CSRF state tokens are stored
+in the shared LangGraph Platform Store (Postgres-backed) rather than
+in-process memory. The API server can run multiple replicas in production
+(autoscaled), and each replica has its own process memory -- an in-memory
+store would let a session created on one replica appear "invalid" on
+another, which is exactly the bug this module was rewritten to fix. See
+_lg_client().
+
+Expiry is enforced application-side (via a stored expires_at timestamp) on
+every read, independent of the Store's own optional ttl parameter -- so
+correctness doesn't depend on TTL support being enabled on the underlying
+store backend. The ttl we still pass is a best-effort janitor to keep
+Postgres from accumulating stale rows forever.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 OTP_TTL = 900        # 15 minutes
 SESSION_TTL = 28800  # 8 hours
 _MAX_OTP_REQUESTS = 3  # per email per OTP_TTL window
 STATE_TTL = 600      # 10 minutes
 
+_OTP_TTL_MIN = OTP_TTL // 60
+_SESSION_TTL_MIN = SESSION_TTL // 60
+_STATE_TTL_MIN = STATE_TTL // 60
 
-@dataclass
-class _OTPEntry:
-    code: str
-    expires_at: float
+_NS_OTP = ("psh_auth", "otp")
+_NS_SESSION = ("psh_auth", "session")
+_NS_RATE = ("psh_auth", "rate")
+_NS_STATE = ("psh_auth", "state")
 
-
-@dataclass
-class _SessionEntry:
-    email: str
-    expires_at: float
-
-
-@dataclass
-class _RateEntry:
-    count: int
-    window_start: float
+_client = None
 
 
-_otps: dict[str, _OTPEntry] = {}
-_sessions: dict[str, _SessionEntry] = {}
-_rate: dict[str, _RateEntry] = {}
-_states: dict[str, float] = {}  # state_token -> expires_at
+def _lg_client():
+    """Return a shared LangGraph Platform SDK client for Store access.
+
+    Defaults to http://localhost:8000 -- correct both for local dev
+    (`langgraph dev --port 8000`) and inside an LSD deployment, where the
+    platform's own API (including the Store) is served on the same port in
+    the same container. Cached at module level since this is called on
+    every authenticated request.
+    """
+    global _client
+    if _client is None:
+        from langgraph_sdk import get_client
+        url = os.environ.get("LANGGRAPH_API_URL") or "http://localhost:8000"
+        _client = get_client(url=url)
+    return _client
 
 
-def is_rate_limited(email: str) -> bool:
-    """Return True if this email has exceeded the OTP request rate limit."""
-    now = time.monotonic()
-    entry = _rate.get(email)
-    if entry is None or now - entry.window_start > OTP_TTL:
-        _rate[email] = _RateEntry(count=1, window_start=now)
+async def _store_get(namespace: tuple[str, ...], key: str) -> dict | None:
+    """Fetch a Store item's value, or None if missing/expired-and-swept."""
+    try:
+        item = await _lg_client().store.get_item(namespace, key)
+    except httpx.HTTPStatusError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+    return item.get("value") if item else None
+
+
+async def _store_put(namespace: tuple[str, ...], key: str, value: dict, ttl_minutes: int) -> None:
+    await _lg_client().store.put_item(namespace, key, value, index=False, ttl=ttl_minutes)
+
+
+async def _store_delete(namespace: tuple[str, ...], key: str) -> None:
+    try:
+        await _lg_client().store.delete_item(namespace, key)
+    except httpx.HTTPStatusError as exc:
+        if exc.response is None or exc.response.status_code != 404:
+            raise
+
+
+async def is_rate_limited(email: str) -> bool:
+    """Return True if this email has exceeded the OTP request rate limit.
+
+    Best-effort: the read-then-write against the shared Store isn't atomic
+    across replicas (unlike the old single-process in-memory version), so a
+    burst of truly concurrent requests for the same email could undercount
+    by a small amount. Acceptable here since this only gates OTP email
+    volume (a fallback login path, not the primary Google OAuth flow) --
+    not a hard security boundary.
+    """
+    now = time.time()
+    entry = await _store_get(_NS_RATE, email)
+    if entry is None or now - entry.get("window_start", 0) > OTP_TTL:
+        await _store_put(_NS_RATE, email, {"count": 1, "window_start": now}, _OTP_TTL_MIN)
         return False
-    if entry.count >= _MAX_OTP_REQUESTS:
+    count = entry.get("count", 0)
+    if count >= _MAX_OTP_REQUESTS:
         return True
-    entry.count += 1
+    await _store_put(
+        _NS_RATE, email,
+        {"count": count + 1, "window_start": entry.get("window_start", now)},
+        _OTP_TTL_MIN,
+    )
     return False
 
 
-def generate_otp(email: str) -> str:
+async def generate_otp(email: str) -> str:
     """Generate and store a 6-digit OTP for the given email."""
     code = f"{secrets.randbelow(1_000_000):06d}"
-    _otps[email] = _OTPEntry(code=code, expires_at=time.monotonic() + OTP_TTL)
+    await _store_put(_NS_OTP, email, {"code": code, "expires_at": time.time() + OTP_TTL}, _OTP_TTL_MIN)
     return code
 
 
-def verify_otp(email: str, code: str) -> bool:
+async def verify_otp(email: str, code: str) -> bool:
     """Return True if the code matches and is not expired. Consumes the OTP."""
-    entry = _otps.get(email)
+    entry = await _store_get(_NS_OTP, email)
     if not entry:
         return False
-    if time.monotonic() > entry.expires_at:
-        del _otps[email]
+    if time.time() > entry.get("expires_at", 0):
+        await _store_delete(_NS_OTP, email)
         return False
-    if entry.code != code:
+    if entry.get("code") != code:
         return False
-    del _otps[email]  # single use
+    await _store_delete(_NS_OTP, email)  # single use
     return True
 
 
-def create_session(email: str) -> str:
+async def create_session(email: str) -> str:
     """Create and store a new session token for the given email."""
     token = secrets.token_hex(32)
-    _sessions[token] = _SessionEntry(
-        email=email,
-        expires_at=time.monotonic() + SESSION_TTL,
+    await _store_put(
+        _NS_SESSION, token, {"email": email, "expires_at": time.time() + SESSION_TTL}, _SESSION_TTL_MIN,
     )
     return token
 
 
-def validate_session(token: str) -> str | None:
+async def validate_session(token: str) -> str | None:
     """Return the email for a valid session token, or None if invalid/expired."""
-    entry = _sessions.get(token)
+    entry = await _store_get(_NS_SESSION, token)
     if not entry:
         return None
-    if time.monotonic() > entry.expires_at:
-        del _sessions[token]
+    if time.time() > entry.get("expires_at", 0):
+        await _store_delete(_NS_SESSION, token)
         return None
-    return entry.email
+    return entry.get("email")
 
 
-def revoke_session(token: str) -> None:
+async def revoke_session(token: str) -> None:
     """Delete a session token, effectively signing the user out."""
-    _sessions.pop(token, None)
+    await _store_delete(_NS_SESSION, token)
 
 
-def generate_state() -> str:
+async def generate_state() -> str:
     """Generate a single-use CSRF state token for OAuth flows."""
     token = secrets.token_urlsafe(32)
-    _states[token] = time.monotonic() + STATE_TTL
+    await _store_put(_NS_STATE, token, {"expires_at": time.time() + STATE_TTL}, _STATE_TTL_MIN)
     return token
 
 
-def consume_state(token: str) -> bool:
+async def consume_state(token: str) -> bool:
     """Return True and invalidate the token if valid and unexpired."""
-    exp = _states.pop(token, None)
-    return exp is not None and time.monotonic() < exp
+    entry = await _store_get(_NS_STATE, token)
+    if entry is None:
+        return False
+    await _store_delete(_NS_STATE, token)
+    return time.time() < entry.get("expires_at", 0)
 
 
 # ---------------------------------------------------------------------------
