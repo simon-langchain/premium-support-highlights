@@ -214,6 +214,10 @@ ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_
 _METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"
 
 
+def _coerce_model_default(v: str | None) -> str:
+    return v if v else DEFAULT_MODEL_ID
+
+
 class SummaryRequest(BaseModel):
     account_name: str
     model: str = DEFAULT_MODEL_ID
@@ -223,7 +227,7 @@ class SummaryRequest(BaseModel):
     @field_validator("model", mode="before")
     @classmethod
     def _default_model(cls, v: str | None) -> str:
-        return v if v else DEFAULT_MODEL_ID
+        return _coerce_model_default(v)
 
 
 class EmailReportRequest(BaseModel):
@@ -238,7 +242,7 @@ class EmailReportRequest(BaseModel):
     @field_validator("model", mode="before")
     @classmethod
     def _default_model(cls, v: str | None) -> str:
-        return v if v else DEFAULT_MODEL_ID
+        return _coerce_model_default(v)
 
 
 class SlackReportRequest(BaseModel):
@@ -1470,7 +1474,7 @@ async def get_account_report(
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
     account_summary = await _get_or_regenerate_account_summary(
-        account_id, account_name, period, payload, open_issues
+        account_id, account_name, period, payload, open_issues, model=ticket_model
     )
 
     html = generate_report_html(
@@ -1530,7 +1534,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
 
     ticket_summaries = await asyncio.to_thread(_read_summaries)
     account_summary = await _get_or_regenerate_account_summary(
-        account_id, body.account_name, period, payload, open_issues
+        account_id, body.account_name, period, payload, open_issues, model=body.model
     )
 
     logo_url = os.environ.get("REPORT_LOGO_URL") or None
