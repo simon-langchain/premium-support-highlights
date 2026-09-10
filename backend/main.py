@@ -2323,16 +2323,16 @@ async def _handle_slack_action(
 
         await _deliver_slack_result(slack_token, channel_id, thread_ts, placeholder_ts, fallback_text, blocks, attachments)
     except Exception:
+        # _deliver_slack_result handles and logs its own failures internally
+        # and never raises, so this only needs to report the original error
+        # (Pylon/LLM/etc.) and attempt to surface it -- Slack itself is never
+        # retried, since this is a best-effort background action.
         _log.exception("Failed to handle Slack action %s for account %s", action_id, account_id)
-        try:
-            await _deliver_slack_result(
-                slack_token, channel_id, thread_ts, placeholder_ts,
-                "Something went wrong",
-                _warning_blocks("Something went wrong. Please try again."),
-            )
-        except Exception:
-            _log.exception("Failed to deliver Slack error message")
-        # Best-effort; failures silently dropped so Slack doesn't retry
+        await _deliver_slack_result(
+            slack_token, channel_id, thread_ts, placeholder_ts,
+            "Something went wrong",
+            _warning_blocks("Something went wrong. Please try again."),
+        )
 
 
 @app.post("/api/slack/actions")
