@@ -176,6 +176,28 @@ def post_message(token: str, channel: str, fallback_text: str, blocks: list[dict
     })
 
 
+def update_message(token: str, channel: str, ts: str, fallback_text: str, blocks: list[dict]) -> dict:
+    """Update an existing Slack message in place via chat.update.
+
+    Only safe to use for link-free content (e.g. a short error/warning
+    message): chat.update has no unfurl_links/unfurl_media parameters, so
+    any link in the new content could unfurl into a preview card with no
+    way to suppress it. Content that may contain links must be delivered
+    via post_message instead.
+
+    Args:
+        token: Slack bot token (xoxb-...).
+        channel: Slack channel ID the message lives in.
+        ts: Timestamp of the message to update (from a prior post_message response).
+        fallback_text: Plain-text fallback shown in notifications where blocks aren't rendered.
+        blocks: Slack Block Kit payload to replace the message content with.
+
+    Returns:
+        Parsed Slack API response dict.
+    """
+    return _call(token, "chat.update", {"channel": channel, "ts": ts, "text": fallback_text, "blocks": blocks})
+
+
 def delete_message(token: str, channel: str, ts: str) -> dict:
     """Delete a message the bot posted, via chat.delete.
 

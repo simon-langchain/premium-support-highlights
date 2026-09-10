@@ -2215,11 +2215,27 @@ async def _deliver_slack_result(
     chat.update has no unfurl_links/unfurl_media parameters, so ticket
     permalinks embedded in summary/issues content would unfurl into preview
     cards if delivered that way instead.
+
+    If the post itself fails, falls back to converting the placeholder into
+    an error message (safe via chat.update since it's link-free) rather than
+    leaving a stuck "loading..." message with no visible result or error.
     """
-    await asyncio.to_thread(
-        slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
-        attachments=attachments,
-    )
+    try:
+        await asyncio.to_thread(
+            slack_client.post_message, slack_token, channel_id, fallback_text, blocks, thread_ts,
+            attachments=attachments,
+        )
+    except Exception:
+        _log.exception("Failed to post Slack result")
+        if placeholder_ts:
+            try:
+                await asyncio.to_thread(
+                    slack_client.update_message, slack_token, channel_id, placeholder_ts,
+                    "Something went wrong", _warning_blocks("Something went wrong. Please try again."),
+                )
+            except Exception:
+                _log.exception("Failed to convert Slack placeholder to error message")
+        return
     if placeholder_ts:
         try:
             await asyncio.to_thread(slack_client.delete_message, slack_token, channel_id, placeholder_ts)
