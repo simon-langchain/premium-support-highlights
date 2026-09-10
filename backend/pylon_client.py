@@ -291,7 +291,14 @@ def get_available_tiers(force_refresh: bool = False) -> list[str]:
 
 
 def get_accounts_by_tier(tier: str = "Premium", force_refresh: bool = False) -> list[dict]:
-    """Return current customers filtered to the given Support Tier."""
+    """Return current customers filtered to the given Support Tier.
+
+    Only Premium/Standard (_VALID_TIERS) are ever returned -- other values
+    the Account Hierarchy tier field can carry (e.g. "Base") are rejected
+    here too, not just hidden from get_available_tiers()'s dropdown list.
+    """
+    if tier.lower() not in {t.lower() for t in _VALID_TIERS}:
+        return []
     customers = get_current_customers(force_refresh=force_refresh)
     return [a for a in customers if _get_custom_field(a, _SUPPORT_TIER_SLUG).lower() == tier.lower()]
 
