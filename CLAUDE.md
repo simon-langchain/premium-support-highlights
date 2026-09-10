@@ -103,8 +103,8 @@ Protected routes:
 **`auth.py`** — Session management and OTP fallback auth. `generate_otp`, `verify_otp` handle the email OTP flow (used when Google OAuth is unavailable). `create_session`, `validate_session`, `revoke_session`, `is_rate_limited` manage the shared session store used by both auth paths.
 
 **`pylon_client.py`** — Pylon REST API client. Shared `httpx.Client`, `_get`/`_post`/`_patch` helpers with 429 retry, in-memory TTL cache. Key functions:
-- `get_current_customers(force_refresh)` — POST /accounts/search filtered to Relationship_Status = "Current Customer"; disk-cached for 1 hour; single source of truth for all tier/account derivation
-- `get_available_tiers()` — sorted list of unique Support_Tier values across all current customers (derived from cache, no extra API calls)
+- `get_current_customers(force_refresh)` — POST /accounts/search filtered to the Account Hierarchy Relationship Status field (`DAT_Relationship_Status__c`) = "Current Customer"; disk-cached for 1 hour; single source of truth for all tier/account derivation. Uses the hierarchy rollup field rather than the plain per-account `Relationship_Status__c` so a subsidiary account inherits its parent's status when its own record is out of sync
+- `get_available_tiers()` — sorted list of Support Tier values across all current customers, restricted to `_VALID_TIERS` (`Premium`/`Standard`) even though the underlying Account Hierarchy Support Tier field (`DAT_Support_Tier__c`) can carry other values (e.g. `Base`)
 - `get_accounts_by_tier(tier)` — current customers filtered to the given tier (derived from cache, no extra API calls)
 - `get_premium_accounts()` — backward-compatible wrapper for `get_accounts_by_tier("Premium")`
 - `get_team_members()` — GET /users, cached 2 minutes, used for auth eligibility check
@@ -112,7 +112,7 @@ Protected routes:
 - `get_slack_channel_id(account)` — extracts primary Slack channel ID from account's `channels` array
 - `search_issues_for_account(account_id, ...)` — POST /issues/search with account filter, auto-paginates
 - `make_date_range(period)` — returns (created_after, created_before) for the given period string
-- **Custom fields**: Pylon returns `custom_fields` as a dict keyed by slug, e.g. `{"account.salesforce.Support_Tier__c": {"value": "Premium"}}`. Use `_get_custom_field(account, slug)` for safe extraction.
+- **Custom fields**: Pylon returns `custom_fields` as a dict keyed by slug, e.g. `{"account.salesforce.DAT_Support_Tier__c": {"value": "Premium"}}`. Use `_get_custom_field(account, slug)` for safe extraction.
 
 **`slack_client.py`** — Slack API client. `post_message` posts Block Kit + legacy attachment messages via `chat.postMessage`. `get_channels` lists internal channels the bot can post to (filters Slack Connect and external-prefixed channels). `get_channel_name` resolves a channel ID to its name via `conversations.info`, with in-process caching. `get_bot_name` calls `auth.test` to return the bot's workspace username (used in "not in channel" error messages).
 

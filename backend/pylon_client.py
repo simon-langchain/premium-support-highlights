@@ -224,8 +224,13 @@ def get_accounts() -> list[dict]:
 _ACCOUNTS_TTL_SECONDS = 3600  # 1 hour
 _CURRENT_CUSTOMERS_CACHE_FILE = _CACHE_DIR / "current_customers.json"
 
-_RELATIONSHIP_STATUS_SLUG = "account.salesforce.Relationship_Status__c"
-_SUPPORT_TIER_SLUG = "account.salesforce.Support_Tier__c"
+_RELATIONSHIP_STATUS_SLUG = "account.salesforce.DAT_Relationship_Status__c"
+_SUPPORT_TIER_SLUG = "account.salesforce.DAT_Support_Tier__c"
+
+# Only these tier values are ever shown/filterable, even though the
+# Account Hierarchy tier field can carry other values (e.g. "Base") --
+# per product decision, the dashboard only supports Premium/Standard.
+_VALID_TIERS = ("Premium", "Standard")
 
 
 def _get_custom_field(account: dict, slug: str) -> str:
@@ -236,7 +241,11 @@ def _get_custom_field(account: dict, slug: str) -> str:
 
 
 def get_current_customers(force_refresh: bool = False) -> list[dict]:
-    """Fetch all accounts where Relationship_Status__c = 'Current Customer'.
+    """Fetch all accounts where the Account Hierarchy Relationship Status = 'Current Customer'.
+
+    Uses the hierarchy rollup field (DAT_Relationship_Status__c) rather than
+    the plain per-account field, so a subsidiary account inherits its
+    parent's status when its own record is out of sync.
 
     Cached to disk for 1 hour. Single source of truth — tiers and per-tier
     account lists are derived from this without additional API calls.
@@ -275,10 +284,10 @@ def get_current_customers(force_refresh: bool = False) -> list[dict]:
 
 
 def get_available_tiers(force_refresh: bool = False) -> list[str]:
-    """Return sorted Support Tier values across all current customers."""
+    """Return sorted Support Tier values (Premium/Standard only) across all current customers."""
     customers = get_current_customers(force_refresh=force_refresh)
-    return sorted({_get_custom_field(a, _SUPPORT_TIER_SLUG) for a in customers
-                   if _get_custom_field(a, _SUPPORT_TIER_SLUG)})
+    present = {_get_custom_field(a, _SUPPORT_TIER_SLUG) for a in customers}
+    return sorted(t for t in _VALID_TIERS if t in present)
 
 
 def get_accounts_by_tier(tier: str = "Premium", force_refresh: bool = False) -> list[dict]:
