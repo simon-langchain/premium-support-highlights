@@ -1,0 +1,23 @@
+backend/pylon_client.py
+  s_1a91a4be98c5cc::t_fea79049a64dc0 244-248
+  s_1a91a4be98c5cc::t_16fe494a200895 287,289-290
+  s_1a91a4be98c5cc::t_aa92d40aab1d01 227-233
+CLAUDE.md
+  s_1a91a4be98c5cc::t_fdff001afb3ac0 106-107,115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "4c15e3674476230b036b37e60d5dacc9f1b516a3",
+  "prompts": {},
+  "sessions": {
+    "s_1a91a4be98c5cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a9bb03e-9561-4366-b5bc-e5f9c503b7ce",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
