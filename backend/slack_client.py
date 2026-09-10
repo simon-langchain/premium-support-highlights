@@ -130,6 +130,29 @@ def get_bot_name(token: str) -> str | None:
     return None
 
 
+def _call(token: str, method: str, payload: dict) -> dict:
+    """POST to a Slack Web API method and return the parsed response.
+
+    Raises:
+        RuntimeError: If the Slack API returns ok=false.
+        httpx.HTTPStatusError: On HTTP-level failures.
+    """
+    resp = httpx.post(
+        f"{_SLACK_API}/{method}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Slack API error: {data.get('error', 'unknown')}")
+    return data
+
+
 def post_message(token: str, channel: str, fallback_text: str, blocks: list[dict], thread_ts: str | None = None, attachments: list[dict] | None = None) -> dict:
     """Post a Block Kit message to a Slack channel.
 
@@ -141,30 +164,49 @@ def post_message(token: str, channel: str, fallback_text: str, blocks: list[dict
 
     Returns:
         Parsed Slack API response dict.
-
-    Raises:
-        RuntimeError: If the Slack API returns ok=false.
-        httpx.HTTPStatusError: On HTTP-level failures.
     """
-    resp = httpx.post(
-        f"{_SLACK_API}/chat.postMessage",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "channel": channel,
-            "text": fallback_text,
-            "blocks": blocks,
-            "unfurl_links": False,
-            "unfurl_media": False,
-            **({"thread_ts": thread_ts} if thread_ts else {}),
-            **({"attachments": attachments} if attachments else {}),
-        },
-        timeout=_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error', 'unknown')}")
-    return data
+    return _call(token, "chat.postMessage", {
+        "channel": channel,
+        "text": fallback_text,
+        "blocks": blocks,
+        "unfurl_links": False,
+        "unfurl_media": False,
+        **({"thread_ts": thread_ts} if thread_ts else {}),
+        **({"attachments": attachments} if attachments else {}),
+    })
+
+
+def update_message(token: str, channel: str, ts: str, fallback_text: str, blocks: list[dict]) -> dict:
+    """Update an existing Slack message in place via chat.update.
+
+    Only safe to use for link-free content (e.g. a short error/warning
+    message): chat.update has no unfurl_links/unfurl_media parameters, so
+    any link in the new content could unfurl into a preview card with no
+    way to suppress it. Content that may contain links must be delivered
+    via post_message instead.
+
+    Args:
+        token: Slack bot token (xoxb-...).
+        channel: Slack channel ID the message lives in.
+        ts: Timestamp of the message to update (from a prior post_message response).
+        fallback_text: Plain-text fallback shown in notifications where blocks aren't rendered.
+        blocks: Slack Block Kit payload to replace the message content with.
+
+    Returns:
+        Parsed Slack API response dict.
+    """
+    return _call(token, "chat.update", {"channel": channel, "ts": ts, "text": fallback_text, "blocks": blocks})
+
+
+def delete_message(token: str, channel: str, ts: str) -> dict:
+    """Delete a message the bot posted, via chat.delete.
+
+    Args:
+        token: Slack bot token (xoxb-...).
+        channel: Slack channel ID the message lives in.
+        ts: Timestamp of the message to delete (from a prior post_message response).
+
+    Returns:
+        Parsed Slack API response dict.
+    """
+    return _call(token, "chat.delete", {"channel": channel, "ts": ts})
