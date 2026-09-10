@@ -1,0 +1,21 @@
+backend/main.py
+  s_1a91a4be98c5cc::t_77106de62311d6 2218-2221,2223-2238
+backend/slack_client.py
+  s_1a91a4be98c5cc::t_08121997b4d910 179-200
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "cd19d6a02917984f231f2a001cddcd3754069b0a",
+  "prompts": {},
+  "sessions": {
+    "s_1a91a4be98c5cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a9bb03e-9561-4366-b5bc-e5f9c503b7ce",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
