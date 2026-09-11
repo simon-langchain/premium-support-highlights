@@ -227,10 +227,14 @@ _CURRENT_CUSTOMERS_CACHE_FILE = _CACHE_DIR / "current_customers.json"
 _RELATIONSHIP_STATUS_SLUG = "account.salesforce.DAT_Relationship_Status__c"
 _SUPPORT_TIER_SLUG = "account.salesforce.DAT_Support_Tier__c"
 
-# Only these tier values are ever shown/filterable, even though the
-# Account Hierarchy tier field can carry other values (e.g. "Base") --
-# per product decision, the dashboard only supports Premium/Standard.
-_VALID_TIERS = ("Premium", "Standard")
+# Accounts in either of these Account Hierarchy Relationship Status states
+# are shown on the dashboard: "Expired Contract - Renewal Pending" covers
+# accounts mid-renewal that should still surface for Support.
+_RELATIONSHIP_STATUS_VALUES = ("Current Customer", "Expired Contract - Renewal Pending")
+
+# Tier values shown/filterable -- per product decision, this now includes
+# "Base" alongside Premium/Standard.
+_VALID_TIERS = ("Premium", "Standard", "Base")
 
 
 def _get_custom_field(account: dict, slug: str) -> str:
@@ -240,8 +244,40 @@ def _get_custom_field(account: dict, slug: str) -> str:
     return ""
 
 
+def _search_accounts_by_relationship_status(status: str) -> list[dict]:
+    """POST /accounts/search filtered to one Account Hierarchy Relationship
+    Status value, paginating through all results.
+
+    Kept as a single-value "equals" filter per call (rather than a single
+    "in"/"or" query across all of _RELATIONSHIP_STATUS_VALUES) because
+    Pylon's filter DSL "in"/"or" operators are only confirmed in this
+    codebase against native fields (state, assignee_id) — never against a
+    Salesforce-backed custom field like DAT_Relationship_Status__c.
+    """
+    accounts: list[dict] = []
+    body: dict = {
+        "filter": {
+            "field": _RELATIONSHIP_STATUS_SLUG,
+            "operator": "equals",
+            "value": status,
+        },
+        "limit": 1000,
+    }
+    data = _post("/accounts/search", body)
+    accounts = data.get("data", [])
+    cursor = (data.get("pagination") or {}).get("cursor")
+    while cursor and (data.get("pagination") or {}).get("has_next_page"):
+        body = {**body, "cursor": cursor}
+        data = _post("/accounts/search", body)
+        accounts.extend(data.get("data", []))
+        cursor = (data.get("pagination") or {}).get("cursor")
+    return accounts
+
+
 def get_current_customers(force_refresh: bool = False) -> list[dict]:
-    """Fetch all accounts where the Account Hierarchy Relationship Status = 'Current Customer'.
+    """Fetch all accounts whose Account Hierarchy Relationship Status is in
+    _RELATIONSHIP_STATUS_VALUES ('Current Customer' or 'Expired Contract -
+    Renewal Pending').
 
     Uses the hierarchy rollup field (DAT_Relationship_Status__c) rather than
     the plain per-account field, so a subsidiary account inherits its
@@ -259,22 +295,15 @@ def get_current_customers(force_refresh: bool = False) -> list[dict]:
             pass
 
     accounts: list[dict] = []
-    body: dict = {
-        "filter": {
-            "field": _RELATIONSHIP_STATUS_SLUG,
-            "operator": "equals",
-            "value": "Current Customer",
-        },
-        "limit": 1000,
-    }
-    data = _post("/accounts/search", body)
-    accounts = data.get("data", [])
-    cursor = (data.get("pagination") or {}).get("cursor")
-    while cursor and (data.get("pagination") or {}).get("has_next_page"):
-        body = {**body, "cursor": cursor}
-        data = _post("/accounts/search", body)
-        accounts.extend(data.get("data", []))
-        cursor = (data.get("pagination") or {}).get("cursor")
+    seen_ids: set[str] = set()
+    for status in _RELATIONSHIP_STATUS_VALUES:
+        for account in _search_accounts_by_relationship_status(status):
+            aid = account.get("id")
+            if aid and aid in seen_ids:
+                continue
+            if aid:
+                seen_ids.add(aid)
+            accounts.append(account)
 
     _CURRENT_CUSTOMERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _CURRENT_CUSTOMERS_CACHE_FILE.write_text(
@@ -284,7 +313,7 @@ def get_current_customers(force_refresh: bool = False) -> list[dict]:
 
 
 def get_available_tiers(force_refresh: bool = False) -> list[str]:
-    """Return sorted Support Tier values (Premium/Standard only) across all current customers."""
+    """Return sorted Support Tier values (_VALID_TIERS: Premium/Standard/Base) across all current customers."""
     customers = get_current_customers(force_refresh=force_refresh)
     present = {_get_custom_field(a, _SUPPORT_TIER_SLUG) for a in customers}
     return sorted(t for t in _VALID_TIERS if t in present)
@@ -293,9 +322,9 @@ def get_available_tiers(force_refresh: bool = False) -> list[str]:
 def get_accounts_by_tier(tier: str = "Premium", force_refresh: bool = False) -> list[dict]:
     """Return current customers filtered to the given Support Tier.
 
-    Only Premium/Standard (_VALID_TIERS) are ever returned -- other values
-    the Account Hierarchy tier field can carry (e.g. "Base") are rejected
-    here too, not just hidden from get_available_tiers()'s dropdown list.
+    Only Premium/Standard/Base (_VALID_TIERS) are ever returned -- other
+    values the Account Hierarchy tier field can carry are rejected here too,
+    not just hidden from get_available_tiers()'s dropdown list.
     """
     if tier.lower() not in {t.lower() for t in _VALID_TIERS}:
         return []
