@@ -83,7 +83,7 @@ Auth routes (unauthenticated):
 - `POST /api/auth/logout` — revokes session, clears cookie
 
 Protected routes:
-- `GET /api/tiers` — sorted list of available support tiers (derived from current customers cache)
+- `GET /api/tiers` — available support tiers in priority order (Premium, Standard, Base; derived from current customers cache)
 - `GET /api/accounts?tier=Premium` — sorted list of accounts for the given tier (defaults to Premium)
 - `GET /api/accounts/{id}/data?account_name=...&period=` — metrics + open issues, 5-minute in-memory TTL cache
 - `GET /api/accounts/{id}/cached-ticket-summaries?model=...` — per-ticket AI summaries from disk cache, keyed by ticket number; `model` query param ensures summaries are read from the correct model-specific cache entries
@@ -104,7 +104,7 @@ Protected routes:
 
 **`pylon_client.py`** — Pylon REST API client. Shared `httpx.Client`, `_get`/`_post`/`_patch` helpers with 429 retry, in-memory TTL cache. Key functions:
 - `get_current_customers(force_refresh)` — merges two paginated POST /accounts/search queries filtered to the Account Hierarchy Relationship Status field (`DAT_Relationship_Status__c`) = "Current Customer" or "Expired Contract - Renewal Pending" (`_RELATIONSHIP_STATUS_VALUES`), de-duplicated by account id; disk-cached for 1 hour; single source of truth for all tier/account derivation. Uses the hierarchy rollup field rather than the plain per-account `Relationship_Status__c` so a subsidiary account inherits its parent's status when its own record is out of sync. The second (renewal-pending) query is best-effort — if it fails, `get_current_customers` logs a warning and falls back to just the "Current Customer" results rather than failing the whole call
-- `get_available_tiers()` — sorted list of Support Tier values across all current customers, restricted to `_VALID_TIERS` (`Premium`/`Standard`/`Base`)
+- `get_available_tiers()` — Support Tier values across all current customers, in `_VALID_TIERS` priority order (`Premium`/`Standard`/`Base`)
 - `get_accounts_by_tier(tier)` — current customers filtered to the given tier (derived from cache, no extra API calls)
 - `get_premium_accounts()` — backward-compatible wrapper for `get_accounts_by_tier("Premium")`
 - `get_team_members()` — GET /users, cached 2 minutes, used for auth eligibility check

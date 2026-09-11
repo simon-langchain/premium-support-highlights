@@ -804,7 +804,7 @@ async def get_me(email: str = Depends(require_auth)):
 
 @app.get("/api/tiers")
 def get_tiers(_email: str = Depends(require_auth)):
-    """Return sorted list of available Support Tier values from Pylon."""
+    """Return available Support Tier values from Pylon, in priority order (Premium, Standard, Base)."""
     try:
         return pylon_client.get_available_tiers()
     except Exception as exc:
