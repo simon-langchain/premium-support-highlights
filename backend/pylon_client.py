@@ -328,10 +328,11 @@ def get_current_customers(force_refresh: bool = False) -> list[dict]:
 
 
 def get_available_tiers(force_refresh: bool = False) -> list[str]:
-    """Return sorted Support Tier values (_VALID_TIERS: Premium/Standard/Base) across all current customers."""
+    """Return Support Tier values across all current customers, in _VALID_TIERS'
+    declared priority order (Premium, Standard, Base) rather than alphabetically."""
     customers = get_current_customers(force_refresh=force_refresh)
     present = {_get_custom_field(a, _SUPPORT_TIER_SLUG) for a in customers}
-    return sorted(t for t in _VALID_TIERS if t in present)
+    return [t for t in _VALID_TIERS if t in present]
 
 
 def get_accounts_by_tier(tier: str = "Premium", force_refresh: bool = False) -> list[dict]:
