@@ -294,10 +294,25 @@ def get_current_customers(force_refresh: bool = False) -> list[dict]:
         except (json.JSONDecodeError, OSError, KeyError):
             pass
 
-    accounts: list[dict] = []
-    seen_ids: set[str] = set()
-    for status in _RELATIONSHIP_STATUS_VALUES:
-        for account in _search_accounts_by_relationship_status(status):
+    # The first status ("Current Customer") is required -- a failure here
+    # raises, exactly as this function behaved before additional statuses
+    # were added. Additional statuses are best-effort: if one of those
+    # queries fails, log and fall back to whatever succeeded rather than
+    # failing the whole call (and thus /api/tiers and /api/accounts) over
+    # a status that used to not be queried at all.
+    accounts = _search_accounts_by_relationship_status(_RELATIONSHIP_STATUS_VALUES[0])
+    seen_ids: set[str] = {a["id"] for a in accounts if a.get("id")}
+
+    for status in _RELATIONSHIP_STATUS_VALUES[1:]:
+        try:
+            status_accounts = _search_accounts_by_relationship_status(status)
+        except Exception:
+            _log.warning(
+                "get_current_customers: query for status=%r failed, "
+                "continuing without it", status, exc_info=True,
+            )
+            continue
+        for account in status_accounts:
             aid = account.get("id")
             if aid and aid in seen_ids:
                 continue
