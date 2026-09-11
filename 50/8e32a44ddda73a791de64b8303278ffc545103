@@ -1,0 +1,21 @@
+CLAUDE.md
+  s_644e59dd3bb1e1::t_d01a17940aa0bc 106-107
+backend/pylon_client.py
+  s_644e59dd3bb1e1::t_38971f2f979818 297-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "508e32a44ddda73a791de64b8303278ffc545103",
+  "prompts": {},
+  "sessions": {
+    "s_644e59dd3bb1e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0b5b77c-9f4b-4000-a90c-40268932dc7d",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
