@@ -1,0 +1,22 @@
+CLAUDE.md
+  s_644e59dd3bb1e1::t_97228dabc0fe57 86
+  s_644e59dd3bb1e1::t_6f0a391049bfeb 107
+backend/main.py
+  s_644e59dd3bb1e1::t_8844deeef6bcfb 807
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6dc8b4b513d749a8d3d58ebb7df84ea77323fada",
+  "prompts": {},
+  "sessions": {
+    "s_644e59dd3bb1e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0b5b77c-9f4b-4000-a90c-40268932dc7d",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
