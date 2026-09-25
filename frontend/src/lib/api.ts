@@ -744,6 +744,13 @@ export interface ReportModel {
 export async function fetchReportData(accountId: string, params: URLSearchParams): Promise<ReportModel> {
   const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/report-data?${params}`);
   if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (res.status === 404) {
+    const body = await res.clone().json().catch(() => ({}));
+    // FastAPI's generic 404: the route itself is missing, i.e. the backend is older than this frontend (mid-deploy)
+    if ((body as { detail?: unknown }).detail === "Not Found") {
+      throw new Error("PDF downloads aren't available yet: the backend is still being updated. Try again in a few minutes.");
+    }
+  }
   if (!res.ok) await throwDetail(res, "Failed to load the report");
   return res.json();
 }
