@@ -1,8 +1,9 @@
 """Check every model in llm.AVAILABLE_MODELS works through the LLM Gateway.
 
-For each model: one short prompt, and one tool call (the account summary runs as a
-tool-calling agent, so a model that can't call tools breaks it). Providers retire models
-without notice, so run this before deploying a model-list change.
+For each model: one short prompt, one tool call (the account summary runs as a
+tool-calling agent, so a model that can't call tools breaks it), and a temperature=0 call
+checked against llm.supports_temperature (the duplicate check uses it). Providers retire
+models without notice, so run this before deploying a model-list change.
 
     cd backend && uv run python check_models.py              # all models
     uv run python check_models.py anthropic:claude-sonnet-5  # just these
@@ -48,6 +49,16 @@ async def _check(model_id: str, sem: asyncio.Semaphore) -> tuple[str, str, str]:
             calls = getattr(reply, "tool_calls", None) or []
             if not calls or calls[0].get("name") != "get_ticket_count":
                 return model_id, "FAIL", "answered without calling the tool"
+            try:
+                await asyncio.wait_for(chat.bind(temperature=0).ainvoke("Reply with the single word OK"), _TIMEOUT)
+                accepts = True
+            except Exception as exc:  # noqa: BLE001
+                if "temperature" not in str(exc).lower():
+                    raise
+                accepts = False
+            if accepts != llm.supports_temperature(model_id):
+                fix = "remove from" if accepts else "add to"
+                return model_id, "FAIL", f"{'accepts' if accepts else 'rejects'} temperature: {fix} llm._NO_TEMPERATURE"
             return model_id, "ok", f"{time.monotonic() - start:.1f}s"
         except Exception as exc:  # noqa: BLE001 — report every failure, keep checking the rest
             first_line = (str(exc).splitlines() or [""])[0]

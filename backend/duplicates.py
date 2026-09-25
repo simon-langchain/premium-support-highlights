@@ -143,21 +143,22 @@ def ai_cache_key(model: str, text: str) -> str:
     return hashlib.sha256(f"{model}\n{_PROMPT}\n{text}".encode()).hexdigest()[:24]
 
 
-# Models that rejected temperature=0 in this process (see run_ai)
+# Unlisted-in-llm._NO_TEMPERATURE models that rejected temperature=0 in this process (see run_ai)
 _NO_TEMPERATURE: set[str] = set()
 
 async def run_ai(model: str, text: str, valid: set[int]) -> list[dict]:
     """One LLM call → [{tickets, reason}], with ticket numbers restricted to `valid`.
 
     Temperature 0 (this call only) so the same tickets group the same way each run. Some
-    models (e.g. Claude Sonnet 5, OpenAI reasoning models) reject a temperature; those retry
-    at their default and skip the temperature attempt from then on.
+    models (e.g. Claude Sonnet 5, GPT-6) reject a temperature: those listed in
+    llm._NO_TEMPERATURE run at their default; any other model that rejects it retries at
+    its default and skips the temperature attempt from then on.
     """
     import llm  # local import: llm pulls in provider SDKs
 
     chat = llm.get_chat_model(model)
     prompt = _PROMPT.format(tickets=text)
-    if model in _NO_TEMPERATURE:
+    if not llm.supports_temperature(model) or model in _NO_TEMPERATURE:
         resp = await chat.ainvoke(prompt)
     else:
         try:

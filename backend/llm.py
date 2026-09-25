@@ -114,6 +114,22 @@ def get_model_info(model_id: str) -> dict[str, str] | None:
     return _MODEL_MAP.get(model_id)
 
 
+# Listed models that reject a `temperature` parameter (400 "temperature is deprecated").
+# check_models.py fails if this list doesn't match what the providers accept.
+_NO_TEMPERATURE = frozenset({
+    "anthropic:claude-sonnet-5",
+    "anthropic:claude-opus-5-5",
+    "anthropic:claude-fable-5-1",
+    "openai:gpt-6-sol",
+    "openai:gpt-6-luna",
+})
+
+
+def supports_temperature(model_id: str) -> bool:
+    """False for models known to reject `temperature`; unlisted models are assumed to accept it."""
+    return model_id not in _NO_TEMPERATURE
+
+
 def _provider_base_url(provider: str) -> str:
     """Return the gateway URL for a provider."""
     path = _PROVIDER_PATHS.get(provider)
