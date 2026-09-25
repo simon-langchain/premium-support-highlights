@@ -1,0 +1,26 @@
+backend/pyproject.toml
+  s_7a33f8010fee71::t_fee5657c8b882b 24-29
+backend/uv.lock
+  s_7a33f8010fee71::t_4b236015e2628d 2439-2441,2469-2471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f56951a15e22e40a59e1e0c42a258a31ebec1293",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
