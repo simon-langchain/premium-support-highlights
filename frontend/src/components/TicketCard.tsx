@@ -1,4 +1,7 @@
+import { useState } from "react";
+import { Copy, Loader2 } from "lucide-react";
 import type { Issue, ExternalIssue, TicketSummary } from "@/lib/api";
+import type { MemberLabel } from "@/lib/accountLabels";
 
 // SVG paths sourced from simpleicons.org (24×24 viewBox)
 const SOURCE_ICONS: Record<string, string> = {
@@ -23,6 +26,16 @@ interface TicketCardProps {
   accountName?: string;
   /** null = still loading, object = loaded (fields may be empty strings) */
   ticketSummary?: TicketSummary | null;
+  /** Set when viewing an account group: which member account this ticket is from. */
+  memberAccount?: MemberLabel;
+  /** Show linked Linear/GitHub IDs next to their icons (per-account sidebar setting). */
+  showLinkedIds?: boolean;
+  /** Other open tickets this one can be marked as a duplicate of */
+  duplicateCandidates?: { number: number; title: string }[];
+  onMarkDuplicate?: (other: number) => Promise<void>;
+  /** Possible duplicates of this ticket that the current filters hide */
+  hiddenDuplicates?: number[];
+  onRevealDuplicates?: () => void;
 }
 
 interface BadgeVars {
@@ -75,6 +88,114 @@ function formatDate(isoStr: string): string {
   }
 }
 
+export function MemberAccountPill({ member, active = true }: { member: MemberLabel; active?: boolean }) {
+  return (
+    <span
+      title={member.fullName}
+      style={{
+        background: "var(--bg-tertiary)",
+        color: active ? "var(--text-primary)" : "var(--text-muted)",
+        border: "1px solid var(--border-hover)",
+      }}
+      className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded font-medium"
+    >
+      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: member.color, opacity: active ? 1 : 0.4 }} />
+      {member.label}
+    </span>
+  );
+}
+
+function MarkDuplicateForm({
+  issueNumber,
+  candidates,
+  onSubmit,
+  onClose,
+}: {
+  issueNumber: number;
+  candidates: { number: number; title: string }[];
+  onSubmit: (other: number) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const listId = `dupe-candidates-${issueNumber}`;
+
+  async function submit() {
+    const other = Number(value.trim().replace(/^#/, ""));
+    if (!candidates.some((c) => c.number === other)) {
+      setError("Pick another open ticket on this account");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(other);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-2 text-xs">
+      <span style={{ color: "var(--text-muted)" }}>Duplicate of #</span>
+      <input
+        autoFocus
+        list={listId}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+          if (e.key === "Escape") onClose();
+        }}
+        placeholder="ticket number"
+        className="w-32 rounded px-2 py-1 outline-none placeholder:text-[var(--text-caption)]"
+        style={{ background: "var(--bg-base)", border: "1px solid var(--border-hover)", color: "var(--text-primary)" }}
+      />
+      <datalist id={listId}>
+        {candidates.map((c) => (
+          <option key={c.number} value={String(c.number)}>{c.title}</option>
+        ))}
+      </datalist>
+      <button
+        onClick={submit}
+        disabled={saving || !value.trim()}
+        className="flex items-center gap-1 px-2 py-1 rounded disabled:opacity-50"
+        style={{ background: "#006ddd", color: "#fff" }}
+      >
+        {saving && <Loader2 size={11} className="animate-spin" />}
+        Mark
+      </button>
+      <button onClick={onClose} className="px-2 py-1 rounded hover:bg-[var(--bg-tertiary)]" style={{ color: "var(--text-muted)" }}>
+        Cancel
+      </button>
+      {error && <span style={{ color: "var(--badge-red-text)" }}>{error}</span>}
+    </div>
+  );
+}
+
+/** Category breadcrumb (backend `_category_path`): product area in full ink, then sub-areas.
+ *  Paths deeper than 4 collapse to first › … › last two; the full path is on hover. */
+function CategoryPath({ path }: { path: string[] }) {
+  const shown = path.length > 4 ? [path[0], "…", ...path.slice(-2)] : path;
+  return (
+    <span
+      title={path.join(" › ")}
+      style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
+      className="inline-flex flex-wrap items-center gap-x-1 text-xs px-1.5 py-0.5 rounded"
+    >
+      {shown.map((part, i) => (
+        <span key={i} className="inline-flex items-center gap-x-1">
+          {i > 0 && <span style={{ color: "var(--text-caption)" }}>›</span>}
+          <span style={i === 0 ? { color: "var(--text-primary)" } : undefined}>{part}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function Badge({ vars, label }: { vars: BadgeVars; label: string }) {
   return (
     <span
@@ -90,7 +211,18 @@ function Badge({ vars, label }: { vars: BadgeVars; label: string }) {
   );
 }
 
-export default function TicketCard({ issue, accountName, ticketSummary }: TicketCardProps) {
+export default function TicketCard({
+  issue,
+  accountName,
+  ticketSummary,
+  memberAccount,
+  showLinkedIds = false,
+  duplicateCandidates,
+  onMarkDuplicate,
+  hiddenDuplicates,
+  onRevealDuplicates,
+}: TicketCardProps) {
+  const [marking, setMarking] = useState(false);
   const stateBadge = STATE_BADGE[issue.state] ?? STATE_BADGE.waiting_on_customer;
   const stateLabel = getStateLabels(accountName)[issue.state] ?? issue.state;
   const priorityBadge = issue.priority ? PRIORITY_BADGE[issue.priority] : null;
@@ -98,7 +230,7 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
   return (
     <div
       style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
-      className="hover:border-[#006ddd] rounded-lg px-4 py-3 transition-colors"
+      className="group hover:border-[#006ddd] rounded-lg px-4 py-3 transition-colors"
     >
       <div className="flex items-start gap-2 mb-2">
         {issue.portal_url ? (
@@ -118,7 +250,40 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
         <p style={{ color: "var(--text-primary)" }} className="text-sm leading-snug flex-1">
           {issue.title}
         </p>
+        {onMarkDuplicate && !marking && (
+          <button
+            onClick={() => setMarking(true)}
+            title="Mark as duplicate of another ticket"
+            aria-label="Mark as duplicate"
+            className="opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded flex-shrink-0 hover:bg-[var(--bg-tertiary)] transition-opacity"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Copy size={11} />
+            Mark as duplicate…
+          </button>
+        )}
       </div>
+
+      {marking && onMarkDuplicate && (
+        <MarkDuplicateForm
+          issueNumber={issue.number}
+          candidates={duplicateCandidates ?? []}
+          onSubmit={onMarkDuplicate}
+          onClose={() => setMarking(false)}
+        />
+      )}
+
+      {hiddenDuplicates && hiddenDuplicates.length > 0 && (
+        <button
+          onClick={onRevealDuplicates}
+          className="flex items-center gap-1 text-xs mb-1.5 hover:underline"
+          style={{ color: "#006ddd" }}
+          title="Clear filters and show the group"
+        >
+          <Copy size={11} />
+          Possible duplicate of {hiddenDuplicates.map((n) => `#${n}`).join(", ")} (hidden by filters)
+        </button>
+      )}
 
       {ticketSummary === null ? (
         <p style={{ color: "var(--text-caption)" }} className="text-xs mt-1 mb-2 italic">
@@ -142,6 +307,7 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
       ) : null}
 
       <div className="flex flex-wrap items-center gap-1.5">
+        {memberAccount && <MemberAccountPill member={memberAccount} />}
         <Badge vars={stateBadge} label={stateLabel} />
         {priorityBadge && issue.priority !== "none" && (
           <Badge vars={priorityBadge} label={PRIORITY_LABELS[issue.priority] ?? issue.priority} />
@@ -160,21 +326,10 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
         {issue.created_at && (
           <span style={{ color: "var(--text-caption)" }} className="text-xs">
             Created {formatDate(issue.created_at)}
+            {issue.requester_name && <> by <span style={{ color: "var(--text-muted)" }}>{issue.requester_name}</span></>}
           </span>
         )}
-        {issue.tags && issue.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {issue.tags.map((tag) => (
-              <span
-                key={tag}
-                style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
-                className="text-xs px-1.5 py-0.5 rounded"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
+        {issue.tags && issue.tags.length > 0 && <CategoryPath path={issue.tags} />}
         {issue.external_issues && issue.external_issues.length > 0 && (
           <div className="flex gap-1">
             {issue.external_issues.map((ei) => (
@@ -183,11 +338,16 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
                 href={ei.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={ei.external_id ? `${ei.source} · ${ei.external_id}` : ei.source}
+                title={ei.display_id ? `${ei.source} · ${ei.display_id}` : ei.source}
                 style={{ color: "var(--text-muted)", border: "1px solid var(--border-hover)" }}
-                className="flex items-center justify-center w-6 h-6 rounded hover:text-[#006ddd] hover:border-[#006ddd] transition-colors"
+                className={`flex items-center justify-center gap-1 h-6 rounded hover:text-[#006ddd] hover:border-[#006ddd] transition-colors ${
+                  showLinkedIds && ei.display_id ? "px-1.5" : "w-6"
+                }`}
               >
                 <SourceIcon source={ei.source} />
+                {showLinkedIds && ei.display_id && (
+                  <span className="font-mono text-xs" style={{ color: "var(--text-primary)" }}>{ei.display_id}</span>
+                )}
               </a>
             ))}
           </div>

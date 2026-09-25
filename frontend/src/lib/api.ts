@@ -1,16 +1,48 @@
 export interface Account {
   id: string;
   name: string;
+  /** Present when this is an account group: the Pylon accounts it merges. */
+  members?: GroupMember[];
+}
+
+/** A group's member account: `color` is its dot colour slot (1–8, see --member-N);
+ *  `label` is a custom label, or null to use `default_label` (derived by the backend). */
+export interface GroupMember {
+  id: string;
+  name: string;
+  color?: number;
+  label?: string | null;
+  default_label?: string;
+}
+
+export interface AccountGroup {
+  id: string;
+  name: string;
+  members: GroupMember[];
+  created_by: string | null;
+  created_at: string | null;
+}
+
+export interface GroupCandidate {
+  id: string;
+  name: string;
+  tier: string;
 }
 
 export interface ExternalIssue {
   source: string;
   external_id: string;
+  /** Readable key, e.g. "LSO-4456" (Linear) or "deepagents#6449" (GitHub). */
+  display_id?: string;
   link: string;
 }
 
 export interface Issue {
   number: number;
+  /** The Pylon account the ticket belongs to — differs per ticket when viewing an account group. */
+  account_id?: string;
+  /** Name of the customer contact (or staff member) who raised the ticket; "" if unknown */
+  requester_name?: string;
   title: string;
   state: string;
   priority: string;
@@ -80,6 +112,147 @@ export async function fetchAccounts(tier: string = "Premium"): Promise<Account[]
     throw new Error(`Failed to fetch accounts: ${res.status} ${res.statusText}`);
   }
   return res.json();
+}
+
+async function throwDetail(res: Response, fallback: string): Promise<never> {
+  const err = await res.json().catch(() => ({}));
+  const detail = (err as { detail?: string | { msg: string }[] }).detail;
+  throw new Error(Array.isArray(detail) ? detail.map((e) => e.msg).join("; ") : detail ?? `${fallback}: ${res.status}`);
+}
+
+/** List account groups (several Pylon accounts shown as one). */
+export async function fetchAccountGroups(): Promise<AccountGroup[]> {
+  const res = await fetch("/api/account-groups");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) await throwDetail(res, "Failed to fetch account groups");
+  return res.json();
+}
+
+/** All current-customer accounts (any tier) not already in a group. */
+export async function fetchGroupCandidates(): Promise<GroupCandidate[]> {
+  const res = await fetch("/api/account-groups/candidates");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) await throwDetail(res, "Failed to fetch accounts");
+  return res.json();
+}
+
+export async function createAccountGroup(name: string, memberIds: string[]): Promise<AccountGroup> {
+  const res = await fetch("/api/account-groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, member_ids: memberIds }),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to create group");
+  return res.json();
+}
+
+/** Partially update member colours and/or custom labels ("" resets a label to its default). */
+export async function updateAccountGroupMembers(
+  groupId: string,
+  changes: { member_colors?: Record<string, number>; member_labels?: Record<string, string> },
+): Promise<AccountGroup> {
+  const res = await fetch(`/api/account-groups/${encodeURIComponent(groupId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to update group");
+  return res.json();
+}
+
+/** Ungroup: the member accounts are listed separately again. */
+export async function deleteAccountGroup(groupId: string): Promise<void> {
+  const res = await fetch(`/api/account-groups/${encodeURIComponent(groupId)}`, { method: "DELETE" });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to ungroup");
+}
+
+export interface AccountSettings {
+  show_linked_ids: boolean;
+  flag_duplicates: boolean;
+}
+
+/** Mirrors account_settings.DEFAULTS in the backend. */
+export const DEFAULT_ACCOUNT_SETTINGS: AccountSettings = { show_linked_ids: false, flag_duplicates: true };
+
+/** Per-account dashboard settings (shared by everyone viewing that account). */
+export async function fetchAccountSettings(accountId: string): Promise<AccountSettings> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/settings`);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to load account settings");
+  return res.json();
+}
+
+export async function updateAccountSettings(accountId: string, changes: Partial<AccountSettings>): Promise<AccountSettings> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/settings`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to save account settings");
+  return res.json();
+}
+
+export interface DuplicateReason {
+  kind: "link" | "ai" | "manual";
+  text: string;
+  /** Tickets this reason is about (can be a subset of a 3+ ticket group) */
+  tickets?: number[];
+}
+
+export interface DuplicateGroup {
+  id: string;
+  tickets: number[];
+  reasons: DuplicateReason[];
+}
+
+export interface DuplicateDismissal {
+  id: string;
+  tickets: number[];
+  by: string;
+  at: string;
+}
+
+export interface DuplicatesState {
+  groups: DuplicateGroup[];
+  dismissed: DuplicateDismissal[];
+  /** "pending" = AI pass not run for the current tickets yet; link/manual groups are included regardless */
+  ai_status: "done" | "pending" | "failed";
+}
+
+async function duplicatesRequest(accountId: string, path: string, body?: object): Promise<DuplicatesState> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/duplicates${path}`, body
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : undefined);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Duplicate check failed");
+  return res.json();
+}
+
+/** Possible-duplicate groups from shared links, manual marks and any cached AI pass.
+ *  stale: use the latest AI result even if tickets changed since (never runs the AI). */
+export function fetchDuplicates(accountId: string, model: string, stale = false): Promise<DuplicatesState> {
+  return duplicatesRequest(accountId, `?${new URLSearchParams({ model, ...(stale ? { stale: "true" } : {}) })}`);
+}
+
+/** Run the AI duplicate pass (one LLM call; cached until the tickets change). */
+export function analyzeDuplicates(accountId: string, model: string): Promise<DuplicatesState> {
+  return duplicatesRequest(accountId, "/analyze", { model });
+}
+
+export function dismissDuplicates(accountId: string, tickets: number[], model: string): Promise<DuplicatesState> {
+  return duplicatesRequest(accountId, "/dismiss", { tickets, model });
+}
+
+export function restoreDuplicates(accountId: string, dismissalId: string, model: string): Promise<DuplicatesState> {
+  return duplicatesRequest(accountId, "/restore", { dismissal_id: dismissalId, model });
+}
+
+export function markDuplicates(accountId: string, tickets: [number, number], model: string): Promise<DuplicatesState> {
+  return duplicatesRequest(accountId, "/mark", { tickets, model });
 }
 
 /** Fetch open issues, period metrics, and breakdowns for a single account. */
@@ -175,6 +348,8 @@ export interface Schedule {
   qbr_notify_emails: string[] | null;
   qbr_template_type: "full_deck" | "support_highlights";
   sections: string[] | null;
+  show_linked_ids?: boolean;
+  show_duplicates?: boolean;
   period: string;
   model: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -203,6 +378,8 @@ export interface CreateScheduleRequest {
   qbr_notify_emails?: string[];
   qbr_template_type?: "full_deck" | "support_highlights";
   sections?: string[];
+  show_linked_ids?: boolean;
+  show_duplicates?: boolean;
   period: string;
   model?: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -228,14 +405,7 @@ export async function createSchedule(req: CreateScheduleRequest): Promise<Schedu
     body: JSON.stringify(req),
   });
   if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const detail = (err as { detail?: string | { msg: string }[] }).detail;
-    const message = Array.isArray(detail)
-      ? detail.map((e) => e.msg).join("; ")
-      : detail ?? `Failed to create schedule: ${res.status}`;
-    throw new Error(message);
-  }
+  if (!res.ok) await throwDetail(res, "Failed to create schedule");
   return res.json();
 }
 

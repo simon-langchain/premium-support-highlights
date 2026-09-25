@@ -1,14 +1,28 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, Circle, ExternalLink, X, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, Circle, ExternalLink, X, RefreshCw, Trash2 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
+import DuplicateGroupCard from "@/components/DuplicateGroupCard";
+import DismissedDuplicates from "@/components/DismissedDuplicates";
+import { memberLabels } from "@/lib/accountLabels";
 import TrendChart from "@/components/TrendChart";
 import SummaryPanel from "@/components/SummaryPanel";
 import {
   fetchAccounts,
+  fetchAccountSettings,
+  updateAccountSettings,
+  DEFAULT_ACCOUNT_SETTINGS,
+  type AccountSettings,
+  fetchDuplicates,
+  analyzeDuplicates,
+  dismissDuplicates,
+  restoreDuplicates,
+  markDuplicates,
+  type DuplicatesState,
+  type DuplicateGroup,
   fetchAccountData,
   fetchCachedTicketSummaries,
   fetchTiers,
@@ -23,6 +37,7 @@ import {
   type QbrHistoryEntry,
   type Account,
   type AccountData,
+  type AccountGroup,
   type Issue,
   type TicketSummary,
   type LlmModel,
@@ -35,6 +50,43 @@ import OptionPicker from "@/components/OptionPicker";
 import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
+
+function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs uppercase tracking-wider mr-0.5" style={{ color: "var(--text-caption)" }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      style={
+        active
+          ? { background: "rgba(0,109,221,0.12)", border: "1px solid rgba(0,109,221,0.55)", color: "var(--text-primary)" }
+          : { background: "transparent", border: "1px solid var(--border)", color: "var(--text-caption)" }
+      }
+      className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full transition-colors hover:border-[var(--border-hover)]"
+    >
+      {children}
+    </button>
+  );
+}
 
 function toSlug(name: string): string {
   return name
@@ -153,11 +205,51 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("priority");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [selectedStates, setSelectedStates] = useState<string[]>(OPEN_STATES);
+  // Per-account sidebar settings (server-side, remembered per account): linked Linear/GitHub
+  // IDs (off by default) and possible-duplicate flagging (on by default).
+  const [accountSettings, setAccountSettings] = useState<AccountSettings>(DEFAULT_ACCOUNT_SETTINGS);
+  const [settingsLoadedFor, setSettingsLoadedFor] = useState<string | null>(null);
+  const selectedAccountId = selectedAccount?.id;
+  const showLinkedIds = accountSettings.show_linked_ids;
+  useEffect(() => {
+    setAccountSettings(DEFAULT_ACCOUNT_SETTINGS);
+    setSettingsLoadedFor(null);
+    if (!selectedAccountId) return;
+    let cancelled = false;
+    fetchAccountSettings(selectedAccountId)
+      .then((s) => { if (!cancelled) setAccountSettings(s); })
+      .catch(() => {}) // non-fatal: defaults
+      .finally(() => { if (!cancelled) setSettingsLoadedFor(selectedAccountId); });
+    return () => { cancelled = true; };
+  }, [selectedAccountId]);
+
+  const selectedAccountIdRef = useRef(selectedAccountId);
+  selectedAccountIdRef.current = selectedAccountId;
+
+  function handleAccountSettingChange(key: keyof AccountSettings, value: boolean) {
+    const accountId = selectedAccountId;
+    if (!accountId) return;
+    setAccountSettings((s) => ({ ...s, [key]: value }));
+    updateAccountSettings(accountId, { [key]: value }).catch((err) => {
+      // Roll back only if the user is still on that account
+      if (selectedAccountIdRef.current === accountId) setAccountSettings((s) => ({ ...s, [key]: !value }));
+      setError(err.message);
+    });
+  }
+
+  // Account-group view: member accounts toggled off (same on/off chips as the status filter)
+  const [hiddenMembers, setHiddenMembers] = useState<string[]>([]);
   const [ticketSummaries, setTicketSummaries] = useState<Record<number, TicketSummary | null>>({});
   const [accountSummary, setAccountSummary] = useState<string | null>(null);
   const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<Date | null>(null);
+  // Account + model whose summary pipeline last finished (success or error). The duplicates
+  // AI pass waits for this to be the selected account and uses that model's summaries.
+  const [summariesDoneFor, setSummariesDoneFor] = useState<{ accountId: string; model: string } | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+
+
+
   const [slackChannelName, setSlackChannelName] = useState<string | null>(null);
   const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
   const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
@@ -215,6 +307,45 @@ export default function Home() {
   // Derived: combined model ID sent to the backend (provider:model format)
   const selectedModel = selectedModelName;
 
+  // Possible-duplicate groups (link + manual immediately; AI pass once ticket summaries are in)
+  const [dupes, setDupes] = useState<DuplicatesState | null>(null);
+  const [dupesOnly, setDupesOnly] = useState(false);
+  const summariesSettled = !summaryLoading && summariesDoneFor?.accountId === selectedAccountId;
+  // Duplicates read cached ticket summaries per model: follow the model the summaries were
+  // made with (switching model doesn't re-run the summaries, so the new one has none yet)
+  const dupesModel = summariesSettled && summariesDoneFor ? summariesDoneFor.model : selectedModel;
+  const flagDuplicates = settingsLoadedFor === selectedAccountId && accountSettings.flag_duplicates;
+  useEffect(() => {
+    setDupes(null);
+    setDupesOnly(false);
+  }, [selectedAccountId, flagDuplicates]);
+  useEffect(() => {
+    // Refetches (summaries settled, Refresh) keep the current groups and the
+    // "Showing possible duplicates" view until the new result arrives
+    if (!selectedAccountId || !accountData || !flagDuplicates) return;
+    let cancelled = false;
+    fetchDuplicates(selectedAccountId, dupesModel)
+      .then((d) => { if (!cancelled) setDupes(d); })
+      .catch(() => {}); // non-fatal: no grouping
+    return () => { cancelled = true; };
+  }, [selectedAccountId, accountData, dupesModel, summariesSettled, flagDuplicates]);
+  useEffect(() => {
+    if (!selectedAccountId || !flagDuplicates || dupes?.ai_status !== "pending" || !summariesSettled) return;
+    let cancelled = false;
+    analyzeDuplicates(selectedAccountId, dupesModel)
+      .then((d) => { if (!cancelled) setDupes(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedAccountId, flagDuplicates, dupes?.ai_status, summariesSettled, dupesModel]);
+
+  async function applyDupes(request: Promise<DuplicatesState>) {
+    try {
+      setDupes(await request);
+    } catch (err) {
+      setError((err as Error).message);
+      throw err;
+    }
+  }
   // Refs so pipeline callbacks always see current model/period without stale closures
   const modelRef = useRef(selectedModel);
   useEffect(() => { modelRef.current = selectedModel; }, [selectedModel]);
@@ -269,10 +400,12 @@ export default function Home() {
   // regenerate keeps showing old summaries until new ones arrive).
   const runSummaryPipeline = useCallback(
     async (account: Account, openNumbers: number[], force: boolean, signal: AbortSignal) => {
+      const pipelineModel = modelRef.current;
       setAccountSummary(null);
       setSummaryGeneratedAt(null);
       setSummaryLoading(true);
       setSummaryError(null);
+      setSummariesDoneFor(null);
 
       // Poll for ticket summaries while the agent runs
       const applysummaries = (summaries: Record<number, TicketSummary>) => {
@@ -301,7 +434,10 @@ export default function Home() {
         if (!signal.aborted) setSummaryError(err instanceof Error ? err.message : "Failed to generate summary");
       } finally {
         clearInterval(pollInterval);
-        if (!signal.aborted) setSummaryLoading(false);
+        if (!signal.aborted) {
+          setSummaryLoading(false);
+          setSummariesDoneFor({ accountId: account.id, model: pipelineModel });
+        }
       }
 
       if (signal.aborted) return;
@@ -421,6 +557,8 @@ export default function Home() {
     setSearchQuery("");
     setSortBy("priority");
     setSelectedStates(OPEN_STATES);
+    setHiddenMembers([]);
+    setDupesOnly(false);
     setQbrOpen(false);
     setQbrGenerating(false);
     setQbrSteps({});
@@ -433,6 +571,27 @@ export default function Home() {
     window.history.replaceState(null, "", `/customers?account=${toSlug(account.name)}`);
   }
 
+  // After an account group is created/removed: reload the list, and keep the
+  // selection meaningful — move to the new group if the open account was just
+  // grouped into it, or clear it if the open group was just ungrouped.
+  function handleGroupsChanged(created: AccountGroup | null, removedId?: string) {
+    fetchAccounts(selectedTier)
+      .then((data) => {
+        setAccounts(data);
+        if (!selectedAccount) return;
+        const group = created && data.find((a) => a.id === created.id);
+        if (group && created.members.some((m) => m.id === selectedAccount.id)) {
+          if (configured) handleAccountSelect(group);
+          else setSelectedAccount(group);
+        } else if (removedId && selectedAccount.id === removedId) {
+          setSelectedAccount(null);
+          setAccountData(null);
+          window.history.replaceState(null, "", "/customers");
+        }
+      })
+      .catch((err) => setError(err.message));
+  }
+
   function handleRegenerate() {
     if (!selectedAccount || !accountData) return;
     summaryAbortRef.current?.abort();
@@ -442,20 +601,47 @@ export default function Home() {
     runSummaryPipeline(selectedAccount, openNumbers, true, abortCtrl.signal);
   }
 
+  // ticket number -> its possible-duplicate group
+  // Only tickets in the loaded list: /duplicates reads Pylon fresh, while the ticket list can
+  // come from a cached payload, so a group may mention tickets this page doesn't have
+  const loadedTickets = new Set((accountData?.open_issues ?? []).map((i) => i.number));
+  const dupeGroups = (dupes?.groups ?? [])
+    .map((g) => ({ ...g, tickets: g.tickets.filter((n) => loadedTickets.has(n)), allTickets: g.tickets }))
+    .filter((g) => g.tickets.length >= 2);
+  const dupeGroupOf = new Map(dupeGroups.flatMap((g) => g.tickets.map((n) => [n, g] as const)));
+
   // Filtering + sorting open issues
+  // Only offer per-account labels/filter when the tickets say which account they're from.
+  // Members are read from the reloaded accounts list (not selectedAccount) so a
+  // colour change shows immediately without re-selecting — and re-fetching — the account.
+  const groupMembers = (accounts.find((a) => a.id === selectedAccount?.id) ?? selectedAccount)?.members;
+  const members =
+    groupMembers && accountData?.open_issues.some((i) => i.account_id)
+      ? memberLabels(groupMembers)
+      : null;
   const filteredIssues: Issue[] = accountData
     ? sortIssues(
         accountData.open_issues.filter((issue) => {
           const matchesState =
             selectedStates.length === 0 ||
             selectedStates.includes(issue.state);
+          // Like the status chips, turning every account off means "no filter"
+          const matchesMember =
+            !members ||
+            hiddenMembers.length >= members.size ||
+            !issue.account_id ||
+            !hiddenMembers.includes(issue.account_id);
+          const member = members && issue.account_id ? members.get(issue.account_id) : undefined;
           const q = searchQuery.toLowerCase();
           const matchesSearch =
             !q ||
             issue.title.toLowerCase().includes(q) ||
             String(issue.number).includes(q) ||
-            issue.tags.some((t) => t.toLowerCase().includes(q));
-          return matchesState && matchesSearch;
+            issue.tags.some((t) => t.toLowerCase().includes(q)) ||
+            (issue.external_issues ?? []).some((ei) => ei.display_id?.toLowerCase().includes(q)) ||
+            !!member?.fullName.toLowerCase().includes(q);
+          const matchesDupes = !dupesOnly || dupeGroupOf.has(issue.number);
+          return matchesState && matchesMember && matchesSearch && matchesDupes;
         }),
         sortBy,
         sortOrder
@@ -525,6 +711,7 @@ export default function Home() {
                   accounts={accounts}
                   selected={setupAccount}
                   onSelect={setSelectedAccount}
+                  onGroupsChanged={handleGroupsChanged}
                 />
               </div>
 
@@ -595,6 +782,57 @@ export default function Home() {
     );
   }
 
+  // Possible-duplicate groups render as one container at the position of their first
+  // visible ticket (current sort order); a group with only one visible ticket shows
+  // that ticket normally with a "hidden by filters" link back to the group.
+  function revealDuplicateGroup(groupId: string) {
+    setSelectedStates(OPEN_STATES);
+    setSearchQuery("");
+    setHiddenMembers([]);
+    setDupesOnly(false);
+    setTimeout(() => document.getElementById(`dupe-${groupId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  }
+
+  function renderTicketList() {
+    const accountId = selectedAccountId;
+    const allTickets = (accountData?.open_issues ?? []).map((i) => ({ number: i.number, title: i.title }));
+    const card = (issue: Issue, hiddenDuplicates?: number[], groupId?: string) => (
+      <TicketCard
+        key={issue.number}
+        issue={issue}
+        accountName={selectedAccount?.name}
+        ticketSummary={ticketSummaries[issue.number]}
+        memberAccount={members && issue.account_id ? members.get(issue.account_id) : undefined}
+        showLinkedIds={showLinkedIds}
+        duplicateCandidates={allTickets.filter((t) => t.number !== issue.number)}
+        onMarkDuplicate={accountId && flagDuplicates ? (other) => applyDupes(markDuplicates(accountId, [issue.number, other], dupesModel)) : undefined}
+        hiddenDuplicates={hiddenDuplicates}
+        onRevealDuplicates={groupId ? () => revealDuplicateGroup(groupId) : undefined}
+      />
+    );
+    const shownGroups = new Set<string>();
+    return filteredIssues.flatMap((issue) => {
+      const group = dupeGroupOf.get(issue.number);
+      if (!group) return [card(issue)];
+      const visible = filteredIssues.filter((i) => group.tickets.includes(i.number));
+      if (visible.length < 2) {
+        return [card(issue, group.tickets.filter((n) => n !== issue.number), group.id)];
+      }
+      if (shownGroups.has(group.id)) return [];
+      shownGroups.add(group.id);
+      return [
+        <DuplicateGroupCard
+          key={`dupe-${group.id}`}
+          group={group}
+          visibleCount={visible.length}
+          onDismiss={() => (accountId ? applyDupes(dismissDuplicates(accountId, group.allTickets, dupesModel)) : Promise.resolve())}
+        >
+          {visible.map((i) => card(i))}
+        </DuplicateGroupCard>,
+      ];
+    });
+  }
+
   // ── Dashboard ──────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen overflow-hidden">
@@ -602,6 +840,7 @@ export default function Home() {
         accounts={accounts}
         selected={selectedAccount}
         onSelect={handleAccountSelect}
+        onGroupsChanged={handleGroupsChanged}
         onRefresh={handleRefresh}
         dataUpdatedAt={dataUpdatedAt}
         selectedProvider={selectedProvider}
@@ -619,6 +858,8 @@ export default function Home() {
         tiers={tiers}
         selectedTier={selectedTier}
         onTierChange={setSelectedTier}
+        accountSettings={selectedAccount ? accountSettings : null}
+        onAccountSettingChange={handleAccountSettingChange}
       />
 
       {/* Main content */}
@@ -865,15 +1106,30 @@ export default function Home() {
                     )}
                   </div>
                   <ShareButton
-                    onSlackReport={(channelId, sections) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections)}
-                    onEmailReport={(email, sections) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections, selectedModel)}
+                    onSlackReport={(channelId, sections, options) => slackReport(selectedAccount.id, selectedAccount.name, period, channelId, sections, options)}
+                    onEmailReport={(email, sections, options) => emailReport(selectedAccount.id, selectedAccount.name, email, period, sortBy, sortOrder, sections, selectedModel, options)}
                     channelName={slackChannelName}
                     channelId={slackChannelId}
                     availableChannels={slackAvailableChannels}
                   />
                   <DownloadMenu
-                    onDownloadPdf={(sections) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections, selectedModel)}
-                    onDownloadCsv={(sections) => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections)}
+                    onDownloadPdf={(sections, options) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections, selectedModel, options)}
+                    onDownloadCsv={async (sections, options) => {
+                      // CSV is built client-side: use the groups on screen, else the latest saved
+                      // result (like PDF/email, never waits on a fresh AI pass)
+                      let groups: DuplicateGroup[] | undefined;
+                      if (options.duplicates) {
+                        try {
+                          groups = dupes?.ai_status === "done"
+                            ? dupeGroups
+                            : (await fetchDuplicates(selectedAccount.id, dupesModel, true)).groups;
+                        } catch (err) {
+                          setError(`Couldn't load possible duplicates for the CSV: ${(err as Error).message}`);
+                          return;
+                        }
+                      }
+                      downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections, members, options, groups);
+                    }}
                   />
                 </div>
               )}
@@ -987,7 +1243,7 @@ export default function Home() {
                   </h2>
 
                   {/* Filters row */}
-                  <div className="flex flex-wrap gap-2 mb-4 print:hidden" data-print-hide>
+                  <div className="flex flex-wrap items-center gap-2 mb-3 print:hidden" data-print-hide>
                     <input
                       type="text"
                       placeholder="Search tickets..."
@@ -998,7 +1254,7 @@ export default function Home() {
                         border: "1px solid var(--border)",
                         color: "var(--text-primary)",
                       }}
-                      className="text-sm rounded px-3 py-1.5 focus:outline-none w-48 placeholder:text-[var(--text-caption)]"
+                      className="text-sm rounded px-3 py-1.5 focus:outline-none w-56 placeholder:text-[var(--text-caption)]"
                     />
                     <div className="flex items-center gap-0">
                       <select
@@ -1029,46 +1285,96 @@ export default function Home() {
                         <ArrowUpDown size={13} style={{ transform: sortOrder === "desc" ? "scaleY(-1)" : "none" }} />
                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-1">
+
+                    {/* Possible duplicates: a view toggle rather than a filter chip */}
+                    {dupes && (dupeGroups.length > 0 || dupes.dismissed.length > 0 || dupes.ai_status === "pending") && (
+                      <div className="flex items-center gap-3 ml-auto">
+                        {dupes.ai_status === "pending" && (
+                          <span className="flex items-center gap-1 text-xs" style={{ color: "var(--text-caption)" }}>
+                            <Loader2 size={11} className="animate-spin" />
+                            Checking for duplicates…
+                          </span>
+                        )}
+                        {selectedAccountId && (
+                          <DismissedDuplicates
+                            dismissed={dupes.dismissed}
+                            onRestore={(id) => applyDupes(restoreDuplicates(selectedAccountId, id, dupesModel))}
+                          />
+                        )}
+                        {dupeGroups.length > 0 && (
+                          <button
+                            onClick={() => setDupesOnly((v) => !v)}
+                            aria-pressed={dupesOnly}
+                            title={dupesOnly ? "Show all tickets" : "Show only tickets in a possible-duplicate group"}
+                            className="flex items-center gap-1.5 text-sm rounded px-2.5 py-1.5 transition-colors hover:bg-[var(--bg-tertiary)]"
+                            style={
+                              dupesOnly
+                                ? { background: "rgba(0,109,221,0.12)", border: "1px solid rgba(0,109,221,0.55)", color: "var(--text-primary)" }
+                                : { background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-primary)" }
+                            }
+                          >
+                            <Copy size={13} style={{ color: "#006ddd" }} />
+                            {dupesOnly ? "Showing possible duplicates" : "Possible duplicates"}
+                            <span
+                              className="text-xs rounded-full px-1.5 min-w-5 text-center"
+                              style={{ background: "rgba(0,109,221,0.15)", color: "#006ddd" }}
+                            >
+                              {dupeGroups.length}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4 print:hidden" data-print-hide>
+                    <FilterGroup label="Status">
                       {OPEN_STATES.map((state) => {
                         const active = selectedStates.includes(state);
                         return (
-                          <button
+                          <FilterChip
                             key={state}
+                            active={active}
                             onClick={() =>
                               setSelectedStates((prev) =>
                                 active ? prev.filter((s) => s !== state) : [...prev, state]
                               )
                             }
-                            style={active ? undefined : {
-                              background: "var(--bg-secondary)",
-                              border: "1px solid var(--border)",
-                              color: "var(--text-muted)",
-                            }}
-                            className={`text-xs px-2 py-1 rounded border transition-colors ${
-                              active ? "bg-[#006ddd]/20 border-[#006ddd] text-[#006ddd]" : ""
-                            }`}
                           >
                             {getStateLabels(selectedAccount?.name)[state] ?? state.replace(/_/g, " ")}
-                          </button>
+                          </FilterChip>
                         );
                       })}
-                    </div>
+                    </FilterGroup>
+                    {members && (
+                      <span className="hidden sm:block w-px h-4" style={{ background: "var(--border-hover)" }} aria-hidden />
+                    )}
+                    {members && (
+                      <FilterGroup label="Account">
+                        {[...members].map(([id, member]) => {
+                          const active = !hiddenMembers.includes(id);
+                          return (
+                            <FilterChip
+                              key={id}
+                              active={active}
+                              title={member.fullName}
+                              onClick={() =>
+                                setHiddenMembers((prev) => (active ? [...prev, id] : prev.filter((m) => m !== id)))
+                              }
+                            >
+                              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: member.color }} />
+                              {member.label}
+                            </FilterChip>
+                          );
+                        })}
+                      </FilterGroup>
+                    )}
                   </div>
 
                   {filteredIssues.length === 0 ? (
                     <p className="text-sm" style={{ color: "var(--text-caption)" }}>No tickets match the current filters.</p>
                   ) : (
-                    <div className="flex flex-col gap-2">
-                      {filteredIssues.map((issue) => (
-                        <TicketCard
-                          key={issue.number}
-                          issue={issue}
-                          accountName={selectedAccount?.name}
-                          ticketSummary={ticketSummaries[issue.number]}
-                        />
-                      ))}
-                    </div>
+                    <div className="flex flex-col gap-2">{renderTicketList()}</div>
                   )}
                 </div>
               </>

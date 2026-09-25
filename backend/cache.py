@@ -1,7 +1,10 @@
 """JSON file cache for per-ticket AI summaries."""
 
+import functools
 import hashlib
 import json
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,8 +29,25 @@ def _load() -> dict:
         return {}
 
 
+# Writers do load → modify → save on one shared file from many threads (ticket
+# summaries run in parallel), so they're serialised by a lock...
+_write_lock = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _write_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def _save(cache: dict) -> None:
-    CACHE_FILE.write_text(json.dumps(cache, indent=2))
+    # ...and written atomically: a reader never sees a half-written file (which _load
+    # would treat as empty, making the next save wipe every entry).
+    tmp = CACHE_FILE.with_name(f"{CACHE_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(cache, indent=2))
+    os.replace(tmp, CACHE_FILE)
 
 
 def _is_stale(entry: dict, max_age_seconds: int) -> bool:
@@ -49,7 +69,26 @@ def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "")
     legacy key (without model) so existing cache entries from before the
     model-aware cache key migration are still served.
     """
-    cache = _load()
+    return _lookup_ticket_summary(_load(), issue_id, latest_message_time, model)
+
+
+def snapshot() -> dict:
+    """The whole cache, for callers doing several lookups in one request (pass as `cache=`)."""
+    return _load()
+
+
+def get_ticket_summaries(tickets: list[tuple[str, str]], model: str = "", cache: dict | None = None) -> dict[str, str]:
+    """Bulk get_ticket_summary for [(issue_id, latest_message_time)] → {issue_id: summary},
+    loading the cache file once instead of once per ticket."""
+    cache = _load() if cache is None else cache
+    out = {}
+    for issue_id, latest in tickets:
+        if (summary := _lookup_ticket_summary(cache, issue_id, latest, model)) is not None:
+            out[issue_id] = summary
+    return out
+
+
+def _lookup_ticket_summary(cache: dict, issue_id: str, latest_message_time: str, model: str) -> str | None:
     key = "ts:" + _cache_key(issue_id, latest_message_time, model)
     entry = cache.get(key)
     if not isinstance(entry, dict) or _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
@@ -62,6 +101,7 @@ def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "")
     return entry.get("summary")
 
 
+@_locked
 def set_ticket_summary(issue_id: str, latest_message_time: str, summary: str, model: str = "") -> None:
     """Persist a ticket summary to the file cache."""
     cache = _load()
@@ -84,6 +124,7 @@ def get_account_summary(account_id: str, period: str) -> str | None:
     return entry.get("summary")
 
 
+@_locked
 def set_account_summary(account_id: str, period: str, summary: str) -> None:
     """Persist an AI account summary to the file cache."""
     cache = _load()
@@ -109,6 +150,7 @@ def get_payload_cache(account_id: str, period: str) -> dict | None:
     return entry.get("payload")
 
 
+@_locked
 def set_payload_cache(account_id: str, period: str, payload: dict) -> None:
     """Persist the computed account payload to disk so it survives restarts."""
     cache = _load()
@@ -127,6 +169,7 @@ def get_qbr_slide(account_id: str, year_month: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+@_locked
 def delete_qbr_slide(account_id: str, year_month: str) -> bool:
     """Remove a QBR slide record. Returns True if the key existed."""
     cache = _load()
@@ -138,6 +181,7 @@ def delete_qbr_slide(account_id: str, year_month: str) -> bool:
     return True
 
 
+@_locked
 def set_qbr_slide(
     account_id: str,
     year_month: str,
@@ -153,5 +197,34 @@ def set_qbr_slide(
         "pres_id": pres_id,
         "month_label": month_label,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(cache)
+
+
+def get_duplicate_analysis(
+    account_id: str, model: str, content_key: str, allow_stale: bool = False, cache: dict | None = None
+) -> list[dict] | None:
+    """Cached AI duplicate groups for an account + model, or None. content_key hashes the
+    model and the tickets' titles/summaries (duplicates.ai_cache_key), so any change misses —
+    unless allow_stale, which returns the latest result regardless (this model's, else any
+    model's), used by exports so they don't block on a fresh LLM pass."""
+    cache = _load() if cache is None else cache
+    entry = cache.get(f"dup:{account_id}:{model}")
+    if isinstance(entry, dict) and (entry.get("key") == content_key or allow_stale):
+        return entry.get("groups")
+    if allow_stale:
+        others = [v for k, v in cache.items() if k.startswith(f"dup:{account_id}:") and isinstance(v, dict)]
+        if others:
+            return max(others, key=lambda v: v.get("cached_at", "")).get("groups")
+    return None
+
+
+@_locked
+def set_duplicate_analysis(account_id: str, model: str, content_key: str, groups: list[dict]) -> None:
+    cache = _load()
+    cache[f"dup:{account_id}:{model}"] = {
+        "key": content_key,
+        "groups": groups,
+        "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     _save(cache)

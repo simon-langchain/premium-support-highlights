@@ -38,13 +38,16 @@ _PRIORITY_LABELS: dict[str, str] = {
     "none":   "None",
 }
 
-_PRIORITY_COLORS: dict[str, tuple[str, str]] = {
-    # (background, text)
-    "urgent": ("#fee2e2", "#b91c1c"),
-    "high":   ("#ffedd5", "#c2410c"),
-    "medium": ("#fef9c3", "#a16207"),
-    "low":    ("#f1f5f9", "#475569"),
-    "none":   ("#f1f5f9", "#475569"),
+# Badge colours mirror the dashboard's light-mode --badge-* tokens (frontend globals.css,
+# used by TicketCard) so exports and the dashboard agree. Hex, not CSS variables:
+# email clients don't support custom properties. Keep the two in sync.
+_PRIORITY_COLORS: dict[str, tuple[str, str, str]] = {
+    # (background, text, border)
+    "urgent": ("#fecaca", "#7f1d1d", "#f87171"),  # --badge-red-*
+    "high":   ("#fed7aa", "#7c2d12", "#fb923c"),  # --badge-orange-*
+    "medium": ("#fef08a", "#713f12", "#facc15"),  # --badge-yellow-*
+    "low":    ("#e2e8f0", "#334155", "#94a3b8"),  # --badge-slate-*
+    "none":   ("#e2e8f0", "#334155", "#94a3b8"),
 }
 
 def _get_state_labels(account_name: str = "") -> dict[str, str]:
@@ -57,13 +60,14 @@ def _get_state_labels(account_name: str = "") -> dict[str, str]:
         "resolved":             "Resolved",
     }
 
-_STATE_COLORS: dict[str, tuple[str, str]] = {
-    "new":                 ("#dbeafe", "#1d4ed8"),
-    "waiting_on_you":      ("#fce7f3", "#9d174d"),
-    "on_hold":             ("#f3f4f6", "#374151"),
-    "waiting_on_customer": ("#fef9c3", "#a16207"),
-    "closed":              ("#f0fdf4", "#15803d"),
-    "resolved":            ("#f0fdf4", "#15803d"),
+_STATE_COLORS: dict[str, tuple[str, str, str]] = {
+    # (background, text, border)
+    "new":                 ("#bfdbfe", "#1e3a8a", "#60a5fa"),  # --badge-new-*
+    "waiting_on_you":      ("#dbeafe", "#1e40af", "#7cc8f0"),  # --badge-lc-*
+    "on_hold":             ("#ddd6fe", "#4c1d95", "#a78bfa"),  # --badge-hold-*
+    "waiting_on_customer": ("#f1f5f9", "#334155", "#94a3b8"),  # --badge-sky-*
+    "closed":              ("#a7f3d0", "#064e3b", "#34d399"),  # --badge-emerald-*
+    "resolved":            ("#99f6e4", "#134e4a", "#2dd4bf"),  # --badge-teal-*
 }
 
 
@@ -76,9 +80,9 @@ def _e(text: Any) -> str:
     return _html.escape(str(text) if text is not None else "")
 
 
-def _badge(label: str, bg: str, color: str) -> str:
+def _badge(label: str, bg: str, color: str, border: str) -> str:
     return (
-        f'<span style="display:inline-block;padding:2px 8px;border-radius:4px;'
+        f'<span style="display:inline-block;padding:1px 7px;border-radius:4px;border:1px solid {border};'
         f'font-size:11px;font-weight:600;background:{bg};color:{color};">'
         f"{_e(label)}</span>"
     )
@@ -86,14 +90,12 @@ def _badge(label: str, bg: str, color: str) -> str:
 
 def _priority_badge(priority: str) -> str:
     label = _PRIORITY_LABELS.get(priority, priority)
-    bg, color = _PRIORITY_COLORS.get(priority, ("#f1f5f9", "#475569"))
-    return _badge(label, bg, color)
+    return _badge(label, *_PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"]))
 
 
 def _state_badge(state: str, account_name: str = "") -> str:
     label = _get_state_labels(account_name).get(state, state.replace("_", " ").title())
-    bg, color = _STATE_COLORS.get(state, ("#f1f5f9", "#374151"))
-    return _badge(label, bg, color)
+    return _badge(label, *_STATE_COLORS.get(state, _STATE_COLORS["waiting_on_customer"]))
 
 
 def _fmt_resolution(hours: float) -> str:
@@ -326,20 +328,62 @@ def _sort_issues(issues: list[dict], sort_by: str, sort_order: str = "asc") -> l
     return sorted(issues, key=lambda i: _PRIORITY_ORDER.get(i.get("priority", ""), 99), reverse=reverse)
 
 
+def _render_linked_ids(external_issues: list[dict]) -> str:
+    """'Linked: DEP-570 · deepagents#6449' line. Plain text, not links: reports go to
+    customers, who can't open our Linear/GitHub issues."""
+    ids = [_e(ei["display_id"]) for ei in external_issues if ei.get("display_id")]
+    if not ids:
+        return ""
+    return (
+        '<div style="font-size:11px;color:#6b7280;margin-top:3px;">Linked: '
+        '<span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:#374151;">'
+        + ' <span style="color:#d1d5db;">·</span> '.join(ids)
+        + "</span></div>"
+    )
+
+
+def _render_duplicate_reasons(reasons: list[dict]) -> str:
+    """A duplicate group's reasons as a 2-column table: the tickets a reason covers (set only
+    in 3+ ticket groups when it isn't all of them) in a non-wrapping left column, the text
+    wrapping on the right. Reasons about the whole group span both columns."""
+    has_ticket_column = any(r.get("tickets") for r in reasons)
+    rows = []
+    for r in reasons:
+        text_style = "padding:3px 0 0;vertical-align:top;font-size:11px;line-height:1.45;color:#475569;"
+        if r.get("tickets"):
+            tickets = " + ".join(f"#{n}" for n in r["tickets"])
+            cells = (
+                '<td style="padding:3px 12px 0 0;vertical-align:top;white-space:nowrap;'
+                f'font-size:11px;font-weight:700;color:#1e3a8a;">{_e(tickets)}</td>'
+                f'<td style="{text_style}">{_e(r["text"])}</td>'
+            )
+        else:
+            colspan = ' colspan="2"' if has_ticket_column else ""
+            cells = f'<td{colspan} style="{text_style}">{_e(r["text"])}</td>'
+        rows.append(f"<tr>{cells}</tr>")
+    return f'<table style="border-collapse:collapse;margin-top:2px;">{"".join(rows)}</table>'
+
+
 def _render_tickets(
     issues: list[dict],
     ticket_summaries: dict[int, dict],
     sort_by: str = "priority",
     sort_order: str = "asc",
     account_name: str = "",
+    member_labels: dict[str, dict] | None = None,
+    show_linked_ids: bool = False,
+    duplicate_groups: list[dict] | None = None,
 ) -> str:
     if not issues:
         return '<p style="color:#9ca3af;font-size:13px;">No open issues.</p>'
 
     issues = _sort_issues(issues, sort_by, sort_order)
+    # Left column holds the member account label (above the number) for account groups;
+    # widen it to fit the longest label on one line (~6.5px per 11px bold char + dot)
+    longest = max((len(m["label"]) for m in (member_labels or {}).values()), default=0)
+    number_col_width = max(60, 20 + longest * 7) if member_labels else 60
 
-    rows = []
-    for issue in issues:
+    def _row(issue: dict, grouped: bool = False) -> str:
         number     = issue.get("number", "")
         title      = issue.get("title", "")
         state      = issue.get("state", "")
@@ -352,6 +396,15 @@ def _render_tickets(
         next_steps = entry.get("next_steps", "")
 
         age = _days_open(created)
+        member = (member_labels or {}).get(issue.get("account_id") or "")
+        # Account group: which member account this ticket is from. A coloured text dot
+        # rather than a styled shape so it survives Gmail/Outlook.
+        member_html = (
+            f'<div style="margin-bottom:4px;font-size:11px;font-weight:600;color:#374151;white-space:nowrap;" title="{_e(member["full_name"])}">'
+            # Arial pinned: ● size varies a lot by font (tiny in Arial at 11px, large in the
+            # system font), so a fixed font keeps it ~8px (matching the dashboard) in PDF and email
+            f'<span style="color:{member["color_hex"]};font-family:Arial,Helvetica,sans-serif;font-size:20px;line-height:11px;vertical-align:-1px;">&#9679;</span> {_e(member["label"])}</div>'
+        ) if member else ""
         summary_parts = []
         if summary:
             summary_parts.append(
@@ -364,27 +417,64 @@ def _render_tickets(
                 f'<span style="font-weight:600;color:#374151;">Next steps:</span> {_e(next_steps)}</div>'
             )
         summary_html = "".join(summary_parts)
+        linked_html = _render_linked_ids(issue.get("external_issues") or []) if show_linked_ids else ""
+        requester = issue.get("requester_name") or ""
+        # Footer line under the summary (like the dashboard's "Created … by") to keep the title area light
+        requester_html = (
+            f'<div style="font-size:11px;color:#9ca3af;margin-top:6px;">Raised by {_e(requester)}</div>'
+        ) if requester else ""
         disp_html = (
-            f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;">{_e(disp)}</span>'
+            f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;white-space:nowrap;">{_e(disp)}</span>'
         ) if disp else ""
 
-        rows.append(f"""
-        <tr style="border-top:1px solid #f3f4f6;">
-          <td style="padding:12px;vertical-align:top;width:60px;">
+        # Tickets in a possible-duplicate group: tinted, with a blue left edge
+        row_style = "border-top:1px solid #e0ecfb;background:#f8fbff;" if grouped else "border-top:1px solid #f3f4f6;"
+        edge = "border-left:3px solid #006ddd;" if grouped else ""
+        return f"""
+        <tr style="{row_style}">
+          <td style="padding:12px;vertical-align:top;width:{number_col_width}px;{edge}">
+            {member_html}
             {"<a href='" + _e(portal_url) + "' style='font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;' target='_blank'>" if portal_url else "<span style='font-size:12px;font-weight:600;color:#9ca3af;'>"}#{_e(number)}{"</a>" if portal_url else "</span>"}
           </td>
           <td style="padding:12px;vertical-align:top;">
             <div style="font-size:13px;font-weight:600;color:#111827;">
               {_e(title)}{disp_html}
             </div>
+            {linked_html}
             {summary_html}
+            {requester_html}
           </td>
           <td style="padding:12px;vertical-align:top;white-space:nowrap;text-align:right;">
             <div style="margin-bottom:4px;">{_priority_badge(priority)}</div>
             <div style="margin-bottom:4px;">{_state_badge(state, account_name)}</div>
             <div style="font-size:11px;color:#9ca3af;">{_e(age)}</div>
           </td>
+        </tr>"""
+
+    # Possible-duplicate groups render together (header row + members, in sort order)
+    # at the position of the group's first ticket.
+    group_of = {n: g for g in duplicate_groups or [] for n in g["tickets"]}
+    listed = {i.get("number") for i in issues}
+    rows: list[str] = []
+    shown: set[int] = set()
+    for issue in issues:
+        group = group_of.get(issue.get("number"))
+        members = [i for i in issues if group and i.get("number") in group["tickets"]]
+        if len(members) < 2:
+            rows.append(_row(issue))
+            continue
+        if id(group) in shown:
+            continue
+        shown.add(id(group))
+        reasons = _render_duplicate_reasons(group["reasons"])
+        rows.append(f"""
+        <tr style="border-top:1px solid #dbeafe;background:#eff6ff;">
+          <td colspan="3" style="padding:10px 12px 8px;border-left:3px solid #006ddd;">
+            <div style="font-size:11px;font-weight:700;color:#1e40af;letter-spacing:0.02em;">POSSIBLE DUPLICATES &middot; {len([n for n in group["tickets"] if n in listed])} TICKETS</div>
+            {reasons}
+          </td>
         </tr>""")
+        rows.extend(_row(m, grouped=True) for m in members)
 
     return f"""
     <table style="width:100%;border-collapse:collapse;">
@@ -421,7 +511,15 @@ def generate_report_html(
     is_email: bool = False,
     banner_url: str | None = None,
     sections: set[str] | None = None,
+    member_labels: dict[str, dict] | None = None,
+    show_linked_ids: bool = False,
+    duplicate_groups: list[dict] | None = None,
 ) -> str:
+    """show_linked_ids: list each ticket's linked Linear/GitHub issue IDs (off by default).
+    duplicate_groups: possible-duplicate groups [{tickets, reasons: [{tickets, text}]}]
+    (customer-facing wording, see main._export_duplicate_groups); shown together.
+    member_labels: for an account group, member account id -> {label, full_name,
+    color_hex} (main._member_labels), shown on each ticket."""
     secs = sections if sections is not None else _ALL_SECTIONS
     period_label = _PERIOD_LABELS.get(period, period)
     generated    = datetime.now().strftime("%-d %B %Y")
@@ -456,7 +554,7 @@ def generate_report_html(
     if "open_issues" in secs:
         sections_html += f"""
     {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name)}
+    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name, member_labels, show_linked_ids, duplicate_groups)}
 """
 
     # Inner report content — shared by both email and browser/PDF versions

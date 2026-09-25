@@ -1,4 +1,6 @@
-import type { AccountData, Issue, TicketSummary } from "./api";
+import type { MemberLabel } from "@/lib/accountLabels";
+import type { ExportOptions } from "@/components/ExportOptions";
+import type { AccountData, DuplicateGroup, Issue, TicketSummary } from "./api";
 
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1", high: "Sev 2", medium: "Sev 3", low: "Sev 4", none: "None",
@@ -36,6 +38,11 @@ export function downloadCsv(
   issues: Issue[],
   ticketSummaries: Record<number, TicketSummary | null>,
   sections?: string[],
+  /** Account group view: member account per ticket, added as an "Account" column (full name). */
+  members?: Map<string, MemberLabel> | null,
+  /** linkedIds adds a "Linked tickets" column; duplicates adds "Possible duplicate of" (needs duplicateGroups). */
+  options?: ExportOptions,
+  duplicateGroups?: DuplicateGroup[],
 ): void {
   const secs = new Set(sections ?? ALL_SECTION_IDS);
   const rows: string[] = [];
@@ -101,20 +108,32 @@ export function downloadCsv(
 
   if (secs.has("open_issues")) {
     rows.push("OPEN TICKETS");
-    rows.push("Number,Title,State,Priority,Disposition,Created,Summary,Next steps,Portal URL");
+    const showLinkedIds = !!options?.linkedIds;
+    const dupesOf = new Map<number, number[]>();
+    if (options?.duplicates) {
+      for (const g of duplicateGroups ?? []) for (const n of g.tickets) dupesOf.set(n, g.tickets.filter((t) => t !== n));
+    }
+    rows.push(`Number,${members ? "Account," : ""}Title,Requester,State,Priority,Disposition,Created,Summary,Next steps,${showLinkedIds ? "Linked tickets," : ""}${options?.duplicates ? "Possible duplicate of," : ""}Portal URL`);
     for (const issue of issues) {
       const state = getStateLabels(accountName)[issue.state] ?? issue.state.replace(/_/g, " ");
       const priority = PRIORITY_LABELS[issue.priority] ?? issue.priority;
       const entry = ticketSummaries[issue.number];
+      const member = members && issue.account_id ? members.get(issue.account_id) : undefined;
       rows.push([
         issue.number,
+        ...(members ? [cell(member?.fullName ?? "")] : []),
         cell(issue.title),
+        cell(issue.requester_name ?? ""),
         cell(state),
         cell(priority),
         cell(issue.disposition),
         cell(issue.created_at ? issue.created_at.split("T")[0] : ""),
         cell(entry?.summary ?? ""),
         cell(entry?.next_steps ?? ""),
+        ...(showLinkedIds
+          ? [cell((issue.external_issues ?? []).map((ei) => ei.display_id).filter(Boolean).join(", "))]
+          : []),
+        ...(options?.duplicates ? [cell((dupesOf.get(issue.number) ?? []).map((n) => `#${n}`).join(", "))] : []),
         cell(issue.portal_url ?? ""),
       ].join(","));
     }
@@ -129,10 +148,12 @@ export function downloadCsv(
   URL.revokeObjectURL(url);
 }
 
-export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[], model?: string): void {
+export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[], model?: string, options?: ExportOptions): void {
   const params = new URLSearchParams({ account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder });
   if (sections) sections.forEach(s => params.append("sections", s));
   if (model) params.append("model", model);
+  if (options?.linkedIds) params.append("linked_ids", "true");
+  if (options?.duplicates) params.append("duplicates", "true");
   window.open(`/api/accounts/${accountId}/report?${params}`, "_blank");
 }
 
@@ -142,6 +163,7 @@ export async function slackReport(
   period: string,
   channelId?: string,
   sections?: string[],
+  options?: ExportOptions,
 ): Promise<void> {
   const res = await fetch(`/api/accounts/${accountId}/slack-report`, {
     method: "POST",
@@ -151,6 +173,8 @@ export async function slackReport(
       period,
       ...(channelId ? { channel_id: channelId } : {}),
       ...(sections ? { sections } : {}),
+      show_linked_ids: !!options?.linkedIds,
+      show_duplicates: !!options?.duplicates,
     }),
   });
   if (res.status === 401) {
@@ -172,6 +196,7 @@ export async function emailReport(
   sortOrder: string,
   sections?: string[],
   model?: string,
+  options?: ExportOptions,
 ): Promise<void> {
   const res = await fetch(`/api/accounts/${accountId}/email-report`, {
     method: "POST",
@@ -184,6 +209,8 @@ export async function emailReport(
       sort_order: sortOrder,
       ...(sections ? { sections } : {}),
       ...(model ? { model } : {}),
+      show_linked_ids: !!options?.linkedIds,
+      show_duplicates: !!options?.duplicates,
     }),
   });
   if (!res.ok) {

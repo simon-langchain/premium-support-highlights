@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Share2, Send, X, Check, ChevronDown, Search, Mail } from "lucide-react";
+import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
 import SlackIcon from "./SlackIcon";
 import SlackInviteWarning from "./SlackInviteWarning";
 
@@ -21,8 +22,8 @@ interface SlackChannel {
 }
 
 interface ShareButtonProps {
-  onSlackReport: (channelId?: string, sections?: string[]) => Promise<void>;
-  onEmailReport: (email: string, sections?: string[]) => Promise<void>;
+  onSlackReport: (channelId: string | undefined, sections: string[], options: ExportOptions) => Promise<void>;
+  onEmailReport: (email: string, sections: string[], options: ExportOptions) => Promise<void>;
   channelName?: string | null;
   channelId?: string | null;
   availableChannels?: SlackChannel[];
@@ -38,6 +39,7 @@ export default function ShareButton({
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"slack" | "email">("slack");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(channelId ?? null);
@@ -93,11 +95,11 @@ export default function ShareButton({
     setStatus(null);
     try {
       if (mode === "slack") {
-        await onSlackReport(selectedId ?? undefined, sections);
+        await onSlackReport(selectedId ?? undefined, sections, exportOptions);
         setStatus({ ok: true, message: displayName ? `Sent to #${displayName}` : "Sent to Slack" });
       } else {
         if (!email.trim()) { setSending(false); return; }
-        await onEmailReport(email.trim(), sections);
+        await onEmailReport(email.trim(), sections, exportOptions);
         setStatus({ ok: true, message: `Sent to ${email.trim()}` });
       }
       setTimeout(() => { setStatus(null); }, 10000);
@@ -179,13 +181,13 @@ export default function ShareButton({
                     key={s.id}
                     onClick={() => toggleSection(s.id)}
                     className="flex items-center gap-1.5 text-xs rounded px-2 py-1 text-left transition-colors hover:bg-[var(--bg-tertiary)]"
-                    style={{ color: checked ? "var(--text-primary)" : "var(--text-caption)" }}
+                    style={{ color: checked ? "var(--text-primary)" : "var(--text-muted)" }}
                   >
                     <div
                       className="w-3 h-3 rounded flex items-center justify-center flex-shrink-0"
                       style={{
                         background: checked ? "var(--accent)" : "transparent",
-                        border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                        border: `1px solid ${checked ? "var(--accent)" : "var(--text-caption)"}`,
                       }}
                     >
                       {checked && <Check size={8} strokeWidth={3} color="#fff" />}
@@ -194,6 +196,9 @@ export default function ShareButton({
                   </button>
                 );
               })}
+            </div>
+            <div className="mt-3">
+              <ExportOptionsPicker value={exportOptions} onChange={setExportOptions} />
             </div>
           </div>
 

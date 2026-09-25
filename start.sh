@@ -180,6 +180,18 @@ fi
 
 mkdir -p "$LOG_DIR"
 
+# Refuse to start a second copy. A duplicate `langgraph dev` can't bind the
+# port, but its dev persistence loop keeps flushing its stale in-memory Store
+# and crons to .langgraph_api/ every 10s, silently overwriting data written by
+# the live server (account groups, schedules and sessions vanish on the next restart).
+for _port in 8000 3000; do
+  if (echo > /dev/tcp/localhost/"$_port") 2>/dev/null; then
+    echo "Port $_port is already in use — the dashboard is probably already running."
+    echo "Stop it first (Ctrl+C in its terminal, or: lsof -ti tcp:$_port | xargs kill)."
+    exit 1
+  fi
+done
+
 # Poll a port until it accepts connections, printing a checklist item.
 # Usage: _wait_for_port LABEL PORT TIMEOUT_SECS LOG_FILE
 # Falls back gracefully if /dev/tcp is unavailable.
@@ -248,9 +260,36 @@ echo "Running → http://localhost:3000  (Ctrl+C to stop)"
 # Cleanup
 # ---------------------------------------------------------------------------
 
+# Background jobs in a script ignore Ctrl+C, and BACKEND_PID/FRONTEND_PID can be a
+# bash wrapper, so killing just those PIDs used to orphan the real servers (uv →
+# langgraph dev → workers, npm → next). An orphaned backend holds port 8000 and
+# keeps flushing a stale Store to .langgraph_api/. So signal each whole process tree.
+_tree_pids() {
+  local pid=$1 child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do _tree_pids "$child"; done
+  echo "$pid"
+}
+
+_any_alive() {
+  local p
+  for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done
+  return 1
+}
+
 _cleanup() {
+  trap - INT TERM
   echo; echo "Stopping..."
-  kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null
+  local pids
+  pids=$( { _tree_pids "$BACKEND_PID"; _tree_pids "$FRONTEND_PID"; } 2>/dev/null )
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null
+  # Give the backend time to flush its Store to disk, then force anything left
+  for _ in $(seq 1 20); do
+    _any_alive $pids || break
+    sleep 0.5
+  done
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null
   wait "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null
   exit 0
 }

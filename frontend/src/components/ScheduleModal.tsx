@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { X, Trash2, Pencil, Plus, Check, ChevronDown, Search, AlertCircle, AlertTriangle, RefreshCw, ArrowLeft, Mail, Presentation } from "lucide-react";
+import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "./ExportOptions";
 import SlackIcon from "./SlackIcon";
 import SlackInviteWarning from "./SlackInviteWarning";
 import {
@@ -488,6 +489,7 @@ export default function ScheduleModal({
   const [hourLocal, setHourLocal] = useState(9);
   const [timezone, setTimezone] = useState("UTC");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [channelWarning, setChannelWarning] = useState<string | null>(null);
@@ -542,6 +544,7 @@ export default function ScheduleModal({
     setHourLocal(9);
     setTimezone("UTC");
     setSelectedSections(new Set(ALL_SECTION_IDS));
+    setExportOptions(DEFAULT_EXPORT_OPTIONS);
     setCreateError(null);
     setView("form");
   }
@@ -564,6 +567,7 @@ export default function ScheduleModal({
     setHourLocal(s.hour_local ?? s.hour_utc ?? 9);
     setTimezone(s.timezone ?? "UTC");
     setSelectedSections(new Set(s.sections ?? ALL_SECTION_IDS));
+    setExportOptions({ linkedIds: !!s.show_linked_ids, duplicates: !!s.show_duplicates });
     setCreateError(null);
     setView("form");
   }
@@ -623,6 +627,8 @@ export default function ScheduleModal({
         qbr_notify_emails: mode === "qbr" && qbrNotifyType === "email" ? qbrNotifyEmails : undefined,
         qbr_template_type: mode === "qbr" ? qbrTemplateType : undefined,
         sections: mode !== "qbr" ? [...selectedSections] : undefined,
+        show_linked_ids: mode !== "qbr" ? exportOptions.linkedIds : false,
+        show_duplicates: mode !== "qbr" ? exportOptions.duplicates : false,
         period,
         model,
         frequency,
@@ -1095,13 +1101,13 @@ export default function ScheduleModal({
                       <button
                         key={s.id} type="button" onClick={() => toggleSection(s.id)}
                         className="flex items-center gap-1.5 text-xs rounded px-2 py-1 text-left transition-colors hover:bg-[var(--bg-tertiary)]"
-                        style={{ color: checked ? "var(--text-primary)" : "var(--text-caption)" }}
+                        style={{ color: checked ? "var(--text-primary)" : "var(--text-muted)" }}
                       >
                         <div
                           className="w-3 h-3 rounded flex items-center justify-center flex-shrink-0"
                           style={{
                             background: checked ? "var(--accent)" : "transparent",
-                            border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                            border: `1px solid ${checked ? "var(--accent)" : "var(--text-caption)"}`,
                           }}
                         >
                           {checked && <Check size={8} strokeWidth={3} color="#fff" />}
@@ -1110,6 +1116,9 @@ export default function ScheduleModal({
                       </button>
                     );
                   })}
+                </div>
+                <div className="mt-3">
+                  <ExportOptionsPicker value={exportOptions} onChange={setExportOptions} />
                 </div>
               </div>}
 

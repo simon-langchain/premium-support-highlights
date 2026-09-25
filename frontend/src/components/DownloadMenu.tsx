@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Download, FileText, Sheet, Check } from "lucide-react";
+import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
 
 const SECTIONS = [
   { id: "key_metrics", label: "Key Metrics" },
@@ -14,14 +15,15 @@ const SECTIONS = [
 const ALL_SECTION_IDS = SECTIONS.map(s => s.id);
 
 interface DownloadMenuProps {
-  onDownloadPdf: (sections: string[]) => void;
-  onDownloadCsv: (sections: string[]) => void;
+  onDownloadPdf: (sections: string[], options: ExportOptions) => void;
+  onDownloadCsv: (sections: string[], options: ExportOptions) => void;
 }
 
 export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"pdf" | "csv">("pdf");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,8 +49,8 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
   function handleDownload() {
     const sections = [...selectedSections];
     setOpen(false);
-    if (mode === "pdf") onDownloadPdf(sections);
-    else onDownloadCsv(sections);
+    if (mode === "pdf") onDownloadPdf(sections, exportOptions);
+    else onDownloadCsv(sections, exportOptions);
   }
 
   return (
@@ -116,13 +118,13 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
                     disabled={unavailable}
                     title={unavailable ? "Not available in CSV" : undefined}
                     className="flex items-center gap-1.5 text-xs rounded px-2 py-1 text-left transition-colors hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                    style={{ color: unavailable ? "var(--text-caption)" : checked ? "var(--text-primary)" : "var(--text-caption)", opacity: unavailable ? 0.4 : 1 }}
+                    style={{ color: unavailable ? "var(--text-caption)" : checked ? "var(--text-primary)" : "var(--text-muted)", opacity: unavailable ? 0.4 : 1 }}
                   >
                     <div
                       className="w-3 h-3 rounded flex items-center justify-center flex-shrink-0"
                       style={{
                         background: checked ? "var(--accent)" : "transparent",
-                        border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                        border: `1px solid ${checked ? "var(--accent)" : "var(--text-caption)"}`,
                       }}
                     >
                       {checked && <Check size={8} strokeWidth={3} color="#fff" />}
@@ -131,6 +133,9 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
                   </button>
                 );
               })}
+            </div>
+            <div className="mt-3">
+              <ExportOptionsPicker value={exportOptions} onChange={setExportOptions} />
             </div>
           </div>
 

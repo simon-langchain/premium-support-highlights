@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import type { Account, LlmModel } from "@/lib/api";
+import type { Account, AccountGroup, AccountSettings, LlmModel } from "@/lib/api";
 import OptionPicker from "@/components/OptionPicker";
 import AccountPicker from "@/components/AccountPicker";
 import RefreshButton from "@/components/RefreshButton";
@@ -13,6 +13,7 @@ interface SidebarProps {
   accounts: Account[];
   selected: Account | null;
   onSelect: (account: Account) => void;
+  onGroupsChanged: (created: AccountGroup | null, removedId?: string) => void;
   onRefresh: () => void;
   dataUpdatedAt: Date | null;
   selectedProvider: string;
@@ -26,6 +27,9 @@ interface SidebarProps {
   tiers: string[];
   selectedTier: string;
   onTierChange: (tier: string) => void;
+  /** Per-account settings shown as switches; null = no account selected */
+  accountSettings: AccountSettings | null;
+  onAccountSettingChange: (key: keyof AccountSettings, value: boolean) => void;
 }
 
 const PERIODS = [
@@ -53,10 +57,56 @@ const Logo = () => (
 );
 
 
+function SidebarField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="px-4 pb-3">
+      <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+function SidebarDivider() {
+  return <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t mb-3" />;
+}
+
+function SidebarSwitch({
+  label,
+  title,
+  checked,
+  onChange,
+}: {
+  label: string;
+  title: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      title={title}
+      className="w-full flex items-center justify-between gap-2"
+    >
+      <span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>
+      <span
+        className="relative w-7 h-4 rounded-full flex-shrink-0 transition-colors"
+        style={{ background: checked ? "#006ddd" : "var(--text-caption)" }}
+      >
+        <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-[left]" style={{ left: checked ? 14 : 2 }} />
+      </span>
+    </button>
+  );
+}
+
 export default function Sidebar({
   accounts,
   selected,
   onSelect,
+  onGroupsChanged,
   onRefresh,
   dataUpdatedAt,
   selectedProvider,
@@ -70,6 +120,8 @@ export default function Sidebar({
   tiers,
   selectedTier,
   onTierChange,
+  accountSettings,
+  onAccountSettingChange,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -140,10 +192,8 @@ export default function Sidebar({
               </div>
             </div>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Support Tier
-              </label>
+            {/* What to look at */}
+            <SidebarField label="Support Tier">
               <OptionPicker
                 options={tiers.length > 0
                   ? tiers.map((t) => ({ value: t, label: t }))
@@ -151,48 +201,58 @@ export default function Sidebar({
                 value={selectedTier}
                 onChange={onTierChange}
               />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Account
-              </label>
-              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Time Period
-              </label>
+            </SidebarField>
+            <SidebarField label="Account">
+              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} onGroupsChanged={onGroupsChanged} />
+            </SidebarField>
+            <SidebarField label="Time Period">
               <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
-            </div>
+            </SidebarField>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Provider
-              </label>
-              <OptionPicker
-                options={[...new Set(models.map((m) => m.provider))].map((p) => ({
-                  value: p,
-                  label: p.charAt(0).toUpperCase() + p.slice(1),
-                }))}
-                value={selectedProvider}
-                onChange={onProviderChange}
-              />
-            </div>
+            {/* Per-account display settings */}
+            {accountSettings && (
+              <>
+                <SidebarDivider />
+                <SidebarField label="Display">
+                  <div className="flex flex-col gap-2 pt-0.5">
+                    <SidebarSwitch
+                      label="Linked ticket IDs"
+                      title="Show Linear/GitHub IDs on this account's tickets. Remembered for this account."
+                      checked={accountSettings.show_linked_ids}
+                      onChange={(v) => onAccountSettingChange("show_linked_ids", v)}
+                    />
+                    <SidebarSwitch
+                      label="Flag duplicates"
+                      title="Group possible duplicate tickets in the open issues list. Remembered for this account."
+                      checked={accountSettings.flag_duplicates}
+                      onChange={(v) => onAccountSettingChange("flag_duplicates", v)}
+                    />
+                  </div>
+                </SidebarField>
+              </>
+            )}
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Model
-              </label>
-              <OptionPicker
-                options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
-                value={selectedModelName}
-                onChange={onModelChange}
-              />
-            </div>
+            {/* Model used for AI summaries */}
+            <SidebarDivider />
+            <SidebarField label="AI Model">
+              <div className="flex flex-col gap-1.5">
+                <OptionPicker
+                  options={[...new Set(models.map((m) => m.provider))].map((p) => ({
+                    value: p,
+                    label: p.charAt(0).toUpperCase() + p.slice(1),
+                  }))}
+                  value={selectedProvider}
+                  onChange={onProviderChange}
+                />
+                <OptionPicker
+                  options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
+                  value={selectedModelName}
+                  onChange={onModelChange}
+                />
+              </div>
+            </SidebarField>
 
-            <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
+            <SidebarDivider />
 
             <RefreshButton onRefresh={onRefresh} dataUpdatedAt={dataUpdatedAt} />
 

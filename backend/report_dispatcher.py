@@ -29,7 +29,6 @@ import cache as cache_mod
 import pylon_client
 import slack_client
 from report import generate_report_html
-from ticket_summarizer import parse_ticket_output
 
 # ---------------------------------------------------------------------------
 # Patch SimpleUser.__reduce__ to prevent DotDict nesting growth on each
@@ -63,6 +62,11 @@ from main import (
     DEFAULT_MODEL_ID,
     _build_metrics_blocks,
     _build_payload,
+    _member_labels,
+    _read_cached_summaries,
+    _attach_requester_names,
+    _cache_set,
+    _export_duplicates,
     _compute_csat,
     _do_qbr_generation,
     _format_field_value,
@@ -87,6 +91,8 @@ class ReportState(TypedDict):
     qbr_notify_emails: Optional[list[str]]
     qbr_template_type: Optional[str]     # "full_deck" | "support_highlights"
     sections: Optional[list[str]]        # None = all sections
+    show_linked_ids: Optional[bool]      # list linked Linear/GitHub IDs; absent on older schedules = off
+    show_duplicates: Optional[bool]      # group possible-duplicate tickets; absent = off
     model: Optional[str]                 # model ID for cache lookups
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
@@ -167,26 +173,6 @@ def _should_run(condition: dict | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Ticket-summary reader (inline here to avoid depending on route-level code)
-# ---------------------------------------------------------------------------
-
-def _read_ticket_summaries(open_issues: list[dict], model: str = "") -> dict[int, dict]:
-    out: dict[int, dict] = {}
-    for issue in open_issues:
-        issue_id = issue.get("id", "")
-        number = issue.get("number")
-        if number is None:
-            continue
-        latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-        raw = cache_mod.get_ticket_summary(issue_id, latest, model)
-        if raw:
-            s, ns = parse_ticket_output(raw)
-            if s or ns:
-                out[number] = {"summary": s, "next_steps": ns}
-    return out
-
-
-# ---------------------------------------------------------------------------
 # Main graph node
 # ---------------------------------------------------------------------------
 
@@ -200,6 +186,8 @@ async def send_report(state: ReportState) -> dict:
     channel_id = state.get("channel_id")
     email_addresses = state.get("email_addresses") or []
     sections = state.get("sections")
+    show_linked_ids = bool(state.get("show_linked_ids", False))
+    show_duplicates = bool(state.get("show_duplicates", False))
     run_condition = state.get("run_condition")
 
     if not _should_run(run_condition):
@@ -219,10 +207,13 @@ async def send_report(state: ReportState) -> dict:
         )
     except Exception as exc:
         return {"skipped": False, "result": None, "error": f"Failed to fetch Pylon data: {exc}"}
+    await _attach_requester_names(open_issues)
+    # Share this search with the duplicate check (_get_open_raw): saves a Pylon search per member
+    _cache_set(f"open:{account_id}", open_issues)
 
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     ticket_model = state.get("model") or DEFAULT_MODEL_ID
-    ticket_summaries = await asyncio.to_thread(_read_ticket_summaries, open_issues, ticket_model)
+    ticket_summaries = await asyncio.to_thread(_read_cached_summaries, open_issues, ticket_model)
     account_summary = await asyncio.to_thread(cache_mod.get_account_summary, account_id, period)
     sections_set = set(sections) if sections is not None else None
 
@@ -242,7 +233,9 @@ async def send_report(state: ReportState) -> dict:
             return {"skipped": False, "result": None, "error": "No Slack channel configured"}
 
         fallback_text, blocks = _build_metrics_blocks(
-            account_id, account_name, payload, period, sections=sections_set
+            account_id, account_name, payload, period, sections=sections_set,
+            show_linked_ids=show_linked_ids,
+            show_duplicates=show_duplicates,
         )
         try:
             await asyncio.to_thread(
@@ -277,6 +270,11 @@ async def send_report(state: ReportState) -> dict:
             is_email=True,
             banner_url=os.environ.get("REPORT_BANNER_URL") or None,
             sections=sections_set,
+            member_labels=await asyncio.to_thread(_member_labels, account_id),
+            show_linked_ids=show_linked_ids,
+            duplicate_groups=(
+                await _export_duplicates(account_id, ticket_model, show_linked_ids) if show_duplicates else None
+            ),
         )
 
         def _send():
