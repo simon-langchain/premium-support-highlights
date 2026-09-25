@@ -1,0 +1,33 @@
+CLAUDE.md
+  s_7a33f8010fee71::t_8d20c916b43cf0 143,185
+  s_7a33f8010fee71::t_30378f271e7dc6 121
+  s_7a33f8010fee71::t_da41752c177972 91
+  s_7a33f8010fee71::t_582feb2d0b90c1 92,109
+  s_7a33f8010fee71::t_85023d1b8a9d0b 87
+  s_7a33f8010fee71::t_6d00c00c8ca6f4 88
+  s_7a33f8010fee71::t_134507a696b189 89
+  s_7a33f8010fee71::t_44e5838ae4332f 90
+  s_7a33f8010fee71::t_caeb3bcda335d9 139
+  s_7a33f8010fee71::t_48008d00ffbb75 110,186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "396b954460aa799c5e77b57ea72717da885be5a1",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
