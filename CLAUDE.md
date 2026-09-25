@@ -69,7 +69,7 @@ Google OAuth login flow (restricted to `@langchain.dev` Google Workspace account
 5. Callback page POSTs `{code, state}` to `POST /api/auth/google/callback`
 6. Backend verifies CSRF state, exchanges code for ID token, validates `hd=langchain.dev` and `@langchain.dev` email domain, checks active Pylon membership
 7. Session token created (8-hour TTL), set as `HttpOnly; Secure; SameSite=Lax` cookie (`psh_session`)
-8. Next.js middleware redirects unauthenticated requests to `/login`; `/auth/google/callback` and `/api/auth/*` are bypassed
+8. The Next.js proxy (`src/proxy.ts`) redirects unauthenticated requests to `/login`; `/auth/google/callback` and `/api/auth/*` are bypassed
 
 Sessions, OTPs, rate-limit counters, and OAuth CSRF state tokens live in the LangGraph Platform Store (Postgres-backed, shared across all API server replicas — see `_lg_client()` in `auth.py`), not in process memory, so they survive backend restarts and stay consistent when LSD autoscales to multiple replicas. State tokens expire in 10 minutes and are single-use.
 
@@ -206,9 +206,9 @@ Cron expressions fire every week on the given weekday (e.g. `0 9 * * 1` = Monday
 
 ### Frontend (`frontend/`)
 
-Next.js 15 app with Tailwind CSS. All `/api/*` requests are proxied to the backend via a catch-all route handler.
+Next.js 16 app (Turbopack for `next dev` and `next build`) with Tailwind CSS. All `/api/*` requests are proxied to the backend via a catch-all route handler. `next dev` writes to `.next/dev`, so a local `next build` can run alongside it.
 
-**`src/middleware.ts`** — Redirects to `/login?return=<path>` if `psh_session` cookie is absent. Skips `/login`, `/auth/google/callback`, `/api/auth/*`, `/api/slack/*`, `/_next/*`.
+**`src/proxy.ts`** — Next 16's replacement for `middleware.ts` (the exported function is `proxy`; always the Node.js runtime). Redirects to `/login?return=<path>` if `psh_session` cookie is absent. Skips `/login`, `/auth/google/callback`, `/api/auth/*`, `/api/slack/*`, `/_next/*`.
 
 **`src/app/login/page.tsx`** — Google OAuth button (primary). Clicking "or sign in with email" hides the Google button and reveals the OTP flow (email input → 6-digit code). Each OTP step has a "Back to Google sign-in" link. Handles `sent` / `not_authorized` / `rate_limited` states inline.
 
@@ -306,7 +306,7 @@ premium-support-highlights/
 │   └── pyproject.toml          # Python dependencies (uv)
 ├── frontend/
 │   ├── src/
-│   │   ├── middleware.ts           # Auth redirect middleware
+│   │   ├── proxy.ts                # Auth redirect (Next 16 proxy, formerly middleware.ts)
 │   │   ├── app/                    # Next.js app router (layout, page, globals.css)
 │   │   ├── app/login/              # Login page (OTP flow)
 │   │   ├── app/api/[...path]/      # Catch-all proxy to backend

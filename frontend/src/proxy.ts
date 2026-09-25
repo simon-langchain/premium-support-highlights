@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 const LOCAL_TEST_MODE =
   process.env.LOCAL_TEST_MODE === "true" && !process.env.ALLOWED_ORIGINS;
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   if (LOCAL_TEST_MODE) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
