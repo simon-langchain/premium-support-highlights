@@ -1,0 +1,60 @@
+frontend/src/components/reportPdf/SupportReportPdfTickets.tsx
+  s_7a33f8010fee71::t_4f5e34492e3acc 1-102
+frontend/src/components/reportPdf/SupportReportPdfDocument.tsx
+  s_7a33f8010fee71::t_bc40dd4828ca26 2-8,12-69,71-148,150-213,220-222,229
+  s_7a33f8010fee71::t_e16fa49ae890d4 9-11
+  s_7a33f8010fee71::t_6eec08188727e6 70,214-219
+  s_7a33f8010fee71::t_7a5dee072700ac 1,149,223-228
+frontend/src/lib/downloads.ts
+  s_7a33f8010fee71::t_9a04d8305b9283 3,151-153,159,161-163,165-173
+  s_7a33f8010fee71::t_7a5dee072700ac 160,164
+frontend/src/components/reportPdf/supportReportPdfStyles.ts
+  s_7a33f8010fee71::t_4c83c73b323016 1-44,48-96,98-118,120-143,146-179,181-225
+  s_7a33f8010fee71::t_6eec08188727e6 45-47,97,119,144-145,180
+  s_7a33f8010fee71::t_48ce30ad313f7b 226
+CLAUDE.md
+  s_7a33f8010fee71::t_cbd23af893b886 96-97,141,239-241,245,295
+frontend/src/components/DownloadMenu.tsx
+  s_7a33f8010fee71::t_b44ee1df762ee0 4,18,27-28,51,53-68,160,164-165,167,169
+  s_7a33f8010fee71::t_624bc0ac1e2484 168
+README.md
+  s_7a33f8010fee71::t_cbd23af893b886 19
+backend/report.py
+  s_7a33f8010fee71::t_fa1af2f1af4dea 559-560
+  s_7a33f8010fee71::t_12436aafc580a6 3-4,7-9,521-558,561-602
+  s_7a33f8010fee71::t_6dc05c3f92a8c1 151-153,163-180,182-186,255-256,258-280,282-283,303,395-412,501-503,505,509,513
+  s_7a33f8010fee71::t_6c9986f89605bf 603-604
+frontend/src/lib/api.ts
+  s_7a33f8010fee71::t_1d7b411b3b9329 705-749
+frontend/package.json
+  s_7a33f8010fee71::t_85055be3c0f4c5 11
+backend/main.py
+  s_7a33f8010fee71::t_a540f7561ab3db 64,2007-2033,2035,2037-2080
+  s_7a33f8010fee71::t_c807b97ac9c0ca 2034,2036
+  s_7a33f8010fee71::t_ee43c2d88b700e 2081-2082
+frontend/package-lock.json
+  s_7a33f8010fee71::t_ee6d6c296df0c2 11,711-909,1343-1348,1359-1396,1473-1481,1491-1511,1717-1722,1733-1738,1769-1777,1784-1789,1799-1821,1869-1883,1894-1905,1977-1991,2269-2287,2488-2493,3050-3058,3068-3073,3099-3118,3125-3132,3162-3167,3195-3203,3356-3370,3509-3514,3536-3541,3595-3614,3752-3757
+frontend/public/fonts/inter/LICENSE.txt
+  s_7a33f8010fee71::t_7bf82defe4aba7 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d05416abdf30a44862f34d346efe16e670e6659b",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
