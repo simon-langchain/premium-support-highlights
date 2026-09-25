@@ -4,7 +4,7 @@ Pipeline (orchestrated by main.py's POST /summary route):
   1. generate_account_summary() formats ticket and metric data into a structured prompt
   2. A deepagents agent receives the prompt and calls summarise_tickets()
   3. summarise_tickets() runs per-ticket LLM calls in parallel, caching to disk
-  4. The agent writes a 2-paragraph customer-facing executive summary
+  4. The agent writes a short 2-paragraph customer-facing summary, tidied by _tidy_summary()
 
 All LLM calls route through the LangSmith LLM Gateway via the centralized
 client and model factory in llm.py.
@@ -31,12 +31,12 @@ _log = logging.getLogger(__name__)
 DEFAULT_SUMMARY_MODEL = DEFAULT_MODEL_ID
 DEFAULT_QBR_MODEL = "anthropic:claude-haiku-4-5-20251001"
 
-SUMMARY_SYSTEM_PROMPT = """You are preparing a monthly support highlights report to share directly with a premium customer.
+SUMMARY_SYSTEM_PROMPT = """You are writing the summary section of a support highlights report for a premium customer. The customer reads it, so write from LangChain's side, but it is a status summary, not a message: describe where things stand rather than addressing the reader with requests, thanks or sign-offs.
 
-Write a concise summary in exactly 2 paragraphs:
+First call the summarise_tickets tool to get the current state of every open ticket. Then write exactly 2 short paragraphs of 3-4 sentences each, 150 words at most in total:
 
-1. Trend overview: summarise ticket volume and closure rate over the period. Note that the most recent month will always appear to have a lower closure rate because tickets take time to resolve — do not treat this as a negative signal. Comment on overall health and any meaningful patterns across the full period.
-2. Open ticket overview: call the summarise_tickets tool first to get the current state of every open ticket, then summarise them by category and severity focusing on what is actively being worked on. Only call out Sev 1 or Sev 2 bug fixes that have been open a long time. Feature requests are expected to remain open — acknowledge them positively as part of the product roadmap conversation.
+1. How things are going: ticket volume and closures over the period, and the overall trend. The most recent month always shows fewer closures because tickets take time to resolve, so don't treat that as a problem or explain it at length.
+2. What's open: the main themes, and what we're working on or waiting on. Only name individual tickets that matter most, such as a Sev 1 or Sev 2 bug that has been open a long time. Treat open feature requests as a normal, positive part of the roadmap conversation.
 
 Priority levels:
 - Sev 1: Total outage or complete halt to production
@@ -44,12 +44,35 @@ Priority levels:
 - Sev 3: Partial or non-blocking issue
 - Sev 4: Minor issues, questions, feature requests
 
-Guidelines:
-- Tone should be collaborative and customer-facing — written as if LangChain is updating the customer, not an internal team review
-- Be concise — each paragraph should be 2-4 sentences
-- Group tickets by category, not by raw tags
-- Use markdown for formatting: **bold** for ticket titles or key terms, bullet points where listing multiple items aids readability
-- Do not use headers — the summary is two paragraphs, not a structured document"""
+Tone:
+- Warm, like a trusted partner describing the relationship. The warmth comes from the framing, not from thank-yous, greetings or calls to action ("let us know", "reach out", "we'd love to hear").
+- Lean positive: lead with what's going well and frame open work as progress we're making together.
+- Don't sugar-coat real problems. If something is genuinely wrong (a long-open Sev 1 or Sev 2, a bug with no fix yet, a slow period), say so plainly and say what we're doing about it. Constructive, not falsely upbeat.
+- Never blame the customer or sound defensive about who a ticket is waiting on. Describe anything we need from them as the ticket's status ("fixed in 0.16.15, ready once you upgrade").
+
+Style:
+- Plain, friendly English. Short sentences, one idea each. No jargon, filler or corporate phrasing.
+- Speak to the customer as "you" and "your team". You raise tickets; we (LangChain) respond to and close them, so closures and response times are ours ("we closed", "our first response time").
+- Give a few key numbers, not every number. Round where it reads better ("about three quarters").
+- Summarise themes instead of listing tickets. Mention at most 3 ticket numbers in total.
+- Never use em dashes or en dashes. Write separate sentences instead, and "to" for ranges.
+- Bold at most 3 key facts with **bold**. No headers, bullet points, dividers or sign-offs.
+- Start straight with the summary. No preamble like "Here's the summary"."""
+
+
+# A first line that introduces the summary ("…Here is the summary:"), wherever the phrase sits in it
+_PREAMBLE_RE = re.compile(r"^[^\n]*\b(?:here(?:'|’)?s|here is|below is)\b[^\n]*:[ \t]*\n+", re.IGNORECASE)
+
+
+def _tidy_summary(text: str) -> str:
+    """Enforce the style rules models sometimes ignore: no preamble, dividers or dashes."""
+    text = _PREAMBLE_RE.sub("", text.strip())
+    text = re.sub(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$\n?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"(\d)\s*[–—]\s*(\d)", r"\1-\2", text)  # 10–14 -> 10-14
+    text = re.sub(r"(\w)–(\w)", r"\1 to \2", text)  # April–September -> April to September
+    text = re.sub(r"\s*[—–]\s*", ", ", text)
+    text = re.sub(r",\s*([,.;:!?])", r"\1", text)  # "word, ." left by a dash before punctuation
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def make_summarise_tickets_tool(open_issues: list[dict], force: bool, account_name: str = "", model: str = ""):
@@ -164,8 +187,8 @@ def _format_metrics(monthly_metrics: list[dict]) -> str:
     """Format monthly metrics as a compact text table for the agent."""
     if not monthly_metrics:
         return "No monthly metrics available."
-    lines = ["Month          | Raised | Closed"]
-    lines.append("-" * 38)
+    lines = ["Month          | Raised (by customer) | Closed (by LangChain)"]
+    lines.append("-" * 60)
     for row in monthly_metrics:
         lines.append(
             f"{row['month']:<14} | {row['tickets_raised']:>6} | {row.get('closed_tickets', 0):>6}"
@@ -196,7 +219,7 @@ def _format_key_metrics(
 ) -> str:
     lines = []
     if avg_response_time is not None:
-        lines.append(f"Avg first response time: {avg_response_time:.1f} hrs")
+        lines.append(f"LangChain avg first response time: {avg_response_time:.1f} hrs")
     if csat is not None:
         lines.append(f"CSAT score: {csat:.2f} / 5.0")
     if priority_breakdown:
@@ -599,7 +622,7 @@ async def generate_account_summary(
         account_name=account_name,
     )
 
-    prompt = f"""Please generate an executive support highlights summary for account: **{account_name}**
+    prompt = f"""Write the support highlights summary for account: **{account_name}**
 
 ## Key Metrics
 
@@ -613,10 +636,18 @@ async def generate_account_summary(
 
 {metrics_section}
 
-Generate a 2-paragraph executive summary following the format in the system prompt."""
+Write the 2-paragraph summary following the system prompt."""
 
     result = await agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
+    summary = _final_text(result)
+    if not summary:
+        # e.g. the model hit max_tokens while thinking; fail rather than cache a blank summary
+        raise RuntimeError("The model returned no summary text")
+    return summary
 
+
+def _final_text(result) -> str:
+    """Extract the tidied text of the agent's final message."""
     # deepagents returns a LangGraph state dict. Extract the final AI message text,
     # which may be a plain string or a list of typed content blocks (text/tool_use).
     if isinstance(result, dict):
@@ -627,8 +658,8 @@ Generate a 2-paragraph executive summary following the format in the system prom
                 content = last.content
                 if isinstance(content, list):
                     parts = [c.get("text", "") if isinstance(c, dict) else str(c) for c in content]
-                    return "\n".join(p for p in parts if p).strip()
-                return str(content).strip()
+                    return _tidy_summary("\n".join(p for p in parts if p))
+                return _tidy_summary(str(content))
             elif isinstance(last, dict):
-                return str(last.get("content", "")).strip()
-    return str(result).strip()
+                return _tidy_summary(str(last.get("content", "")))
+    return _tidy_summary(str(result))

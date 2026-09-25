@@ -171,6 +171,9 @@ def get_chat_model(model_id: str) -> BaseChatModel:
         api_key=_API_KEY,
         # GPT-6 models only accept tools alongside reasoning via the Responses API
         **({"use_responses_api": True} if provider == "openai" else {}),
+        # langchain-anthropic defaults to 4096, which Claude's built-in thinking can use up
+        # before writing any text. Kept below the SDK's non-streaming long-request limit.
+        **({"max_tokens": 16000} if provider == "anthropic" else {}),
     )
     if info:  # only cache listed models: model_id can come from a request body
         _chat_model_cache[model_id] = chat_model
