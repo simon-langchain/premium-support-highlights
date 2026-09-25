@@ -13,10 +13,13 @@ This module centralises:
     and all direct LLM calls)
 """
 
+import logging
 import os
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Gateway configuration
@@ -68,164 +71,40 @@ _API_KEY = (
 # need the provider name (to pick the right gateway path + SDK) and the model
 # identifier that the upstream provider expects.
 AVAILABLE_MODELS: list[dict[str, str]] = [
-    # ── Fireworks ────────────────────────────────────────────────────────────
-    {
-        "id": "fireworks:accounts/fireworks/models/glm-5p2",
-        "label": "GLM 5.2",
-        "provider": "fireworks",
-        "model": "accounts/fireworks/models/glm-5p2",
-    },
-    {
-        "id": "fireworks:accounts/fireworks/models/glm-5p1",
-        "label": "GLM 5.1",
-        "provider": "fireworks",
-        "model": "accounts/fireworks/models/glm-5p1",
-    },
-    {
-        "id": "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-        "label": "DeepSeek V4 Pro",
-        "provider": "fireworks",
-        "model": "accounts/fireworks/models/deepseek-v4-pro",
-    },
-    {
-        "id": "fireworks:accounts/fireworks/models/gpt-oss-120b",
-        "label": "GPT-OSS 120B",
-        "provider": "fireworks",
-        "model": "accounts/fireworks/models/gpt-oss-120b",
-    },
-    {
-        "id": "fireworks:accounts/fireworks/models/kimi-k2p6",
-        "label": "Kimi K2.6",
-        "provider": "fireworks",
-        "model": "accounts/fireworks/models/kimi-k2p6",
-    },
+    # The frontend preselects the first entry, so keep DEFAULT_MODEL_ID first.
     # ── Anthropic ────────────────────────────────────────────────────────────
-    {
-        "id": "anthropic:claude-sonnet-4-6",
-        "label": "Claude Sonnet 4.6",
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
-    },
-    {
-        "id": "anthropic:claude-opus-4-6",
-        "label": "Claude Opus 4.6",
-        "provider": "anthropic",
-        "model": "claude-opus-4-6",
-    },
-    {
-        "id": "anthropic:claude-haiku-4-5-20251001",
-        "label": "Claude Haiku 4.5",
-        "provider": "anthropic",
-        "model": "claude-haiku-4-5-20251001",
-    },
-    # ── OpenAI ───────────────────────────────────────────────────────────────
-    {
-        "id": "openai:gpt-5.2",
-        "label": "GPT-5.2",
-        "provider": "openai",
-        "model": "gpt-5.2",
-    },
-    {
-        "id": "openai:gpt-5.1",
-        "label": "GPT-5.1",
-        "provider": "openai",
-        "model": "gpt-5.1",
-    },
-    {
-        "id": "openai:gpt-5",
-        "label": "GPT-5",
-        "provider": "openai",
-        "model": "gpt-5",
-    },
-    {
-        "id": "openai:gpt-5-mini",
-        "label": "GPT-5 Mini",
-        "provider": "openai",
-        "model": "gpt-5-mini",
-    },
-    {
-        "id": "openai:gpt-4o",
-        "label": "GPT-4o",
-        "provider": "openai",
-        "model": "gpt-4o",
-    },
-    {
-        "id": "openai:gpt-4o-mini",
-        "label": "GPT-4o Mini",
-        "provider": "openai",
-        "model": "gpt-4o-mini",
-    },
-    {
-        "id": "openai:o3",
-        "label": "o3",
-        "provider": "openai",
-        "model": "o3",
-    },
-    {
-        "id": "openai:o3-mini",
-        "label": "o3-mini",
-        "provider": "openai",
-        "model": "o3-mini",
-    },
-    {
-        "id": "openai:o4-mini",
-        "label": "o4-mini",
-        "provider": "openai",
-        "model": "o4-mini",
-    },
+    {"id": "anthropic:claude-sonnet-5", "label": "Claude Sonnet 5", "provider": "anthropic", "model": "claude-sonnet-5"},
+    {"id": "anthropic:claude-opus-5-5", "label": "Claude Opus 5.5", "provider": "anthropic", "model": "claude-opus-5-5"},
+    {"id": "anthropic:claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "anthropic", "model": "claude-fable-5-1"},
+    {"id": "anthropic:claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5", "provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
+    # ── OpenAI (Responses API — see get_chat_model) ──────────────────────────
+    {"id": "openai:gpt-6-sol", "label": "GPT-6 Sol", "provider": "openai", "model": "gpt-6-sol"},
+    {"id": "openai:gpt-6-luna", "label": "GPT-6 Luna", "provider": "openai", "model": "gpt-6-luna"},
     # ── Google ───────────────────────────────────────────────────────────────
-    {
-        "id": "google:gemini-3.5-flash",
-        "label": "Gemini 3.5 Flash",
-        "provider": "google",
-        "model": "gemini-3.5-flash",
-    },
-    {
-        "id": "google:gemini-3.1-pro-preview",
-        "label": "Gemini 3.1 Pro",
-        "provider": "google",
-        "model": "gemini-3.1-pro-preview",
-    },
-    {
-        "id": "google:gemini-3.1-flash-lite",
-        "label": "Gemini 3.1 Flash Lite",
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite",
-    },
-    {
-        "id": "google:gemini-2.5-pro",
-        "label": "Gemini 2.5 Pro",
-        "provider": "google",
-        "model": "gemini-2.5-pro",
-    },
-    {
-        "id": "google:gemini-2.5-flash",
-        "label": "Gemini 2.5 Flash",
-        "provider": "google",
-        "model": "gemini-2.5-flash",
-    },
+    {"id": "google:gemini-3.8-flash", "label": "Gemini 3.8 Flash", "provider": "google", "model": "gemini-3.8-flash"},
+    {"id": "google:gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "provider": "google", "model": "gemini-3.1-pro-preview"},
+    {"id": "google:gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash Lite", "provider": "google", "model": "gemini-3.5-flash-lite"},
+    # ── Fireworks ────────────────────────────────────────────────────────────
+    {"id": "fireworks:accounts/fireworks/models/glm-5p3", "label": "GLM 5.3", "provider": "fireworks", "model": "accounts/fireworks/models/glm-5p3"},
+    {"id": "fireworks:accounts/fireworks/models/glm-5p3-flash", "label": "GLM 5.3 Flash", "provider": "fireworks", "model": "accounts/fireworks/models/glm-5p3-flash"},
+    {"id": "fireworks:accounts/fireworks/models/kimi-k3", "label": "Kimi K3", "provider": "fireworks", "model": "accounts/fireworks/models/kimi-k3"},
+    {"id": "fireworks:accounts/fireworks/models/minimax-m3", "label": "MiniMax M3", "provider": "fireworks", "model": "accounts/fireworks/models/minimax-m3"},
+    {"id": "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro", "provider": "fireworks", "model": "accounts/fireworks/models/deepseek-v4-pro-0813"},
     # ── Baseten ──────────────────────────────────────────────────────────────
-    {
-        "id": "baseten:zai-org/GLM-5.2",
-        "label": "GLM 5.2",
-        "provider": "baseten",
-        "model": "zai-org/GLM-5.2",
-    },
-    {
-        "id": "baseten:moonshotai/Kimi-K2.7-Code",
-        "label": "Kimi K2.7 Code",
-        "provider": "baseten",
-        "model": "moonshotai/Kimi-K2.7-Code",
-    },
-    {
-        "id": "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-        "label": "Nemotron 3 Ultra 550B",
-        "provider": "baseten",
-        "model": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-    },
+    {"id": "baseten:zai-org/GLM-5.3", "label": "GLM 5.3", "provider": "baseten", "model": "zai-org/GLM-5.3"},
+    {"id": "baseten:moonshotai/Kimi-K3", "label": "Kimi K3", "provider": "baseten", "model": "moonshotai/Kimi-K3"},
 ]
 
-DEFAULT_MODEL_ID = AVAILABLE_MODELS[0]["id"]
+DEFAULT_MODEL_ID = "anthropic:claude-sonnet-5"
+assert AVAILABLE_MODELS[0]["id"] == DEFAULT_MODEL_ID, "keep the default first (the frontend preselects it)"
+
+# Model IDs the provider no longer serves -> replacement. Saved schedules and caches keep
+# old IDs, so remap rather than fail. Models merely dropped from the list above still
+# work (get_chat_model accepts any provider:model) and need no entry here.
+_RETIRED_MODELS: dict[str, str] = {
+    "fireworks:accounts/fireworks/models/glm-5p1": "fireworks:accounts/fireworks/models/glm-5p3",
+    "fireworks:accounts/fireworks/models/deepseek-v4-pro": "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813",
+}
 
 _MODEL_MAP: dict[str, dict[str, str]] = {m["id"]: m for m in AVAILABLE_MODELS}
 
@@ -265,6 +144,9 @@ def get_chat_model(model_id: str) -> BaseChatModel:
     warnings once garbage-collected. Chat model instances are safe to share
     across concurrent calls, so caching avoids the churn entirely.
     """
+    if model_id in _RETIRED_MODELS:
+        _log.warning("Model %s is retired; using %s", model_id, _RETIRED_MODELS[model_id])
+        model_id = _RETIRED_MODELS[model_id]
     if model_id in _chat_model_cache:
         return _chat_model_cache[model_id]
 
@@ -287,6 +169,9 @@ def get_chat_model(model_id: str) -> BaseChatModel:
         model_provider=lc_provider,
         base_url=base_url,
         api_key=_API_KEY,
+        # GPT-6 models only accept tools alongside reasoning via the Responses API
+        **({"use_responses_api": True} if provider == "openai" else {}),
     )
-    _chat_model_cache[model_id] = chat_model
+    if info:  # only cache listed models: model_id can come from a request body
+        _chat_model_cache[model_id] = chat_model
     return chat_model
