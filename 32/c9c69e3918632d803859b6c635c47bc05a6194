@@ -1,0 +1,26 @@
+CLAUDE.md
+  s_7a33f8010fee71::t_e5fb1259cfd52e 92
+backend/duplicates.py
+  s_7a33f8010fee71::t_9e20d002041ca0 143-145,150-151,157,159-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "32c9c69e3918632d803859b6c635c47bc05a6194",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
