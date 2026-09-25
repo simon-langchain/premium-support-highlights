@@ -1,3 +1,4 @@
+import type { MemberLabel } from "@/lib/accountLabels";
 import type { AccountData, Issue, TicketSummary } from "./api";
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -36,6 +37,8 @@ export function downloadCsv(
   issues: Issue[],
   ticketSummaries: Record<number, TicketSummary | null>,
   sections?: string[],
+  /** Account group view: member account per ticket, added as an "Account" column (full name). */
+  members?: Map<string, MemberLabel> | null,
 ): void {
   const secs = new Set(sections ?? ALL_SECTION_IDS);
   const rows: string[] = [];
@@ -101,13 +104,15 @@ export function downloadCsv(
 
   if (secs.has("open_issues")) {
     rows.push("OPEN TICKETS");
-    rows.push("Number,Title,State,Priority,Disposition,Created,Summary,Next steps,Portal URL");
+    rows.push(`Number,${members ? "Account," : ""}Title,State,Priority,Disposition,Created,Summary,Next steps,Portal URL`);
     for (const issue of issues) {
       const state = getStateLabels(accountName)[issue.state] ?? issue.state.replace(/_/g, " ");
       const priority = PRIORITY_LABELS[issue.priority] ?? issue.priority;
       const entry = ticketSummaries[issue.number];
+      const member = members && issue.account_id ? members.get(issue.account_id) : undefined;
       rows.push([
         issue.number,
+        ...(members ? [cell(member?.fullName ?? "")] : []),
         cell(issue.title),
         cell(state),
         cell(priority),

@@ -69,7 +69,21 @@ def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "")
     legacy key (without model) so existing cache entries from before the
     model-aware cache key migration are still served.
     """
-    cache = _load()
+    return _lookup_ticket_summary(_load(), issue_id, latest_message_time, model)
+
+
+def get_ticket_summaries(tickets: list[tuple[str, str]], model: str = "", cache: dict | None = None) -> dict[str, str]:
+    """Bulk get_ticket_summary for [(issue_id, latest_message_time)] → {issue_id: summary},
+    loading the cache file once instead of once per ticket."""
+    cache = _load() if cache is None else cache
+    out = {}
+    for issue_id, latest in tickets:
+        if (summary := _lookup_ticket_summary(cache, issue_id, latest, model)) is not None:
+            out[issue_id] = summary
+    return out
+
+
+def _lookup_ticket_summary(cache: dict, issue_id: str, latest_message_time: str, model: str) -> str | None:
     key = "ts:" + _cache_key(issue_id, latest_message_time, model)
     entry = cache.get(key)
     if not isinstance(entry, dict) or _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
@@ -180,3 +194,4 @@ def set_qbr_slide(
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     _save(cache)
+

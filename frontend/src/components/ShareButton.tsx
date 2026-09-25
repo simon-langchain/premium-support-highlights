@@ -179,13 +179,13 @@ export default function ShareButton({
                     key={s.id}
                     onClick={() => toggleSection(s.id)}
                     className="flex items-center gap-1.5 text-xs rounded px-2 py-1 text-left transition-colors hover:bg-[var(--bg-tertiary)]"
-                    style={{ color: checked ? "var(--text-primary)" : "var(--text-caption)" }}
+                    style={{ color: checked ? "var(--text-primary)" : "var(--text-muted)" }}
                   >
                     <div
                       className="w-3 h-3 rounded flex items-center justify-center flex-shrink-0"
                       style={{
                         background: checked ? "var(--accent)" : "transparent",
-                        border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                        border: `1px solid ${checked ? "var(--accent)" : "var(--text-caption)"}`,
                       }}
                     >
                       {checked && <Check size={8} strokeWidth={3} color="#fff" />}

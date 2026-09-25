@@ -1,6 +1,32 @@
 export interface Account {
   id: string;
   name: string;
+  /** Present when this is an account group: the Pylon accounts it merges. */
+  members?: GroupMember[];
+}
+
+/** A group's member account: `color` is its dot colour slot (1–8, see --member-N);
+ *  `label` is a custom label, or null to use `default_label` (derived by the backend). */
+export interface GroupMember {
+  id: string;
+  name: string;
+  color?: number;
+  label?: string | null;
+  default_label?: string;
+}
+
+export interface AccountGroup {
+  id: string;
+  name: string;
+  members: GroupMember[];
+  created_by: string | null;
+  created_at: string | null;
+}
+
+export interface GroupCandidate {
+  id: string;
+  name: string;
+  tier: string;
 }
 
 export interface ExternalIssue {
@@ -11,6 +37,8 @@ export interface ExternalIssue {
 
 export interface Issue {
   number: number;
+  /** The Pylon account the ticket belongs to — differs per ticket when viewing an account group. */
+  account_id?: string;
   title: string;
   state: string;
   priority: string;
@@ -80,6 +108,61 @@ export async function fetchAccounts(tier: string = "Premium"): Promise<Account[]
     throw new Error(`Failed to fetch accounts: ${res.status} ${res.statusText}`);
   }
   return res.json();
+}
+
+async function throwDetail(res: Response, fallback: string): Promise<never> {
+  const err = await res.json().catch(() => ({}));
+  const detail = (err as { detail?: string | { msg: string }[] }).detail;
+  throw new Error(Array.isArray(detail) ? detail.map((e) => e.msg).join("; ") : detail ?? `${fallback}: ${res.status}`);
+}
+
+/** List account groups (several Pylon accounts shown as one). */
+export async function fetchAccountGroups(): Promise<AccountGroup[]> {
+  const res = await fetch("/api/account-groups");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) await throwDetail(res, "Failed to fetch account groups");
+  return res.json();
+}
+
+/** All current-customer accounts (any tier) not already in a group. */
+export async function fetchGroupCandidates(): Promise<GroupCandidate[]> {
+  const res = await fetch("/api/account-groups/candidates");
+  if (res.status === 401) { handleUnauthorized(res); return []; }
+  if (!res.ok) await throwDetail(res, "Failed to fetch accounts");
+  return res.json();
+}
+
+export async function createAccountGroup(name: string, memberIds: string[]): Promise<AccountGroup> {
+  const res = await fetch("/api/account-groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, member_ids: memberIds }),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to create group");
+  return res.json();
+}
+
+/** Partially update member colours and/or custom labels ("" resets a label to its default). */
+export async function updateAccountGroupMembers(
+  groupId: string,
+  changes: { member_colors?: Record<string, number>; member_labels?: Record<string, string> },
+): Promise<AccountGroup> {
+  const res = await fetch(`/api/account-groups/${encodeURIComponent(groupId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to update group");
+  return res.json();
+}
+
+/** Ungroup: the member accounts are listed separately again. */
+export async function deleteAccountGroup(groupId: string): Promise<void> {
+  const res = await fetch(`/api/account-groups/${encodeURIComponent(groupId)}`, { method: "DELETE" });
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to ungroup");
 }
 
 /** Fetch open issues, period metrics, and breakdowns for a single account. */
@@ -228,14 +311,7 @@ export async function createSchedule(req: CreateScheduleRequest): Promise<Schedu
     body: JSON.stringify(req),
   });
   if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const detail = (err as { detail?: string | { msg: string }[] }).detail;
-    const message = Array.isArray(detail)
-      ? detail.map((e) => e.msg).join("; ")
-      : detail ?? `Failed to create schedule: ${res.status}`;
-    throw new Error(message);
-  }
+  if (!res.ok) await throwDetail(res, "Failed to create schedule");
   return res.json();
 }
 

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import type { Account, LlmModel } from "@/lib/api";
+import type { Account, AccountGroup, LlmModel } from "@/lib/api";
 import OptionPicker from "@/components/OptionPicker";
 import AccountPicker from "@/components/AccountPicker";
 import RefreshButton from "@/components/RefreshButton";
@@ -13,6 +13,7 @@ interface SidebarProps {
   accounts: Account[];
   selected: Account | null;
   onSelect: (account: Account) => void;
+  onGroupsChanged: (created: AccountGroup | null, removedId?: string) => void;
   onRefresh: () => void;
   dataUpdatedAt: Date | null;
   selectedProvider: string;
@@ -53,10 +54,26 @@ const Logo = () => (
 );
 
 
+function SidebarField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="px-4 pb-3">
+      <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+function SidebarDivider() {
+  return <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t mb-3" />;
+}
+
 export default function Sidebar({
   accounts,
   selected,
   onSelect,
+  onGroupsChanged,
   onRefresh,
   dataUpdatedAt,
   selectedProvider,
@@ -140,10 +157,8 @@ export default function Sidebar({
               </div>
             </div>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Support Tier
-              </label>
+            {/* What to look at */}
+            <SidebarField label="Support Tier">
               <OptionPicker
                 options={tiers.length > 0
                   ? tiers.map((t) => ({ value: t, label: t }))
@@ -151,48 +166,35 @@ export default function Sidebar({
                 value={selectedTier}
                 onChange={onTierChange}
               />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Account
-              </label>
-              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} />
-            </div>
-
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Time Period
-              </label>
+            </SidebarField>
+            <SidebarField label="Account">
+              <AccountPicker accounts={accounts} selected={selected} onSelect={onSelect} onGroupsChanged={onGroupsChanged} />
+            </SidebarField>
+            <SidebarField label="Time Period">
               <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
-            </div>
+            </SidebarField>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Provider
-              </label>
-              <OptionPicker
-                options={[...new Set(models.map((m) => m.provider))].map((p) => ({
-                  value: p,
-                  label: p.charAt(0).toUpperCase() + p.slice(1),
-                }))}
-                value={selectedProvider}
-                onChange={onProviderChange}
-              />
-            </div>
+            {/* Model used for AI summaries */}
+            <SidebarDivider />
+            <SidebarField label="AI Model">
+              <div className="flex flex-col gap-1.5">
+                <OptionPicker
+                  options={[...new Set(models.map((m) => m.provider))].map((p) => ({
+                    value: p,
+                    label: p.charAt(0).toUpperCase() + p.slice(1),
+                  }))}
+                  value={selectedProvider}
+                  onChange={onProviderChange}
+                />
+                <OptionPicker
+                  options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
+                  value={selectedModelName}
+                  onChange={onModelChange}
+                />
+              </div>
+            </SidebarField>
 
-            <div className="px-4 pb-3">
-              <label style={{ color: "var(--text-muted)" }} className="block text-xs uppercase tracking-wider mb-1">
-                Model
-              </label>
-              <OptionPicker
-                options={models.filter((m) => m.provider === selectedProvider).map((m) => ({ value: m.id, label: m.label }))}
-                value={selectedModelName}
-                onChange={onModelChange}
-              />
-            </div>
-
-            <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t my-1" />
+            <SidebarDivider />
 
             <RefreshButton onRefresh={onRefresh} dataUpdatedAt={dataUpdatedAt} />
 

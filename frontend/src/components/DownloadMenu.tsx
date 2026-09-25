@@ -116,13 +116,13 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
                     disabled={unavailable}
                     title={unavailable ? "Not available in CSV" : undefined}
                     className="flex items-center gap-1.5 text-xs rounded px-2 py-1 text-left transition-colors hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                    style={{ color: unavailable ? "var(--text-caption)" : checked ? "var(--text-primary)" : "var(--text-caption)", opacity: unavailable ? 0.4 : 1 }}
+                    style={{ color: unavailable ? "var(--text-caption)" : checked ? "var(--text-primary)" : "var(--text-muted)", opacity: unavailable ? 0.4 : 1 }}
                   >
                     <div
                       className="w-3 h-3 rounded flex items-center justify-center flex-shrink-0"
                       style={{
                         background: checked ? "var(--accent)" : "transparent",
-                        border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                        border: `1px solid ${checked ? "var(--accent)" : "var(--text-caption)"}`,
                       }}
                     >
                       {checked && <Check size={8} strokeWidth={3} color="#fff" />}

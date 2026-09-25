@@ -25,6 +25,12 @@
   --badge-sky-bg: #f1f5f9;      --badge-sky-text: #334155;  --badge-sky-border: #94a3b8;
   --badge-emerald-bg: #a7f3d0;  --badge-emerald-text: #064e3b; --badge-emerald-border: #34d399;
   --badge-teal-bg: #99f6e4;     --badge-teal-text: #134e4a; --badge-teal-border: #2dd4bf;
+  /* Account-group member dots (slots 1-8: blue, orange, teal, amber, pink, green,
+     violet, red), from the dataviz categorical palette. Light values darkened
+     where needed to reach >= 3:1 against --bg-tertiary and white. */
+  --member-1: #2a78d6; --member-2: #e76530; --member-3: #00a16d;
+  --member-4: #c77d00; --member-5: #d56a93; --member-6: #008300;
+  --member-7: #4a3aa7; --member-8: #e34948;
 
   /* Badge colors – priority */
   --badge-red-bg: #fecaca;      --badge-red-text: #7f1d1d;  --badge-red-border: #f87171;
@@ -52,6 +58,9 @@
   --badge-sky-bg: #1e293b;               --badge-sky-text: #94a3b8;  --badge-sky-border: #475569;
   --badge-emerald-bg: rgba(6,78,59,0.5); --badge-emerald-text: #6ee7b7; --badge-emerald-border: rgba(4,120,87,0.4);
   --badge-teal-bg: rgba(19,78,74,0.5);   --badge-teal-text: #5eead4; --badge-teal-border: rgba(15,118,110,0.4);
+  --member-1: #3987e5; --member-2: #d95926; --member-3: #199e70;
+  --member-4: #c98500; --member-5: #d55181; --member-6: #008300;
+  --member-7: #9085e9; --member-8: #e66767;
 
   /* Badge colors – priority */
   --badge-red-bg: rgba(127,29,29,0.5);   --badge-red-text: #fca5a5;  --badge-red-border: rgba(153,27,27,0.4);

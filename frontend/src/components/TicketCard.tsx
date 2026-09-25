@@ -1,4 +1,5 @@
 import type { Issue, ExternalIssue, TicketSummary } from "@/lib/api";
+import type { MemberLabel } from "@/lib/accountLabels";
 
 // SVG paths sourced from simpleicons.org (24×24 viewBox)
 const SOURCE_ICONS: Record<string, string> = {
@@ -23,6 +24,8 @@ interface TicketCardProps {
   accountName?: string;
   /** null = still loading, object = loaded (fields may be empty strings) */
   ticketSummary?: TicketSummary | null;
+  /** Set when viewing an account group: which member account this ticket is from. */
+  memberAccount?: MemberLabel;
 }
 
 interface BadgeVars {
@@ -75,6 +78,43 @@ function formatDate(isoStr: string): string {
   }
 }
 
+export function MemberAccountPill({ member, active = true }: { member: MemberLabel; active?: boolean }) {
+  return (
+    <span
+      title={member.fullName}
+      style={{
+        background: "var(--bg-tertiary)",
+        color: active ? "var(--text-primary)" : "var(--text-muted)",
+        border: "1px solid var(--border-hover)",
+      }}
+      className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded font-medium"
+    >
+      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: member.color, opacity: active ? 1 : 0.4 }} />
+      {member.label}
+    </span>
+  );
+}
+
+/** Category breadcrumb (backend `_category_path`): product area in full ink, then sub-areas.
+ *  Paths deeper than 4 collapse to first › … › last two; the full path is on hover. */
+function CategoryPath({ path }: { path: string[] }) {
+  const shown = path.length > 4 ? [path[0], "…", ...path.slice(-2)] : path;
+  return (
+    <span
+      title={path.join(" › ")}
+      style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
+      className="inline-flex flex-wrap items-center gap-x-1 text-xs px-1.5 py-0.5 rounded"
+    >
+      {shown.map((part, i) => (
+        <span key={i} className="inline-flex items-center gap-x-1">
+          {i > 0 && <span style={{ color: "var(--text-caption)" }}>›</span>}
+          <span style={i === 0 ? { color: "var(--text-primary)" } : undefined}>{part}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function Badge({ vars, label }: { vars: BadgeVars; label: string }) {
   return (
     <span
@@ -90,7 +130,12 @@ function Badge({ vars, label }: { vars: BadgeVars; label: string }) {
   );
 }
 
-export default function TicketCard({ issue, accountName, ticketSummary }: TicketCardProps) {
+export default function TicketCard({
+  issue,
+  accountName,
+  ticketSummary,
+  memberAccount,
+}: TicketCardProps) {
   const stateBadge = STATE_BADGE[issue.state] ?? STATE_BADGE.waiting_on_customer;
   const stateLabel = getStateLabels(accountName)[issue.state] ?? issue.state;
   const priorityBadge = issue.priority ? PRIORITY_BADGE[issue.priority] : null;
@@ -142,6 +187,7 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
       ) : null}
 
       <div className="flex flex-wrap items-center gap-1.5">
+        {memberAccount && <MemberAccountPill member={memberAccount} />}
         <Badge vars={stateBadge} label={stateLabel} />
         {priorityBadge && issue.priority !== "none" && (
           <Badge vars={priorityBadge} label={PRIORITY_LABELS[issue.priority] ?? issue.priority} />
@@ -162,19 +208,7 @@ export default function TicketCard({ issue, accountName, ticketSummary }: Ticket
             Created {formatDate(issue.created_at)}
           </span>
         )}
-        {issue.tags && issue.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {issue.tags.map((tag) => (
-              <span
-                key={tag}
-                style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
-                className="text-xs px-1.5 py-0.5 rounded"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
+        {issue.tags && issue.tags.length > 0 && <CategoryPath path={issue.tags} />}
         {issue.external_issues && issue.external_issues.length > 0 && (
           <div className="flex gap-1">
             {issue.external_issues.map((ei) => (

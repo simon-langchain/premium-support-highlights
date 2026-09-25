@@ -38,13 +38,16 @@ _PRIORITY_LABELS: dict[str, str] = {
     "none":   "None",
 }
 
-_PRIORITY_COLORS: dict[str, tuple[str, str]] = {
-    # (background, text)
-    "urgent": ("#fee2e2", "#b91c1c"),
-    "high":   ("#ffedd5", "#c2410c"),
-    "medium": ("#fef9c3", "#a16207"),
-    "low":    ("#f1f5f9", "#475569"),
-    "none":   ("#f1f5f9", "#475569"),
+# Badge colours mirror the dashboard's light-mode --badge-* tokens (frontend globals.css,
+# used by TicketCard) so exports and the dashboard agree. Hex, not CSS variables:
+# email clients don't support custom properties. Keep the two in sync.
+_PRIORITY_COLORS: dict[str, tuple[str, str, str]] = {
+    # (background, text, border)
+    "urgent": ("#fecaca", "#7f1d1d", "#f87171"),  # --badge-red-*
+    "high":   ("#fed7aa", "#7c2d12", "#fb923c"),  # --badge-orange-*
+    "medium": ("#fef08a", "#713f12", "#facc15"),  # --badge-yellow-*
+    "low":    ("#e2e8f0", "#334155", "#94a3b8"),  # --badge-slate-*
+    "none":   ("#e2e8f0", "#334155", "#94a3b8"),
 }
 
 def _get_state_labels(account_name: str = "") -> dict[str, str]:
@@ -57,13 +60,14 @@ def _get_state_labels(account_name: str = "") -> dict[str, str]:
         "resolved":             "Resolved",
     }
 
-_STATE_COLORS: dict[str, tuple[str, str]] = {
-    "new":                 ("#dbeafe", "#1d4ed8"),
-    "waiting_on_you":      ("#fce7f3", "#9d174d"),
-    "on_hold":             ("#f3f4f6", "#374151"),
-    "waiting_on_customer": ("#fef9c3", "#a16207"),
-    "closed":              ("#f0fdf4", "#15803d"),
-    "resolved":            ("#f0fdf4", "#15803d"),
+_STATE_COLORS: dict[str, tuple[str, str, str]] = {
+    # (background, text, border)
+    "new":                 ("#bfdbfe", "#1e3a8a", "#60a5fa"),  # --badge-new-*
+    "waiting_on_you":      ("#dbeafe", "#1e40af", "#7cc8f0"),  # --badge-lc-*
+    "on_hold":             ("#ddd6fe", "#4c1d95", "#a78bfa"),  # --badge-hold-*
+    "waiting_on_customer": ("#f1f5f9", "#334155", "#94a3b8"),  # --badge-sky-*
+    "closed":              ("#a7f3d0", "#064e3b", "#34d399"),  # --badge-emerald-*
+    "resolved":            ("#99f6e4", "#134e4a", "#2dd4bf"),  # --badge-teal-*
 }
 
 
@@ -76,9 +80,9 @@ def _e(text: Any) -> str:
     return _html.escape(str(text) if text is not None else "")
 
 
-def _badge(label: str, bg: str, color: str) -> str:
+def _badge(label: str, bg: str, color: str, border: str) -> str:
     return (
-        f'<span style="display:inline-block;padding:2px 8px;border-radius:4px;'
+        f'<span style="display:inline-block;padding:1px 7px;border-radius:4px;border:1px solid {border};'
         f'font-size:11px;font-weight:600;background:{bg};color:{color};">'
         f"{_e(label)}</span>"
     )
@@ -86,14 +90,12 @@ def _badge(label: str, bg: str, color: str) -> str:
 
 def _priority_badge(priority: str) -> str:
     label = _PRIORITY_LABELS.get(priority, priority)
-    bg, color = _PRIORITY_COLORS.get(priority, ("#f1f5f9", "#475569"))
-    return _badge(label, bg, color)
+    return _badge(label, *_PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"]))
 
 
 def _state_badge(state: str, account_name: str = "") -> str:
     label = _get_state_labels(account_name).get(state, state.replace("_", " ").title())
-    bg, color = _STATE_COLORS.get(state, ("#f1f5f9", "#374151"))
-    return _badge(label, bg, color)
+    return _badge(label, *_STATE_COLORS.get(state, _STATE_COLORS["waiting_on_customer"]))
 
 
 def _fmt_resolution(hours: float) -> str:
@@ -332,14 +334,18 @@ def _render_tickets(
     sort_by: str = "priority",
     sort_order: str = "asc",
     account_name: str = "",
+    member_labels: dict[str, dict] | None = None,
 ) -> str:
     if not issues:
         return '<p style="color:#9ca3af;font-size:13px;">No open issues.</p>'
 
     issues = _sort_issues(issues, sort_by, sort_order)
+    # Left column holds the member account label (above the number) for account groups;
+    # widen it to fit the longest label on one line (~6.5px per 11px bold char + dot)
+    longest = max((len(m["label"]) for m in (member_labels or {}).values()), default=0)
+    number_col_width = max(60, 20 + longest * 7) if member_labels else 60
 
-    rows = []
-    for issue in issues:
+    def _row(issue: dict) -> str:
         number     = issue.get("number", "")
         title      = issue.get("title", "")
         state      = issue.get("state", "")
@@ -352,6 +358,15 @@ def _render_tickets(
         next_steps = entry.get("next_steps", "")
 
         age = _days_open(created)
+        member = (member_labels or {}).get(issue.get("account_id") or "")
+        # Account group: which member account this ticket is from. A coloured text dot
+        # rather than a styled shape so it survives Gmail/Outlook.
+        member_html = (
+            f'<div style="margin-bottom:4px;font-size:11px;font-weight:600;color:#374151;white-space:nowrap;" title="{_e(member["full_name"])}">'
+            # Arial pinned: ● size varies a lot by font (tiny in Arial at 11px, large in the
+            # system font), so a fixed font keeps it ~8px (matching the dashboard) in PDF and email
+            f'<span style="color:{member["color_hex"]};font-family:Arial,Helvetica,sans-serif;font-size:20px;line-height:11px;vertical-align:-1px;">&#9679;</span> {_e(member["label"])}</div>'
+        ) if member else ""
         summary_parts = []
         if summary:
             summary_parts.append(
@@ -365,12 +380,13 @@ def _render_tickets(
             )
         summary_html = "".join(summary_parts)
         disp_html = (
-            f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;">{_e(disp)}</span>'
+            f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;white-space:nowrap;">{_e(disp)}</span>'
         ) if disp else ""
 
-        rows.append(f"""
+        return f"""
         <tr style="border-top:1px solid #f3f4f6;">
-          <td style="padding:12px;vertical-align:top;width:60px;">
+          <td style="padding:12px;vertical-align:top;width:{number_col_width}px;">
+            {member_html}
             {"<a href='" + _e(portal_url) + "' style='font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;' target='_blank'>" if portal_url else "<span style='font-size:12px;font-weight:600;color:#9ca3af;'>"}#{_e(number)}{"</a>" if portal_url else "</span>"}
           </td>
           <td style="padding:12px;vertical-align:top;">
@@ -384,7 +400,9 @@ def _render_tickets(
             <div style="margin-bottom:4px;">{_state_badge(state, account_name)}</div>
             <div style="font-size:11px;color:#9ca3af;">{_e(age)}</div>
           </td>
-        </tr>""")
+        </tr>"""
+
+    rows = [_row(issue) for issue in issues]
 
     return f"""
     <table style="width:100%;border-collapse:collapse;">
@@ -421,7 +439,10 @@ def generate_report_html(
     is_email: bool = False,
     banner_url: str | None = None,
     sections: set[str] | None = None,
+    member_labels: dict[str, dict] | None = None,
 ) -> str:
+    """member_labels: for an account group, member account id -> {label, full_name,
+    color_hex} (main._member_labels), shown on each ticket."""
     secs = sections if sections is not None else _ALL_SECTIONS
     period_label = _PERIOD_LABELS.get(period, period)
     generated    = datetime.now().strftime("%-d %B %Y")
@@ -456,7 +477,7 @@ def generate_report_html(
     if "open_issues" in secs:
         sections_html += f"""
     {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name)}
+    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name, member_labels)}
 """
 
     # Inner report content — shared by both email and browser/PDF versions

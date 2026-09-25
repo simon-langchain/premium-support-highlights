@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import httpx
 
+import account_groups
 from cache import PAYLOAD_MAX_AGE_SECONDS
 
 _log = logging.getLogger(__name__)
@@ -419,8 +420,11 @@ def search_issues_for_account(
 ) -> list[dict]:
     """Search issues for a specific account, paginating through all results.
 
+    account_id may be an account group ID (see account_groups), in which case
+    each member account is searched in turn and the results merged.
+
     Args:
-        account_id: The account UUID to filter on.
+        account_id: The account UUID (or group ID) to filter on.
         states: Filter by issue states (e.g. ["new", "waiting_on_you"]).
         created_after: ISO 8601 timestamp — only return issues created after this.
         created_before: ISO 8601 timestamp — only return issues created before this.
@@ -431,6 +435,32 @@ def search_issues_for_account(
     Returns:
         Flat list of all matching issue dicts across all pages.
     """
+    seen: set[str] = set()
+    merged: list[dict] = []
+    members = account_groups.member_ids(account_id)
+    # Sequential rather than parallel: issue search is rate-limited to 20/min.
+    for member_id in members:
+        for issue in _search_issues_for_single_account(
+            member_id, states, created_after, created_before, updated_after, updated_before, limit,
+        ):
+            if issue.get("id") not in seen:
+                seen.add(issue.get("id"))
+                merged.append(issue)
+    if len(members) > 1:
+        # Newest first, like a single account's results (callers slice e.g. the latest 20)
+        merged.sort(key=lambda i: i.get("created_at") or "", reverse=True)
+    return merged
+
+
+def _search_issues_for_single_account(
+    account_id: str,
+    states: list[str] | None,
+    created_after: str | None,
+    created_before: str | None,
+    updated_after: str | None,
+    updated_before: str | None,
+    limit: int,
+) -> list[dict]:
     subfilters: list[dict] = [
         {"field": "account_id", "operator": "equals", "value": account_id}
     ]
@@ -810,7 +840,7 @@ def _get_csat_survey_id() -> str | None:
 
 
 def get_csat_responses_for_account(account_id: str) -> list[dict]:
-    """Fetch all CSAT survey responses for a specific account."""
+    """Fetch all CSAT survey responses for a specific account (or account group)."""
     survey_id = _get_csat_survey_id()
     if not survey_id:
         return []
@@ -830,7 +860,8 @@ def get_csat_responses_for_account(account_id: str) -> list[dict]:
         if not cursor:
             break
 
-    return [r for r in all_responses if r.get("account_id") == account_id]
+    wanted = set(account_groups.member_ids(account_id))
+    return [r for r in all_responses if r.get("account_id") in wanted]
 
 
 def make_date_range(period: str) -> tuple[str, str]:
@@ -852,7 +883,12 @@ def make_date_range(period: str) -> tuple[str, str]:
 
 
 def get_account(account_id: str) -> dict | None:
-    """Look up a single account by ID from the current customers cache."""
+    """Look up a single account by ID from the current customers cache.
+
+    For an account group ID, returns a synthetic account (see _group_account).
+    """
+    if account_groups.is_group_id(account_id):
+        return _group_account(account_id)
     for account in get_current_customers():
         if account.get("id") == account_id:
             return account
@@ -860,6 +896,39 @@ def get_account(account_id: str) -> dict | None:
         return _get(f"/accounts/{account_id}")
     except Exception:
         return None
+
+
+METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"  # main.py imports this
+
+
+def _group_account(group_id: str) -> dict | None:
+    """Build a synthetic Pylon-shaped account for a group.
+
+    - channels: union of member channels; only the first member's primary
+      channel stays primary so the default Slack destination is deterministic
+    - custom_fields: taken from the first member with a Metronome ID (the
+      member that carries the contract, used for QBR BigQuery charts),
+      falling back to the first member
+    """
+    group = account_groups.get_group(group_id)
+    if group is None:
+        return None
+    customers = {c.get("id"): c for c in get_current_customers()}  # one load, not one per member
+    members = [a for mid in group.get("member_ids") or [] if (a := customers.get(mid) or get_account(mid))]
+    if not members:
+        return None
+    channels: list[dict] = []
+    for i, member in enumerate(members):
+        for ch in member.get("channels") or []:
+            channels.append(ch if i == 0 else {**ch, "is_primary": False})
+    fields_source = next((m for m in members if _get_custom_field(m, METRONOME_ID_SLUG)), members[0])
+    return {
+        "id": group_id,
+        "name": group.get("name", ""),
+        "channels": channels,
+        "custom_fields": fields_source.get("custom_fields") or {},
+        "member_ids": [m.get("id") for m in members],
+    }
 
 
 def get_slack_channel_id(account: dict) -> str | None:

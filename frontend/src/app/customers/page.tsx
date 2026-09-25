@@ -5,6 +5,7 @@ import { Loader2, ArrowUpDown, ChevronRight, Clock, Presentation, CheckCircle2, 
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
 import TicketCard from "@/components/TicketCard";
+import { memberLabels } from "@/lib/accountLabels";
 import TrendChart from "@/components/TrendChart";
 import SummaryPanel from "@/components/SummaryPanel";
 import {
@@ -23,6 +24,7 @@ import {
   type QbrHistoryEntry,
   type Account,
   type AccountData,
+  type AccountGroup,
   type Issue,
   type TicketSummary,
   type LlmModel,
@@ -35,6 +37,43 @@ import OptionPicker from "@/components/OptionPicker";
 import { downloadCsv, downloadPdf, emailReport, slackReport } from "@/lib/downloads";
 
 const OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"];
+
+function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs uppercase tracking-wider mr-0.5" style={{ color: "var(--text-caption)" }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      style={
+        active
+          ? { background: "rgba(0,109,221,0.12)", border: "1px solid rgba(0,109,221,0.55)", color: "var(--text-primary)" }
+          : { background: "transparent", border: "1px solid var(--border)", color: "var(--text-caption)" }
+      }
+      className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full transition-colors hover:border-[var(--border-hover)]"
+    >
+      {children}
+    </button>
+  );
+}
 
 function toSlug(name: string): string {
   return name
@@ -153,11 +192,16 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("priority");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [selectedStates, setSelectedStates] = useState<string[]>(OPEN_STATES);
+  // Account-group view: member accounts toggled off (same on/off chips as the status filter)
+  const [hiddenMembers, setHiddenMembers] = useState<string[]>([]);
   const [ticketSummaries, setTicketSummaries] = useState<Record<number, TicketSummary | null>>({});
   const [accountSummary, setAccountSummary] = useState<string | null>(null);
   const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<Date | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+
+
+
   const [slackChannelName, setSlackChannelName] = useState<string | null>(null);
   const [slackChannelId, setSlackChannelId] = useState<string | null>(null);
   const [slackAvailableChannels, setSlackAvailableChannels] = useState<{ id: string; name: string }[]>([]);
@@ -421,6 +465,7 @@ export default function Home() {
     setSearchQuery("");
     setSortBy("priority");
     setSelectedStates(OPEN_STATES);
+    setHiddenMembers([]);
     setQbrOpen(false);
     setQbrGenerating(false);
     setQbrSteps({});
@@ -433,6 +478,27 @@ export default function Home() {
     window.history.replaceState(null, "", `/customers?account=${toSlug(account.name)}`);
   }
 
+  // After an account group is created/removed: reload the list, and keep the
+  // selection meaningful — move to the new group if the open account was just
+  // grouped into it, or clear it if the open group was just ungrouped.
+  function handleGroupsChanged(created: AccountGroup | null, removedId?: string) {
+    fetchAccounts(selectedTier)
+      .then((data) => {
+        setAccounts(data);
+        if (!selectedAccount) return;
+        const group = created && data.find((a) => a.id === created.id);
+        if (group && created.members.some((m) => m.id === selectedAccount.id)) {
+          if (configured) handleAccountSelect(group);
+          else setSelectedAccount(group);
+        } else if (removedId && selectedAccount.id === removedId) {
+          setSelectedAccount(null);
+          setAccountData(null);
+          window.history.replaceState(null, "", "/customers");
+        }
+      })
+      .catch((err) => setError(err.message));
+  }
+
   function handleRegenerate() {
     if (!selectedAccount || !accountData) return;
     summaryAbortRef.current?.abort();
@@ -443,19 +509,35 @@ export default function Home() {
   }
 
   // Filtering + sorting open issues
+  // Only offer per-account labels/filter when the tickets say which account they're from.
+  // Members are read from the reloaded accounts list (not selectedAccount) so a
+  // colour change shows immediately without re-selecting — and re-fetching — the account.
+  const groupMembers = (accounts.find((a) => a.id === selectedAccount?.id) ?? selectedAccount)?.members;
+  const members =
+    groupMembers && accountData?.open_issues.some((i) => i.account_id)
+      ? memberLabels(groupMembers)
+      : null;
   const filteredIssues: Issue[] = accountData
     ? sortIssues(
         accountData.open_issues.filter((issue) => {
           const matchesState =
             selectedStates.length === 0 ||
             selectedStates.includes(issue.state);
+          // Like the status chips, turning every account off means "no filter"
+          const matchesMember =
+            !members ||
+            hiddenMembers.length >= members.size ||
+            !issue.account_id ||
+            !hiddenMembers.includes(issue.account_id);
+          const member = members && issue.account_id ? members.get(issue.account_id) : undefined;
           const q = searchQuery.toLowerCase();
           const matchesSearch =
             !q ||
             issue.title.toLowerCase().includes(q) ||
             String(issue.number).includes(q) ||
-            issue.tags.some((t) => t.toLowerCase().includes(q));
-          return matchesState && matchesSearch;
+            issue.tags.some((t) => t.toLowerCase().includes(q)) ||
+            !!member?.fullName.toLowerCase().includes(q);
+          return matchesState && matchesMember && matchesSearch;
         }),
         sortBy,
         sortOrder
@@ -525,6 +607,7 @@ export default function Home() {
                   accounts={accounts}
                   selected={setupAccount}
                   onSelect={setSelectedAccount}
+                  onGroupsChanged={handleGroupsChanged}
                 />
               </div>
 
@@ -602,6 +685,7 @@ export default function Home() {
         accounts={accounts}
         selected={selectedAccount}
         onSelect={handleAccountSelect}
+        onGroupsChanged={handleGroupsChanged}
         onRefresh={handleRefresh}
         dataUpdatedAt={dataUpdatedAt}
         selectedProvider={selectedProvider}
@@ -873,7 +957,7 @@ export default function Home() {
                   />
                   <DownloadMenu
                     onDownloadPdf={(sections) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections, selectedModel)}
-                    onDownloadCsv={(sections) => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections)}
+                    onDownloadCsv={(sections) => downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections, members)}
                   />
                 </div>
               )}
@@ -987,7 +1071,7 @@ export default function Home() {
                   </h2>
 
                   {/* Filters row */}
-                  <div className="flex flex-wrap gap-2 mb-4 print:hidden" data-print-hide>
+                  <div className="flex flex-wrap items-center gap-2 mb-3 print:hidden" data-print-hide>
                     <input
                       type="text"
                       placeholder="Search tickets..."
@@ -998,7 +1082,7 @@ export default function Home() {
                         border: "1px solid var(--border)",
                         color: "var(--text-primary)",
                       }}
-                      className="text-sm rounded px-3 py-1.5 focus:outline-none w-48 placeholder:text-[var(--text-caption)]"
+                      className="text-sm rounded px-3 py-1.5 focus:outline-none w-56 placeholder:text-[var(--text-caption)]"
                     />
                     <div className="flex items-center gap-0">
                       <select
@@ -1029,31 +1113,51 @@ export default function Home() {
                         <ArrowUpDown size={13} style={{ transform: sortOrder === "desc" ? "scaleY(-1)" : "none" }} />
                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-1">
+
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4 print:hidden" data-print-hide>
+                    <FilterGroup label="Status">
                       {OPEN_STATES.map((state) => {
                         const active = selectedStates.includes(state);
                         return (
-                          <button
+                          <FilterChip
                             key={state}
+                            active={active}
                             onClick={() =>
                               setSelectedStates((prev) =>
                                 active ? prev.filter((s) => s !== state) : [...prev, state]
                               )
                             }
-                            style={active ? undefined : {
-                              background: "var(--bg-secondary)",
-                              border: "1px solid var(--border)",
-                              color: "var(--text-muted)",
-                            }}
-                            className={`text-xs px-2 py-1 rounded border transition-colors ${
-                              active ? "bg-[#006ddd]/20 border-[#006ddd] text-[#006ddd]" : ""
-                            }`}
                           >
                             {getStateLabels(selectedAccount?.name)[state] ?? state.replace(/_/g, " ")}
-                          </button>
+                          </FilterChip>
                         );
                       })}
-                    </div>
+                    </FilterGroup>
+                    {members && (
+                      <span className="hidden sm:block w-px h-4" style={{ background: "var(--border-hover)" }} aria-hidden />
+                    )}
+                    {members && (
+                      <FilterGroup label="Account">
+                        {[...members].map(([id, member]) => {
+                          const active = !hiddenMembers.includes(id);
+                          return (
+                            <FilterChip
+                              key={id}
+                              active={active}
+                              title={member.fullName}
+                              onClick={() =>
+                                setHiddenMembers((prev) => (active ? [...prev, id] : prev.filter((m) => m !== id)))
+                              }
+                            >
+                              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: member.color }} />
+                              {member.label}
+                            </FilterChip>
+                          );
+                        })}
+                      </FilterGroup>
+                    )}
                   </div>
 
                   {filteredIssues.length === 0 ? (
@@ -1066,6 +1170,7 @@ export default function Home() {
                           issue={issue}
                           accountName={selectedAccount?.name}
                           ticketSummary={ticketSummaries[issue.number]}
+                          memberAccount={members && issue.account_id ? members.get(issue.account_id) : undefined}
                         />
                       ))}
                     </div>

@@ -49,6 +49,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
+import account_groups
 import auth as auth_mod
 
 import pylon_client
@@ -211,7 +212,7 @@ def _cache_set(key: str, data: object) -> None:
 OPEN_STATES = ["new", "waiting_on_you", "on_hold", "waiting_on_customer"]
 VALID_PERIODS = {"7d", "1m", "3m", "6m", "1y"}
 ALL_SECTIONS = frozenset({"key_metrics", "ticket_trend", "breakdowns", "account_summary", "open_issues"})
-_METRONOME_ID_SLUG = "account.salesforce.Metronome_Customer_Id__c"
+_METRONOME_ID_SLUG = pylon_client.METRONOME_ID_SLUG
 
 
 def _coerce_model_default(v: str | None) -> str:
@@ -463,22 +464,82 @@ def _format_field_value(slug: str, field_labels: dict[str, dict[str, str]], fiel
     return slug.replace("_", " ").replace("-", " ").title()
 
 
+# Words kept in a fixed case when humanising category_component path segments
+_SEGMENT_WORDS = {
+    "api": "API", "apis": "APIs", "ui": "UI", "sdk": "SDK", "cli": "CLI", "mcp": "MCP", "oauth": "OAuth",
+    "sso": "SSO", "saml": "SAML", "rbac": "RBAC", "url": "URL", "urls": "URLs", "id": "ID", "ids": "IDs",
+    "js": "JS", "ts": "TS", "py": "Python", "sql": "SQL", "http": "HTTP", "https": "HTTPS", "jwt": "JWT",
+    "llm": "LLM", "llms": "LLMs", "oss": "OSS", "pii": "PII", "aws": "AWS", "gcp": "GCP", "grpc": "gRPC",
+    "csv": "CSV", "json": "JSON", "pdf": "PDF", "ttl": "TTL", "s3": "S3", "k8s": "K8s", "ai": "AI",
+    "langgraph": "LangGraph", "langsmith": "LangSmith", "langchain": "LangChain", "openai": "OpenAI",
+    "github": "GitHub", "gitlab": "GitLab", "postgres": "Postgres", "otel": "OTel",
+    "smtp": "SMTP", "ssl": "SSL", "tls": "TLS", "dns": "DNS", "vpc": "VPC", "ip": "IP", "iam": "IAM",
+    "kms": "KMS", "sse": "SSE", "os": "OS", "gke": "GKE", "eks": "EKS", "aks": "AKS", "scim": "SCIM", "2fa": "2FA",
+}
+# Minor words kept lower-case unless they start the segment
+_MINOR_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to", "vs", "with"}
+# Old product names that still appear in category/component values
+_RENAMED = {"agent builder": "Fleet"}
+
+
+def _humanise_segment(segment: str) -> str:
+    words = [w for w in re.split(r"[-_\s]+", segment.strip()) if w]
+    text = " ".join(
+        _SEGMENT_WORDS.get(w.lower())
+        or (w.lower() if i and w.lower() in _MINOR_WORDS else w[:1].upper() + w[1:])
+        for i, w in enumerate(words)
+    )
+    return _RENAMED.get(text.lower(), text)
+
+
+def _category_path(category_label: str, component: str) -> list[str]:
+    """Merge the category label and the free-text category_component path into one
+    breadcrumb, e.g. ("Fleet", "agent_builder/inbox/notifications") -> ["Fleet", "Inbox", "Notifications"].
+
+    - category "A - B" becomes ["A", "B"]
+    - component path segments are humanised; old names ("Agent Builder") map to current ones
+    - segments that repeat the breadcrumb so far are dropped ("studio/..." under
+      "LangSmith Deployments - Studio"), and a segment starting with an earlier part
+      loses that prefix ("fleet-chat" under "Fleet" -> "Chat")
+    """
+    path = [_RENAMED.get(p.strip().lower(), p.strip()) for p in category_label.split(" - ") if p.strip()]
+
+    def norm(word: str) -> str:
+        # Singular form for comparison: one trailing "s" only, and not "ss" ("Access", "OSS")
+        word = word.lower()
+        return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+    for raw in component.split("/"):
+        seg = _humanise_segment(raw)
+        if not seg:
+            continue
+        for prev in path:
+            if seg.lower().startswith(prev.lower() + " "):
+                seg = seg[len(prev) + 1:]
+        seg_words = [norm(w) for w in seg.split()]
+        if any([norm(w) for w in prev.split()][-len(seg_words):] == seg_words for prev in path):
+            continue
+        path.append(seg)
+    return path
+
+
 def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> dict:
     """Convert a raw Pylon issue into the normalised shape used by the frontend.
 
     Pylon stores category/disposition in nested custom_fields dicts with opaque slugs
     (e.g. "lc_infrastructure"). field_labels maps those slugs to human-readable labels.
-    Category fields become the `tags` list shown on each ticket card.
+    Category + category_component become `tags`: one breadcrumb path (see _category_path).
     """
     custom_fields = issue.get("custom_fields") or {}
     tags = []
     disposition = ""
     if isinstance(custom_fields, dict):
-        for field_slug in ("category", "category_component"):
-            val = (custom_fields.get(field_slug) or {}).get("value", "")
-            label = _format_field_value(val, field_labels, field_slug)
-            if label:
-                tags.append(label)
+        category = _format_field_value(
+            (custom_fields.get("category") or {}).get("value", ""), field_labels, "category"
+        )
+        # category_component is free text (a docs-style path) with no Pylon labels
+        component = (custom_fields.get("category_component") or {}).get("value", "") or ""
+        tags = _category_path(category, component)
         disp_val = (custom_fields.get("disposition") or {}).get("value", "")
         disposition = _format_field_value(disp_val, field_labels, "disposition")
     external_issues = [
@@ -497,6 +558,8 @@ def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> d
         slack_url = f"https://slack.com/archives/{slack_data['channel_id']}/p{ts_no_dot}"
 
     issue_id = issue.get("id", "")
+    # Use the issue's own account: account_id may be a group ID, which Pylon doesn't know
+    account_id = (issue.get("account") or {}).get("id") or account_id
     portal_url = (
         f"https://app.usepylon.com/accounts/{account_id}/customer-portal"
         f"?tab=issues&conversationID={issue_id}&durationMs=31536000000"
@@ -505,6 +568,7 @@ def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> d
 
     return {
         "number": issue.get("number"),
+        "account_id": account_id,
         "title": issue.get("title", ""),
         "state": issue.get("state", ""),
         "priority": metrics_mod.get_priority(issue),
@@ -571,6 +635,23 @@ async def _fetch_raw_data(
         return field_labels, open_issues, period_issues, csat_responses
 
 
+def _member_labels(account_id: str) -> dict[str, dict] | None:
+    """Per-member {label, full_name, color_hex} when account_id is a group, else None.
+    Looked up at render time (not stored in cached payloads) so colour changes apply at once."""
+    if not account_groups.is_group_id(account_id):
+        return None
+    group = account_groups.get_group(account_id)
+    if group is None:
+        return None
+    names = {c.get("id"): c.get("name", "") for c in pylon_client.get_current_customers()}
+    return account_groups.member_labels(group, names)
+
+
+# Bump when the payload / normalised-issue shape changes so cached payloads are rebuilt
+# (2: issues gained account_id; 3: tags became a category breadcrumb; 4: breadcrumb casing)
+_PAYLOAD_VERSION = 4
+
+
 def _build_payload(
     field_labels: dict,
     open_issues: list[dict],
@@ -583,6 +664,7 @@ def _build_payload(
     disposition_bd_raw = metrics_mod.get_disposition_breakdown(open_issues)
     _sla_compliance = metrics_mod.compute_sla_compliance(period_issues)
     return {
+        "version": _PAYLOAD_VERSION,
         "open_issues": [_normalise_issue(i, field_labels, account_id) for i in open_issues],
         "monthly_metrics": metrics_mod.compute_period_metrics(period_issues, period),
         "avg_response_time": metrics_mod.compute_avg_response_time(period_issues),
@@ -824,9 +906,193 @@ def get_accounts(tier: str = "Premium", _email: str = Depends(require_auth)):
         accounts = pylon_client.get_accounts_by_tier(tier)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
-    result = [{"id": a.get("id", ""), "name": a.get("name", "")} for a in accounts]
+    # Grouped accounts are replaced by their group, which is listed under every
+    # tier any of its members is in.
+    grouped = account_groups.grouped_member_ids()
+    result: list[dict] = []
+    groups_in_tier: dict[str, dict] = {}
+    for a in accounts:
+        if (group := grouped.get(a.get("id", ""))) is not None:
+            groups_in_tier[group["id"]] = group
+        else:
+            result.append({"id": a.get("id", ""), "name": a.get("name", "")})
+    if groups_in_tier:
+        customers_by_id = {c.get("id"): c for c in pylon_client.get_current_customers()}
+        for group in groups_in_tier.values():
+            formatted = _format_group(group, customers_by_id)
+            result.append({"id": formatted["id"], "name": formatted["name"], "members": formatted["members"]})
     result.sort(key=lambda a: a["name"].lower())
     return result
+
+
+## ---------------------------------------------------------------------------
+## Account groups (merge several Pylon accounts into one dashboard account)
+## ---------------------------------------------------------------------------
+
+class AccountGroupRequest(BaseModel):
+    name: Annotated[str, Field(min_length=1, max_length=80)]
+    member_ids: Annotated[list[str], Field(min_length=2, max_length=10)]
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Group name is required")
+        return v
+
+
+def _format_group(group: dict, customers_by_id: dict[str, dict]) -> dict:
+    names = {mid: (customers_by_id.get(mid) or {}).get("name", mid) for mid in group.get("member_ids") or []}
+    return {
+        "id": group["id"],
+        "name": group["name"],
+        "members": [
+            # label = custom label or None (use default_label); see account_groups.describe_members
+            {"id": mid, "name": m["name"], "color": m["color"], "label": m["custom_label"], "default_label": m["default_label"]}
+            for mid, m in account_groups.describe_members(group, names).items()
+        ],
+        "created_by": group.get("created_by"),
+        "created_at": group.get("created_at"),
+    }
+
+
+class AccountGroupMembersRequest(BaseModel):
+    """Partial update of per-member settings; keys are member account ids."""
+    member_colors: dict[str, Annotated[int, Field(ge=1, le=account_groups.MEMBER_COLOR_SLOTS)]] | None = None
+    # "" clears a custom label (back to the derived default)
+    member_labels: dict[str, Annotated[str, Field(max_length=account_groups.MAX_LABEL_LENGTH)]] | None = None
+
+    @field_validator("member_labels")
+    @classmethod
+    def strip_labels(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        return {k: " ".join(label.split()) for k, label in v.items()} if v is not None else None
+
+
+@app.get("/api/account-groups")
+async def list_account_groups(_email: str = Depends(require_auth)):
+    """List account groups with member names."""
+    try:
+        groups = await asyncio.to_thread(account_groups.list_groups, True)
+        customers = await asyncio.to_thread(pylon_client.get_current_customers)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load account groups: {exc}") from exc
+    customers_by_id = {c.get("id"): c for c in customers}
+    return [_format_group(g, customers_by_id) for g in groups]
+
+
+@app.get("/api/account-groups/candidates")
+async def list_account_group_candidates(_email: str = Depends(require_auth)):
+    """All current-customer accounts (any tier) that aren't already in a group: [{id, name, tier}]."""
+    try:
+        customers = await asyncio.to_thread(pylon_client.get_current_customers)
+        groups = await asyncio.to_thread(account_groups.list_groups, True)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load accounts: {exc}") from exc
+    grouped = {mid for g in groups for mid in g.get("member_ids") or []}
+    result = [
+        {
+            "id": c.get("id", ""),
+            "name": c.get("name", ""),
+            "tier": pylon_client._get_custom_field(c, pylon_client._SUPPORT_TIER_SLUG),
+        }
+        for c in customers
+        if c.get("id") and c.get("id") not in grouped
+    ]
+    result.sort(key=lambda a: a["name"].lower())
+    return result
+
+
+@app.post("/api/account-groups")
+async def create_account_group(body: AccountGroupRequest, email: str = Depends(require_auth)):
+    """Group two or more current-customer accounts under one name."""
+    member_ids = list(dict.fromkeys(body.member_ids))
+    if len(member_ids) < 2:
+        raise HTTPException(status_code=400, detail="A group needs at least two different accounts")
+    try:
+        customers = await asyncio.to_thread(pylon_client.get_current_customers)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load accounts: {exc}") from exc
+    customers_by_id = {c.get("id"): c for c in customers}
+    if any(mid not in customers_by_id for mid in member_ids):
+        raise HTTPException(status_code=400, detail="One or more accounts are not current customers")
+
+    names = {mid: customers_by_id[mid].get("name", mid) for mid in member_ids}
+    try:
+        group = await asyncio.to_thread(account_groups.create_group, body.name, member_ids, email, names)
+    except account_groups.GroupConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await asyncio.to_thread(
+        audit.log, "account_group_created",
+        {"group_id": group["id"], "name": group["name"], "member_ids": member_ids, "by": email},
+    )
+    return _format_group(group, customers_by_id)
+
+
+@app.patch("/api/account-groups/{group_id}")
+async def update_account_group_members(
+    group_id: str, body: AccountGroupMembersRequest, email: str = Depends(require_auth),
+):
+    """Set member dot colours and/or custom labels (partial; any combination allowed)."""
+    if not account_groups.is_group_id(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    try:
+        group = await asyncio.to_thread(account_groups.get_group, group_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load account groups: {exc}") from exc
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    members = set(group.get("member_ids") or [])
+    for field in (body.member_colors, body.member_labels):
+        if field and not set(field) <= members:
+            raise HTTPException(status_code=400, detail="Unknown account for this group")
+
+    updated = await asyncio.to_thread(
+        account_groups.update_members, group_id, body.member_colors, body.member_labels,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    await asyncio.to_thread(
+        audit.log, "account_group_members_updated",
+        {"group_id": group_id, "member_colors": body.member_colors, "member_labels": body.member_labels, "by": email},
+    )
+    customers = await asyncio.to_thread(pylon_client.get_current_customers)
+    return _format_group(updated, {c.get("id"): c for c in customers})
+
+
+@app.delete("/api/account-groups/{group_id}")
+async def delete_account_group(group_id: str, email: str = Depends(require_auth)):
+    """Ungroup: delete the group so its member accounts are listed separately again.
+
+    Refuses (409) while scheduled reports still target the group, since those
+    crons would otherwise silently send empty reports.
+    """
+    if not account_groups.is_group_id(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    try:
+        group = await asyncio.to_thread(account_groups.get_group, group_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load account groups: {exc}") from exc
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    try:
+        schedules = [s for s in await _list_formatted_schedules() if s.get("account_id") == group_id]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to check schedules: {exc}") from exc
+    if schedules:
+        n = len(schedules)
+        raise HTTPException(
+            status_code=409,
+            detail=f"{group['name']} has {n} scheduled report{'s' if n != 1 else ''}. Delete {'them' if n != 1 else 'it'} before ungrouping.",
+        )
+
+    await asyncio.to_thread(account_groups.delete_group, group_id)
+    await asyncio.to_thread(
+        audit.log, "account_group_deleted",
+        {"group_id": group_id, "name": group["name"], "member_ids": group.get("member_ids"), "by": email},
+    )
+    return {"ok": True}
 
 
 ## ---------------------------------------------------------------------------
@@ -1299,6 +1565,12 @@ async def remove_team_dashboard_admin(admin_email: str, _email: str = Depends(re
     return {"admins": sorted(admins)}
 
 
+def _payload_is_current(payload: dict) -> bool:
+    """False for payloads cached in an older shape (see _PAYLOAD_VERSION), so
+    they're rebuilt instead of served for up to PAYLOAD_MAX_AGE_SECONDS."""
+    return payload.get("version") == _PAYLOAD_VERSION
+
+
 @app.get("/api/accounts/{account_id}/data")
 async def get_account_data(
     account_id: str,
@@ -1316,11 +1588,12 @@ async def get_account_data(
 
     if not force:
         # 1. In-memory cache (hot path — same process, sub-5-min)
-        if (payload := _cache_get(payload_key)) is not None:
+        if (payload := _cache_get(payload_key)) is not None and _payload_is_current(payload):
             return payload
 
         # 2. Disk cache (cold start / post-redeployment path)
-        if (payload := await asyncio.to_thread(cache_mod.get_payload_cache, account_id, period)) is not None:
+        payload = await asyncio.to_thread(cache_mod.get_payload_cache, account_id, period)
+        if payload is not None and _payload_is_current(payload):
             _cache_set(payload_key, payload)
             return payload
     else:
@@ -1349,7 +1622,12 @@ async def get_cached_ticket_summaries(
     hit the Pylon API on every request. The model query param ensures
     summaries are read from the correct model-specific cache entries.
     """
-    ticket_model = model or DEFAULT_MODEL_ID
+    open_issues = await _get_open_raw(account_id)
+    return await asyncio.to_thread(_read_cached_summaries, open_issues, model or DEFAULT_MODEL_ID)
+
+
+async def _get_open_raw(account_id: str) -> list[dict]:
+    """Raw open Pylon issues, via the short in-memory cache the summary polling uses."""
     open_key = f"open:{account_id}"
     open_issues = _cache_get(open_key)
     if open_issues is None:
@@ -1360,23 +1638,24 @@ async def get_cached_ticket_summaries(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Pylon API error: {exc}") from exc
         _cache_set(open_key, open_issues)
+    return open_issues
 
-    def _read_summaries() -> dict[int, dict]:
-        out: dict[int, dict] = {}
-        for issue in open_issues:
-            issue_id = issue.get("id", "")
-            number = issue.get("number")
-            if number is None:
-                continue
-            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, ticket_model)
-            if raw:
-                s, ns = parse_ticket_output(raw)
-                if s or ns:
-                    out[number] = {"summary": s, "next_steps": ns}
-        return out
 
-    return await asyncio.to_thread(_read_summaries)
+def _read_cached_summaries(open_issues: list[dict], model: str, cache: dict | None = None) -> dict[int, dict]:
+    """Cached per-ticket {summary, next_steps} keyed by ticket number (no generation)."""
+    def latest(issue: dict) -> str:
+        return issue.get("latest_message_time") or issue.get("updated_at") or ""
+
+    raw = cache_mod.get_ticket_summaries([(i.get("id", ""), latest(i)) for i in open_issues], model, cache)
+    out: dict[int, dict] = {}
+    for issue in open_issues:
+        number = issue.get("number")
+        if number is None or not (text := raw.get(issue.get("id", ""))):
+            continue
+        s, ns = parse_ticket_output(text)
+        if s or ns:
+            out[number] = {"summary": s, "next_steps": ns}
+    return out
 
 
 @app.post("/api/accounts/{account_id}/summary")
@@ -1463,23 +1742,7 @@ async def get_account_report(
     )
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
-    # Collect cached per-ticket summaries (same logic as /cached-ticket-summaries)
-    def _read_summaries() -> dict[int, dict]:
-        out: dict[int, dict] = {}
-        for issue in open_issues:
-            issue_id = issue.get("id", "")
-            number = issue.get("number")
-            if number is None:
-                continue
-            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, ticket_model)
-            if raw:
-                s, ns = parse_ticket_output(raw)
-                if s or ns:
-                    out[number] = {"summary": s, "next_steps": ns}
-        return out
-
-    ticket_summaries = await asyncio.to_thread(_read_summaries)
+    ticket_summaries = await asyncio.to_thread(_read_cached_summaries, open_issues, ticket_model)
     account_summary = await _get_or_regenerate_account_summary(
         account_id, account_name, period, payload, open_issues, model=ticket_model
     )
@@ -1494,6 +1757,7 @@ async def get_account_report(
         sort_order=sort_order,
         banner_url=os.environ.get("REPORT_BANNER_URL") or None,
         sections=set(sections) if sections else None,
+        member_labels=await asyncio.to_thread(_member_labels, account_id),
     )
     return HTMLResponse(content=html)
 
@@ -1524,22 +1788,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
     )
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
 
-    def _read_summaries() -> dict[int, dict]:
-        out: dict[int, dict] = {}
-        for issue in open_issues:
-            issue_id = issue.get("id", "")
-            number = issue.get("number")
-            if number is None:
-                continue
-            latest_msg_time = issue.get("latest_message_time") or issue.get("updated_at") or ""
-            raw = cache_mod.get_ticket_summary(issue_id, latest_msg_time, body.model)
-            if raw:
-                s, ns = parse_ticket_output(raw)
-                if s or ns:
-                    out[number] = {"summary": s, "next_steps": ns}
-        return out
-
-    ticket_summaries = await asyncio.to_thread(_read_summaries)
+    ticket_summaries = await asyncio.to_thread(_read_cached_summaries, open_issues, body.model)
     account_summary = await _get_or_regenerate_account_summary(
         account_id, body.account_name, period, payload, open_issues, model=body.model
     )
@@ -1558,6 +1807,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         is_email=True,
         banner_url=banner_url,
         sections=set(body.sections) if body.sections is not None else None,
+        member_labels=await asyncio.to_thread(_member_labels, account_id),
     )
 
     subject = f"Support Highlights: {body.account_name}"
@@ -1850,6 +2100,13 @@ def _build_summary_blocks(
 _PAGE_SIZE = 5
 
 
+def _slack_escape(text: str) -> str:
+    """Escape user-supplied text for Slack mrkdwn so it can't form links or mentions
+    (&, <, > per Slack's rules). Formatting characters are left alone: at worst they
+    restyle the text, and stripping them would mangle names like "Mickael_LT"."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _build_issues_blocks(
     account_name: str,
     open_issues: list[dict],
@@ -1857,8 +2114,13 @@ def _build_issues_blocks(
     period: str,
     offset: int = 0,
     account_id: str = "",
+    member_labels: dict[str, dict] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
     """Open issues breakdown sorted by priority.
+
+    member_labels: for an account group (see _member_labels — fetch it off the event
+    loop), each issue's meta line starts with its member account label. Text only:
+    Slack can't colour text, and the attachment colour bar is already the severity.
 
     Returns (fallback_text, blocks, attachments).
     blocks — header message (rendered first by Slack).
@@ -1887,6 +2149,7 @@ def _build_issues_blocks(
     ]
 
     attachments: list[dict] = []
+    member_labels = member_labels or {}
 
     for issue in page:
         number = issue.get("number", "")
@@ -1929,6 +2192,8 @@ def _build_issues_blocks(
         else:
             disposition_str = ""
         meta = f"{p_emoji} {priority_label}  ·  {s_emoji} {state_label}{disposition_str}"
+        if member := member_labels.get(issue.get("account_id") or ""):
+            meta = f"*{_slack_escape(member['label']).replace('*', '')}*  ·  {meta}"
 
         attachments.append({
             "color": color,
@@ -2299,24 +2564,11 @@ async def _handle_slack_action(
                 summarise_tickets = make_summarise_tickets_tool(open_issues, force=False, account_name=account_name, model=DEFAULT_MODEL_ID)
                 await summarise_tickets.ainvoke({})
 
-            def _read_ticket_summaries() -> dict[int, dict]:
-                out: dict[int, dict] = {}
-                for issue in open_issues:
-                    number = issue.get("number")
-                    if number is None:
-                        continue
-                    latest = issue.get("latest_message_time") or issue.get("updated_at") or ""
-                    raw = cache_mod.get_ticket_summary(issue.get("id", ""), latest, DEFAULT_MODEL_ID)
-                    if raw:
-                        s, ns = parse_ticket_output(raw)
-                        if s or ns:
-                            out[number] = {"summary": s, "next_steps": ns}
-                return out
-
-            ticket_summaries = await asyncio.to_thread(_read_ticket_summaries)
+            ticket_summaries = await asyncio.to_thread(_read_cached_summaries, open_issues, DEFAULT_MODEL_ID)
             fallback_text, blocks, attachments = _build_issues_blocks(
                 account_name, payload["open_issues"], ticket_summaries, period,
                 offset=offset, account_id=account_id,
+                member_labels=await asyncio.to_thread(_member_labels, account_id),
             )
         else:
             return
@@ -2676,6 +2928,19 @@ def _lg_client():
     return _get_lg_client(url=url)
 
 
+async def _list_formatted_schedules() -> list[dict]:
+    """Fetch every report_dispatcher cron job, formatted for the API."""
+    client = _lg_client()
+    # crons.search requires a UUID; resolve by graph_id rather than fetching all assistants
+    assistants = await client.assistants.search(graph_id="report_dispatcher", limit=1)
+    dispatcher_id = assistants[0]["assistant_id"] if assistants else None
+    crons = await client.crons.search(
+        assistant_id=dispatcher_id if dispatcher_id else None,
+        limit=500,
+    )
+    return [_format_schedule(cron) for cron in crons]
+
+
 @app.get("/api/schedules")
 async def list_schedules(
     account_id: str | None = None,
@@ -2683,23 +2948,11 @@ async def list_schedules(
 ):
     """List all scheduled reports, optionally filtered to a single account."""
     try:
-        client = _lg_client()
-        # crons.search requires a UUID; resolve by graph_id rather than fetching all assistants
-        assistants = await client.assistants.search(graph_id="report_dispatcher", limit=1)
-        dispatcher_id = assistants[0]["assistant_id"] if assistants else None
-        crons = await client.crons.search(
-            assistant_id=dispatcher_id if dispatcher_id else None,
-            limit=500,
-        )
+        schedules = await _list_formatted_schedules()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to list schedules: {exc}") from exc
 
-    result = []
-    for cron in crons:
-        formatted = _format_schedule(cron)
-        if account_id and formatted.get("account_id") != account_id:
-            continue
-        result.append(formatted)
+    result = [s for s in schedules if not account_id or s.get("account_id") == account_id]
 
     await _annotate_channel_warnings(result)
     return result
@@ -2915,7 +3168,8 @@ async def _do_qbr_generation(account_id: str, account_name: str, template_type: 
     hex_charts: dict[str, bytes] = {}
     _bq_chart_data: dict | None = None
     _maturity_data: list[dict] | None = None
-    _account = pylon_client.get_account(account_id)
+    # Off the event loop: for an account group this is a blocking Store request to this same server
+    _account = await asyncio.to_thread(pylon_client.get_account, account_id)
 
     if is_full_deck:
         _metronome_id = pylon_client._get_custom_field(_account, _METRONOME_ID_SLUG) if _account else ""
@@ -3270,7 +3524,8 @@ async def create_qbr_slides(
             hex_charts: dict[str, bytes] = {}
             _bq_chart_data: dict | None = None
             _maturity_data: list[dict] | None = None
-            _account = pylon_client.get_account(account_id)
+            # Off the event loop: for an account group this is a blocking Store request to this same server
+            _account = await asyncio.to_thread(pylon_client.get_account, account_id)
 
             if is_full_deck:
                 yield _sse("progress", {"step": "hex", "label": "Fetching chart data", "status": "running"})
