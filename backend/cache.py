@@ -1,7 +1,10 @@
 """JSON file cache for per-ticket AI summaries."""
 
+import functools
 import hashlib
 import json
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,8 +29,25 @@ def _load() -> dict:
         return {}
 
 
+# Writers do load → modify → save on one shared file from many threads (ticket
+# summaries run in parallel), so they're serialised by a lock...
+_write_lock = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _write_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def _save(cache: dict) -> None:
-    CACHE_FILE.write_text(json.dumps(cache, indent=2))
+    # ...and written atomically: a reader never sees a half-written file (which _load
+    # would treat as empty, making the next save wipe every entry).
+    tmp = CACHE_FILE.with_name(f"{CACHE_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(cache, indent=2))
+    os.replace(tmp, CACHE_FILE)
 
 
 def _is_stale(entry: dict, max_age_seconds: int) -> bool:
@@ -62,6 +82,7 @@ def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "")
     return entry.get("summary")
 
 
+@_locked
 def set_ticket_summary(issue_id: str, latest_message_time: str, summary: str, model: str = "") -> None:
     """Persist a ticket summary to the file cache."""
     cache = _load()
@@ -84,6 +105,7 @@ def get_account_summary(account_id: str, period: str) -> str | None:
     return entry.get("summary")
 
 
+@_locked
 def set_account_summary(account_id: str, period: str, summary: str) -> None:
     """Persist an AI account summary to the file cache."""
     cache = _load()
@@ -109,6 +131,7 @@ def get_payload_cache(account_id: str, period: str) -> dict | None:
     return entry.get("payload")
 
 
+@_locked
 def set_payload_cache(account_id: str, period: str, payload: dict) -> None:
     """Persist the computed account payload to disk so it survives restarts."""
     cache = _load()
@@ -127,6 +150,7 @@ def get_qbr_slide(account_id: str, year_month: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+@_locked
 def delete_qbr_slide(account_id: str, year_month: str) -> bool:
     """Remove a QBR slide record. Returns True if the key existed."""
     cache = _load()
@@ -138,6 +162,7 @@ def delete_qbr_slide(account_id: str, year_month: str) -> bool:
     return True
 
 
+@_locked
 def set_qbr_slide(
     account_id: str,
     year_month: str,
