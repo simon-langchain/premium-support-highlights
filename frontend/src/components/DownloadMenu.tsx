@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Download, FileText, Sheet, Check } from "lucide-react";
+import { Download, FileText, Sheet, Check, Loader2 } from "lucide-react";
 import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
 
 const SECTIONS = [
@@ -15,7 +15,7 @@ const SECTIONS = [
 const ALL_SECTION_IDS = SECTIONS.map(s => s.id);
 
 interface DownloadMenuProps {
-  onDownloadPdf: (sections: string[], options: ExportOptions) => void;
+  onDownloadPdf: (sections: string[], options: ExportOptions) => Promise<void>;
   onDownloadCsv: (sections: string[], options: ExportOptions) => void;
 }
 
@@ -24,6 +24,8 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
   const [mode, setMode] = useState<"pdf" | "csv">("pdf");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
   const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -46,11 +48,24 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
 
   const allSelected = ALL_SECTION_IDS.every(id => selectedSections.has(id));
 
-  function handleDownload() {
+  async function handleDownload() {
     const sections = [...selectedSections];
-    setOpen(false);
-    if (mode === "pdf") onDownloadPdf(sections, exportOptions);
-    else onDownloadCsv(sections, exportOptions);
+    setError(null);
+    if (mode === "csv") {
+      setOpen(false);
+      onDownloadCsv(sections, exportOptions);
+      return;
+    }
+    // The PDF is built in the browser and takes a few seconds: stay open to show progress
+    setGenerating(true);
+    try {
+      await onDownloadPdf(sections, exportOptions);
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate the PDF");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   return (
@@ -142,13 +157,16 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
           {/* Download button */}
           <button
             onClick={handleDownload}
-            disabled={selectedSections.size === 0}
+            disabled={selectedSections.size === 0 || generating}
             style={{ background: "var(--accent)", color: "#fff" }}
             className="w-full flex items-center justify-center gap-1.5 text-xs rounded px-3 py-1.5 disabled:opacity-50 transition-opacity hover:opacity-90"
           >
-            <Download size={12} />
-            Download {mode.toUpperCase()}
+            {generating ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            {generating ? "Generating PDF…" : `Download ${mode.toUpperCase()}`}
           </button>
+          {error && (
+            <p className="text-xs mt-1.5" style={{ color: "var(--error, #ef4444)" }}>{error}</p>
+          )}
         </div>
       )}
     </div>

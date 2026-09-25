@@ -93,7 +93,8 @@ Protected routes:
 - `GET /api/accounts/{id}/cached-ticket-summaries?model=...` — per-ticket AI summaries from disk cache, keyed by ticket number; `model` query param ensures summaries are read from the correct model-specific cache entries
 - `GET /api/models` — list of LLM models available through the LangSmith Gateway; each entry has `{id, label, provider, model}`
 - `POST /api/accounts/{id}/summary` — body `{account_name, model, period, force}`, streams SSE keepalive pings while the LLM generates, sends final `result` event
-- `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=&sections=...` — self-contained HTML report for PDF; `sections` is a repeated query param (e.g. `&sections=key_metrics&sections=open_issues`), omit for all sections
+- `GET /api/accounts/{id}/report?account_name=...&period=&sort_by=&sort_order=&sections=...` — self-contained HTML report (viewable in a browser; same template as the email); `sections` is a repeated query param (e.g. `&sections=key_metrics&sections=open_issues`), omit for all sections
+- `GET /api/accounts/{id}/report-data` — same query params and data as `/report`, as JSON (`report.build_report_model`) for the dashboard's downloadable PDF, plus `banner`: `REPORT_BANNER_URL` fetched server-side as a data URI (https PNG/JPEG only, ≤2 MB, no redirects, cached 1h) because the browser can't fetch it cross-origin
 - `POST /api/accounts/{id}/email-report` — body `{email, account_name, period, sort_by, sort_order, sections?}`, generates and emails report via SMTP; `sections` is an optional list of section IDs to include (omit for all)
 - `GET /api/accounts/{id}/slack-channel` — returns `{channel_id, channel_name, override, available_channels}` for the Slack channel picker in the UI
 - `POST /api/accounts/{id}/slack-report` — body `{account_name, period, channel_id?, sections?}`, posts Block Kit metrics to Slack; `channel_id` overrides the account default; `sections` filters which blocks are included; redirected to `SLACK_OVERRIDE_CHANNEL` env var when set
@@ -137,6 +138,7 @@ Protected routes:
 - `is_email=False`: browser/PDF layout with full CSS, banner inside max-width container
 - `sections`: optional `set[str]` of section IDs to include — `key_metrics`, `ticket_trend`, `breakdowns`, `account_summary`, `open_issues`; `None` means all sections
 - Priority/state badge colours (`_PRIORITY_COLORS`, `_STATE_COLORS`: bg, text, border) mirror the dashboard's light-mode `--badge-*` tokens in `frontend/src/app/globals.css` as literal hex (email clients don't support CSS variables) — update both together
+- `build_report_model(...)`: the same report as plain data for the client-side PDF (sections not requested are omitted). It shares `_metric_cards`, `_breakdown_sections` and `_ticket_layout` (ticket order and possible-duplicate grouping) with the HTML renderer, so the two can't drift on content; a new field or section needs adding to both the HTML and `frontend/src/components/reportPdf/`
 
 **`ticket_summarizer.py`** — Per-ticket AI output via Claude Haiku. `summarize_ticket(title, body_html, messages, state, account_name)` returns structured `"Summary: ...\nNext steps: ..."` text. State labels are context-aware: `waiting_on_customer` tells the model LangChain has responded and is waiting; `waiting_on_you` means LangChain needs to act; `on_hold` means an internal LangChain team (Engineering/Product) is holding it. `parse_ticket_output(text)` parses the two-line output; old plain-text cache entries fall back to displaying as `next_steps`.
 
@@ -234,11 +236,13 @@ The **QBR Slides** popover (header button) lazily fetches history on first open 
 
 **`src/components/ShareButton.tsx`** — Combined share button for Slack and email. Opens a popover with a Slack/Email mode tab, section checkboxes (Key Metrics, Ticket Trend, Breakdowns, Account Summary, Open Issues — all checked by default), a channel picker (Slack, when multiple channels available) or email input, and a send button. Success status clears after 10 seconds; the popover stays open until dismissed by clicking outside.
 
-**`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected.
+**`src/components/DownloadMenu.tsx`** — Download popover with PDF/CSV format tabs and section checkboxes (same sections as ShareButton). Account Summary is greyed out and disabled for CSV (not available in that format), with a "Not available in CSV" tooltip on hover. Download button is disabled if no sections are selected. For PDF the popover stays open with "Generating PDF…" (and shows any error) until the file is saved.
+
+**`src/components/reportPdf/`** — The downloadable PDF, built in the browser with `@react-pdf/renderer` (mirrors LangSmith's Insights export in langchainplus): `SupportReportPdfDocument.tsx` (document + sections, `renderReportPdf(model, fontBase)`), `SupportReportPdfTickets.tsx` (tickets and possible-duplicate groups, rows kept whole with `wrap={false}`), `supportReportPdfStyles.ts` (colours match `report.py`). Text uses Inter from `public/fonts/inter` (OFL; the built-in Helvetica only covers Latin-1), linked IDs Courier; fixed footer with page numbers. Loaded with a dynamic import only when a PDF is downloaded.
 
 **`src/lib/api.ts`** — TypeScript fetch functions. All functions check for 401 and redirect to `/login` via `window.location.href`. The `Schedule` interface includes `month_in_quarter`, `hour_local`, `timezone`, `created_by`, `qbr_notify_type`/`qbr_notify_channel_id`/`qbr_notify_emails`, and `qbr_template_type` fields; `destination_type` is `"slack" | "email" | "qbr"`. `createSchedule` handles Pydantic validation errors (which return `detail` as an array) by joining the `msg` fields into a readable string. `QbrSlide`, `QbrHistoryEntry` interfaces and `fetchQbrHistory`, `streamQbrSlides` functions support the QBR slides feature; `streamQbrSlides` accepts an optional `templateType` parameter (`"full_deck"` default) forwarded in the POST body; reads an SSE stream of `progress`/`result`/`error` events.
 
-**`src/lib/downloads.ts`** — `downloadPdf` opens the `/report` endpoint in a new tab; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
+**`src/lib/downloads.ts`** — `downloadPdf` fetches `/report-data` (same params as `/report`), renders it with `reportPdf` and saves `"{Account} - Support Highlights - {date}.pdf"`; accepts optional `sections?: string[]` appended as repeated query params. `downloadCsv` builds and downloads a CSV blob client-side; accepts optional `sections?: string[]` and conditionally includes each section (KEY METRICS, TICKET TREND, PRIORITY/STATE/DISPOSITION BREAKDOWNS, OPEN TICKETS — Account Summary has no CSV representation and is ignored). `slackReport` and `emailReport` both accept an optional `sections?: string[]` forwarded to the backend.
 
 ### QBR slide generation data flow
 
@@ -288,7 +292,7 @@ premium-support-highlights/
 │   ├── pylon_client.py         # Pylon REST API client
 │   ├── metrics.py              # Metric computation (pure Python)
 │   ├── summary_agent.py        # AI summary + per-ticket tool via deepagents
-│   ├── report.py               # HTML report generator (browser/PDF + email variants)
+│   ├── report.py               # HTML report generator (browser + email variants) and the PDF data model
 │   ├── roadmap_client.py       # Google Slides roadmap parser + AI item selector
 │   ├── slides_client.py        # Google Slides QBR deck builder
 │   ├── bigquery_client.py      # BigQuery client for QBR chart data (7 queries)

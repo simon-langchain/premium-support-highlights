@@ -702,3 +702,48 @@ export async function fetchMessageActivitySyncStatus(): Promise<MessageActivityS
   if (!res.ok) return null;
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Downloadable PDF report (GET /report-data → rendered client-side with React-PDF)
+// ---------------------------------------------------------------------------
+
+export interface ReportBadge { label: string; bg: string; color: string; border: string }
+
+export interface ReportTicket {
+  number: number;
+  title: string;
+  portal_url: string | null;
+  disposition: string;
+  summary: string;
+  next_steps: string;
+  requester: string;
+  age: string;
+  linked_ids: string[];
+  priority: ReportBadge;
+  state: ReportBadge;
+  member: { label: string; color: string } | null;
+}
+
+export interface ReportMetricCard { label: string; value: string; sub: string; unit: string }
+
+/** The report as plain data (backend report.build_report_model); sections not requested are absent. */
+export interface ReportModel {
+  account_name: string;
+  period_label: string;
+  generated: string;
+  banner: string | null;
+  metrics?: { top: ReportMetricCard[]; bottom: ReportMetricCard[] };
+  trend?: { month: string; raised: number; closed: number }[];
+  breakdowns?: { title: string; rows: { label: string; count: number; pct: number }[] }[];
+  summary?: string;
+  open_issue_count?: number;
+  /** In display order: a ticket on its own (group null) or a possible-duplicate group */
+  tickets?: { group: { reasons: { tickets: number[] | null; text: string }[] } | null; tickets: ReportTicket[] }[];
+}
+
+export async function fetchReportData(accountId: string, params: URLSearchParams): Promise<ReportModel> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/report-data?${params}`);
+  if (res.status === 401) { handleUnauthorized(res); throw new Error("Not authenticated"); }
+  if (!res.ok) await throwDetail(res, "Failed to load the report");
+  return res.json();
+}
