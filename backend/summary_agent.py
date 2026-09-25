@@ -25,6 +25,7 @@ import cache as cache_mod
 from langchain_core.tools import tool
 from ticket_summarizer import summarize_ticket
 from llm import get_chat_model, DEFAULT_MODEL_ID
+from text_style import replace_dashes
 
 _log = logging.getLogger(__name__)
 
@@ -68,10 +69,7 @@ def _tidy_summary(text: str) -> str:
     """Enforce the style rules models sometimes ignore: no preamble, dividers or dashes."""
     text = _PREAMBLE_RE.sub("", text.strip())
     text = re.sub(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$\n?", "", text, flags=re.MULTILINE)
-    text = re.sub(r"(\d)\s*[–—]\s*(\d)", r"\1-\2", text)  # 10–14 -> 10-14
-    text = re.sub(r"(\w)–(\w)", r"\1 to \2", text)  # April–September -> April to September
-    text = re.sub(r"\s*[—–]\s*", ", ", text)
-    text = re.sub(r",\s*([,.;:!?])", r"\1", text)  # "word, ." left by a dash before punctuation
+    text = replace_dashes(text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
