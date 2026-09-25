@@ -1,0 +1,40 @@
+CLAUDE.md
+  s_7a33f8010fee71::t_729c91eac1e04a 41
+  s_7a33f8010fee71::t_c0744c320a5343 143
+  s_7a33f8010fee71::t_81c3b88e67cc0f 133
+backend/summary_agent.py
+  s_7a33f8010fee71::t_e2df039bac68b6 47,49-50,52
+  s_7a33f8010fee71::t_1dc47fa67f9447 63-64
+  s_7a33f8010fee71::t_237da46c99a7aa 36,190-191
+  s_7a33f8010fee71::t_75d847c30ae9b8 222
+  s_7a33f8010fee71::t_2d82e43d1f7fa2 642-647,649-650
+  s_7a33f8010fee71::t_7a1b183942158f 7,38-39,53-54,56-57,59-60,65-75,625,639,661-662,664-665
+  s_7a33f8010fee71::t_2a09aad17fc9df 55,58
+  s_7a33f8010fee71::t_8d0ced2d7ee67f 34,48,51
+  s_7a33f8010fee71::t_243e6411c620a6 61-62
+backend/llm.py
+  s_7a33f8010fee71::t_2d82e43d1f7fa2 174-176
+backend/cache.py
+  s_7a33f8010fee71::t_189c0d7db2c171 12-13,124,135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a0ef2ca144ccd2701442132fbaf4f156d2a702e1",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
