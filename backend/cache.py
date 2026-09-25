@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SUMMARY_MAX_AGE_SECONDS = 86400  # 24 hours
+# Bump when summary_agent.SUMMARY_SYSTEM_PROMPT changes so cached account summaries regenerate.
+ACCOUNT_SUMMARY_VERSION = 2
 
 CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_FILE = CACHE_DIR / "analysis_cache.json"
@@ -119,7 +121,7 @@ def get_account_summary(account_id: str, period: str) -> str | None:
     entry = _load().get(key)
     if not isinstance(entry, dict):
         return None
-    if _is_stale(entry, SUMMARY_MAX_AGE_SECONDS):
+    if _is_stale(entry, SUMMARY_MAX_AGE_SECONDS) or entry.get("version") != ACCOUNT_SUMMARY_VERSION:
         return None
     return entry.get("summary")
 
@@ -130,6 +132,7 @@ def set_account_summary(account_id: str, period: str, summary: str) -> None:
     cache = _load()
     key = f"as:{account_id}:{period}"
     cache[key] = {
+        "version": ACCOUNT_SUMMARY_VERSION,
         "summary": summary,
         "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
