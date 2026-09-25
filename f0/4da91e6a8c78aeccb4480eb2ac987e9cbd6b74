@@ -1,0 +1,38 @@
+frontend/package.json
+  s_7a33f8010fee71::t_f2b1f7177ecc71 13,15-16,23-24
+frontend/AGENTS.md
+  s_7a33f8010fee71::t_8c9c2d8cef5db6 1-9
+frontend/src/proxy.ts
+  s_7a33f8010fee71::t_77092f5432547e 1-36
+frontend/next-env.d.ts
+  s_7a33f8010fee71::t_8c9c2d8cef5db6 3-4
+frontend/CLAUDE.md
+  s_7a33f8010fee71::t_8c9c2d8cef5db6 1
+frontend/tsconfig.json
+  s_7a33f8010fee71::t_086534a68d059a 4-8,18,26-28,31-40
+CLAUDE.md
+  s_7a33f8010fee71::t_85a9f20aaeca28 72,209,211,309
+frontend/package-lock.json
+  s_7a33f8010fee71::t_2fad01306929b6 13,15-16,23-24,613-615,619-621,635-637,651-653,667-669,683-685,699-701,715-717,731-733,946-948,1347-1349,1357-1359,1363,1414-1425,3008-3010,3013-3015,3017,3024,3027-3035,3071-3073,3090-3092,3253-3255,3263-3265,3269,3272,3420-3422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f04da91e6a8c78aeccb4480eb2ac987e9cbd6b74",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
