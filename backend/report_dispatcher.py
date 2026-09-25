@@ -64,6 +64,9 @@ from main import (
     _build_payload,
     _member_labels,
     _read_cached_summaries,
+    _attach_requester_names,
+    _cache_set,
+    _export_duplicates,
     _compute_csat,
     _do_qbr_generation,
     _format_field_value,
@@ -88,6 +91,8 @@ class ReportState(TypedDict):
     qbr_notify_emails: Optional[list[str]]
     qbr_template_type: Optional[str]     # "full_deck" | "support_highlights"
     sections: Optional[list[str]]        # None = all sections
+    show_linked_ids: Optional[bool]      # list linked Linear/GitHub IDs; absent on older schedules = off
+    show_duplicates: Optional[bool]      # group possible-duplicate tickets; absent = off
     model: Optional[str]                 # model ID for cache lookups
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
@@ -181,6 +186,8 @@ async def send_report(state: ReportState) -> dict:
     channel_id = state.get("channel_id")
     email_addresses = state.get("email_addresses") or []
     sections = state.get("sections")
+    show_linked_ids = bool(state.get("show_linked_ids", False))
+    show_duplicates = bool(state.get("show_duplicates", False))
     run_condition = state.get("run_condition")
 
     if not _should_run(run_condition):
@@ -200,6 +207,9 @@ async def send_report(state: ReportState) -> dict:
         )
     except Exception as exc:
         return {"skipped": False, "result": None, "error": f"Failed to fetch Pylon data: {exc}"}
+    await _attach_requester_names(open_issues)
+    # Share this search with the duplicate check (_get_open_raw): saves a Pylon search per member
+    _cache_set(f"open:{account_id}", open_issues)
 
     payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
     ticket_model = state.get("model") or DEFAULT_MODEL_ID
@@ -224,6 +234,8 @@ async def send_report(state: ReportState) -> dict:
 
         fallback_text, blocks = _build_metrics_blocks(
             account_id, account_name, payload, period, sections=sections_set,
+            show_linked_ids=show_linked_ids,
+            show_duplicates=show_duplicates,
         )
         try:
             await asyncio.to_thread(
@@ -259,6 +271,10 @@ async def send_report(state: ReportState) -> dict:
             banner_url=os.environ.get("REPORT_BANNER_URL") or None,
             sections=sections_set,
             member_labels=await asyncio.to_thread(_member_labels, account_id),
+            show_linked_ids=show_linked_ids,
+            duplicate_groups=(
+                await _export_duplicates(account_id, ticket_model, show_linked_ids) if show_duplicates else None
+            ),
         )
 
         def _send():

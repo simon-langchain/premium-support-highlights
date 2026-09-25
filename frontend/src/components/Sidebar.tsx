@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Sun, Moon, LogOut, Settings, LayoutDashboard } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import type { Account, AccountGroup, LlmModel } from "@/lib/api";
+import type { Account, AccountGroup, AccountSettings, LlmModel } from "@/lib/api";
 import OptionPicker from "@/components/OptionPicker";
 import AccountPicker from "@/components/AccountPicker";
 import RefreshButton from "@/components/RefreshButton";
@@ -27,6 +27,9 @@ interface SidebarProps {
   tiers: string[];
   selectedTier: string;
   onTierChange: (tier: string) => void;
+  /** Per-account settings shown as switches; null = no account selected */
+  accountSettings: AccountSettings | null;
+  onAccountSettingChange: (key: keyof AccountSettings, value: boolean) => void;
 }
 
 const PERIODS = [
@@ -69,6 +72,36 @@ function SidebarDivider() {
   return <div style={{ borderColor: "var(--border)" }} className="mx-4 border-t mb-3" />;
 }
 
+function SidebarSwitch({
+  label,
+  title,
+  checked,
+  onChange,
+}: {
+  label: string;
+  title: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      title={title}
+      className="w-full flex items-center justify-between gap-2"
+    >
+      <span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>
+      <span
+        className="relative w-7 h-4 rounded-full flex-shrink-0 transition-colors"
+        style={{ background: checked ? "#006ddd" : "var(--text-caption)" }}
+      >
+        <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-[left]" style={{ left: checked ? 14 : 2 }} />
+      </span>
+    </button>
+  );
+}
+
 export default function Sidebar({
   accounts,
   selected,
@@ -87,6 +120,8 @@ export default function Sidebar({
   tiers,
   selectedTier,
   onTierChange,
+  accountSettings,
+  onAccountSettingChange,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -173,6 +208,29 @@ export default function Sidebar({
             <SidebarField label="Time Period">
               <OptionPicker options={PERIODS} value={period} onChange={onPeriodChange} />
             </SidebarField>
+
+            {/* Per-account display settings */}
+            {accountSettings && (
+              <>
+                <SidebarDivider />
+                <SidebarField label="Display">
+                  <div className="flex flex-col gap-2 pt-0.5">
+                    <SidebarSwitch
+                      label="Linked ticket IDs"
+                      title="Show Linear/GitHub IDs on this account's tickets. Remembered for this account."
+                      checked={accountSettings.show_linked_ids}
+                      onChange={(v) => onAccountSettingChange("show_linked_ids", v)}
+                    />
+                    <SidebarSwitch
+                      label="Flag duplicates"
+                      title="Group possible duplicate tickets in the open issues list. Remembered for this account."
+                      checked={accountSettings.flag_duplicates}
+                      onChange={(v) => onAccountSettingChange("flag_duplicates", v)}
+                    />
+                  </div>
+                </SidebarField>
+              </>
+            )}
 
             {/* Model used for AI summaries */}
             <SidebarDivider />

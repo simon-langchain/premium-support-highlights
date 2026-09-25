@@ -1,5 +1,5 @@
 """Sync access to the LangGraph Platform Store for app state shared across replicas
-(e.g. account groups). Callers run in worker threads;
+(account groups, per-account settings, duplicate marks). Callers run in worker threads;
 from async code wrap calls in asyncio.to_thread — the Store is served by this same
 server, so a blocking call on the event loop would deadlock it.
 """

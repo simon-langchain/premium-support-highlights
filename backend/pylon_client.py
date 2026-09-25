@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -862,6 +863,76 @@ def get_csat_responses_for_account(account_id: str) -> list[dict]:
 
     wanted = set(account_groups.member_ids(account_id))
     return [r for r in all_responses if r.get("account_id") in wanted]
+
+
+_CONTACTS_CACHE_FILE = _CACHE_DIR / "contacts.json"
+_CONTACT_TTL_SECONDS = 7 * 86400  # names rarely change
+_contacts_lock = threading.Lock()
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+def _fetch_requester_name(requester_id: str, team_names: dict[str, str]) -> str:
+    """Name for a requester: a customer contact (GET /contacts/{id}), else a Pylon team
+    member (internal staff raising a ticket on a customer's behalf), else ""."""
+    try:
+        contact = _get(f"/contacts/{requester_id}").get("data") or {}
+        if contact.get("name"):
+            return contact["name"]
+    except httpx.HTTPStatusError as exc:
+        if exc.response is None or exc.response.status_code != 404:
+            raise
+    return team_names.get(requester_id, "")
+
+
+def attach_requester_names(issues: list[dict]) -> None:
+    """Set issue["requester_name"] (name only, never email) on each issue, in place.
+
+    Pylon issues only carry requester {id}; names are resolved once per id and cached
+    on disk for a week. Lookup failures leave the name empty rather than raising.
+    """
+    ids = {
+        rid for i in issues
+        if (rid := (i.get("requester") or {}).get("id")) and _UUID_RE.match(rid)
+    }
+    now = time.time()
+    with _contacts_lock:
+        try:
+            cache = json.loads(_CONTACTS_CACHE_FILE.read_text()) if _CONTACTS_CACHE_FILE.exists() else {}
+        except (OSError, ValueError):
+            cache = {}
+    missing = [rid for rid in ids if now - (cache.get(rid) or {}).get("ts", 0) > _CONTACT_TTL_SECONDS]
+    if missing:
+        try:
+            team_names = {m.get("id"): m.get("name") or "" for m in get_team_members()}
+        except Exception:
+            team_names = {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _resolve(rid: str) -> tuple[str, str | None]:
+            try:
+                return rid, _fetch_requester_name(rid, team_names)
+            except Exception:
+                _log.warning("Requester lookup failed for %s", rid, exc_info=True)
+                return rid, None  # not cached: retried next time
+
+        resolved = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:  # GET limit is ~60/min
+            for rid, name in pool.map(_resolve, missing):
+                if name is not None:
+                    resolved[rid] = {"name": name, "ts": now}
+        # Re-read under the lock and merge, so concurrent loads don't drop each other's names
+        with _contacts_lock:
+            try:
+                latest = json.loads(_CONTACTS_CACHE_FILE.read_text()) if _CONTACTS_CACHE_FILE.exists() else {}
+            except (OSError, ValueError):
+                latest = {}
+            cache = {**latest, **resolved}
+            tmp = _CONTACTS_CACHE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cache))
+            os.replace(tmp, _CONTACTS_CACHE_FILE)
+    for i in issues:
+        rid = (i.get("requester") or {}).get("id")
+        i["requester_name"] = (cache.get(rid) or {}).get("name", "") if rid else ""
 
 
 def make_date_range(period: str) -> tuple[str, str]:

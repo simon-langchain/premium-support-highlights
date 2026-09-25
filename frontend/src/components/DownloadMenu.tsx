@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Download, FileText, Sheet, Check } from "lucide-react";
+import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
 
 const SECTIONS = [
   { id: "key_metrics", label: "Key Metrics" },
@@ -14,14 +15,15 @@ const SECTIONS = [
 const ALL_SECTION_IDS = SECTIONS.map(s => s.id);
 
 interface DownloadMenuProps {
-  onDownloadPdf: (sections: string[]) => void;
-  onDownloadCsv: (sections: string[]) => void;
+  onDownloadPdf: (sections: string[], options: ExportOptions) => void;
+  onDownloadCsv: (sections: string[], options: ExportOptions) => void;
 }
 
 export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"pdf" | "csv">("pdf");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,8 +49,8 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
   function handleDownload() {
     const sections = [...selectedSections];
     setOpen(false);
-    if (mode === "pdf") onDownloadPdf(sections);
-    else onDownloadCsv(sections);
+    if (mode === "pdf") onDownloadPdf(sections, exportOptions);
+    else onDownloadCsv(sections, exportOptions);
   }
 
   return (
@@ -131,6 +133,9 @@ export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadM
                   </button>
                 );
               })}
+            </div>
+            <div className="mt-3">
+              <ExportOptionsPicker value={exportOptions} onChange={setExportOptions} />
             </div>
           </div>
 

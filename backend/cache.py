@@ -72,6 +72,11 @@ def get_ticket_summary(issue_id: str, latest_message_time: str, model: str = "")
     return _lookup_ticket_summary(_load(), issue_id, latest_message_time, model)
 
 
+def snapshot() -> dict:
+    """The whole cache, for callers doing several lookups in one request (pass as `cache=`)."""
+    return _load()
+
+
 def get_ticket_summaries(tickets: list[tuple[str, str]], model: str = "", cache: dict | None = None) -> dict[str, str]:
     """Bulk get_ticket_summary for [(issue_id, latest_message_time)] → {issue_id: summary},
     loading the cache file once instead of once per ticket."""
@@ -195,3 +200,31 @@ def set_qbr_slide(
     }
     _save(cache)
 
+
+def get_duplicate_analysis(
+    account_id: str, model: str, content_key: str, allow_stale: bool = False, cache: dict | None = None
+) -> list[dict] | None:
+    """Cached AI duplicate groups for an account + model, or None. content_key hashes the
+    model and the tickets' titles/summaries (duplicates.ai_cache_key), so any change misses —
+    unless allow_stale, which returns the latest result regardless (this model's, else any
+    model's), used by exports so they don't block on a fresh LLM pass."""
+    cache = _load() if cache is None else cache
+    entry = cache.get(f"dup:{account_id}:{model}")
+    if isinstance(entry, dict) and (entry.get("key") == content_key or allow_stale):
+        return entry.get("groups")
+    if allow_stale:
+        others = [v for k, v in cache.items() if k.startswith(f"dup:{account_id}:") and isinstance(v, dict)]
+        if others:
+            return max(others, key=lambda v: v.get("cached_at", "")).get("groups")
+    return None
+
+
+@_locked
+def set_duplicate_analysis(account_id: str, model: str, content_key: str, groups: list[dict]) -> None:
+    cache = _load()
+    cache[f"dup:{account_id}:{model}"] = {
+        "key": content_key,
+        "groups": groups,
+        "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(cache)
