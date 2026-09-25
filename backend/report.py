@@ -1,8 +1,11 @@
 """HTML report generator for Premium Support Highlights.
 
-Generates a self-contained, print-optimised HTML report that can be:
-  - Opened in a browser tab and printed to PDF via Cmd+P / Ctrl+P
+Generates a self-contained HTML report that can be:
+  - Opened in a browser tab (GET /report)
   - Sent as an HTML email body (all styles are inlined)
+
+build_report_model() returns the same report as plain data for the dashboard's
+downloadable PDF, which is rendered client-side with React-PDF.
 
 Usage:
     from report import generate_report_html
@@ -145,7 +148,9 @@ def _days_open(created_at: str) -> str:
 # Section renderers
 # ---------------------------------------------------------------------------
 
-def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
+def _metric_cards(payload: dict, period_label: str) -> tuple[list[dict], list[dict]]:
+    """Key metric cards as ({label, value, sub, unit}), split into the top row (volume)
+    and the bottom row (timing/SLA, plus CSAT when there is one)."""
     open_count    = len(payload.get("open_issues", []))
     monthly       = payload.get("monthly_metrics", [])
     total_raised  = sum(m["tickets_raised"] for m in monthly)
@@ -155,18 +160,30 @@ def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
     sla_pct       = payload.get("sla_compliance_pct")
     csat          = payload.get("csat")
 
-    card_open    = _metric_card("Open Issues", str(open_count), "Current")
-    card_raised  = _metric_card("Tickets Raised", str(total_raised), period_label)
-    card_closed  = _metric_card("Tickets Closed", str(total_closed), period_label)
-    card_rt      = _metric_card("Avg Time to First Response", f"{avg_rt:.1f} hrs", period_label) if avg_rt is not None else None
-    card_res     = _metric_card("Avg Resolution Time", _fmt_resolution(avg_res), period_label) if avg_res is not None else None
-    card_sla     = _metric_card("SLA Compliance", f"{sla_pct}%", period_label) if sla_pct is not None else None
-    card_csat    = _metric_card("CSAT", f"{int(csat) if csat == int(csat) else f'{csat:.1f}'}", period_label, "/ 5") if csat is not None else None
+    def card(label: str, value: str, sub: str = "", unit: str = "") -> dict:
+        return {"label": label, "value": value, "sub": sub, "unit": unit}
 
-    # Top row: always the three volume metrics
-    top_row = [card_open, card_raised, card_closed]
-    # Bottom row: timing/SLA metrics + optional CSAT
-    bottom_row = [c for c in [card_rt, card_res, card_sla, card_csat] if c is not None]
+    top_row = [
+        card("Open Issues", str(open_count), "Current"),
+        card("Tickets Raised", str(total_raised), period_label),
+        card("Tickets Closed", str(total_closed), period_label),
+    ]
+    bottom_row = []
+    if avg_rt is not None:
+        bottom_row.append(card("Avg Time to First Response", f"{avg_rt:.1f} hrs", period_label))
+    if avg_res is not None:
+        bottom_row.append(card("Avg Resolution Time", _fmt_resolution(avg_res), period_label))
+    if sla_pct is not None:
+        bottom_row.append(card("SLA Compliance", f"{sla_pct}%", period_label))
+    if csat is not None:
+        bottom_row.append(card("CSAT", f"{int(csat) if csat == int(csat) else f'{csat:.1f}'}", period_label, "/ 5"))
+    return top_row, bottom_row
+
+
+def _render_metrics(payload: dict, period_label: str, max_cols: int = 4) -> str:
+    top, bottom = _metric_cards(payload, period_label)
+    top_row = [_metric_card(**c) for c in top]
+    bottom_row = [_metric_card(**c) for c in bottom]
 
     def _render_row(cards: list[str]) -> str:
         cols = len(cards)
@@ -235,14 +252,35 @@ def _render_trend(monthly: list[dict]) -> str:
     )
 
 
-def _render_breakdown(breakdown: dict[str, int], labels: dict[str, str] | None = None) -> str:
-    if not breakdown:
-        return '<p style="color:#9ca3af;font-size:13px;">No data</p>'
+def _breakdown_rows(breakdown: dict[str, int], labels: dict[str, str] | None = None) -> list[dict]:
+    """[{label, count, pct}], largest first."""
     total = sum(breakdown.values()) or 1
+    return [
+        {
+            "label": (labels or {}).get(key, key.replace("_", " ").title()) if labels else key,
+            "count": count,
+            "pct": count / total * 100,
+        }
+        for key, count in sorted(breakdown.items(), key=lambda x: -x[1])
+    ]
+
+
+def _breakdown_sections(payload: dict, account_name: str = "") -> list[tuple[str, list[dict]]]:
+    """(title, rows) for each non-empty breakdown."""
+    sections = []
+    if payload.get("priority_breakdown"):
+        sections.append(("Priority", _breakdown_rows(payload["priority_breakdown"], _PRIORITY_LABELS)))
+    if payload.get("state_breakdown"):
+        sections.append(("State", _breakdown_rows(payload["state_breakdown"], _get_state_labels(account_name))))
+    if payload.get("disposition_breakdown"):
+        sections.append(("Disposition", _breakdown_rows(payload["disposition_breakdown"])))
+    return sections
+
+
+def _render_breakdown(rows_data: list[dict]) -> str:
     rows = []
-    for key, count in sorted(breakdown.items(), key=lambda x: -x[1]):
-        label = (labels or {}).get(key, key.replace("_", " ").title()) if labels else key
-        pct = count / total * 100
+    for row in rows_data:
+        label, count, pct = row["label"], row["count"], row["pct"]
         rows.append(f"""
         <tr>
           <td style="padding:7px 12px;color:#374151;font-size:13px;">{_e(label)}</td>
@@ -262,17 +300,7 @@ def _render_breakdown(breakdown: dict[str, int], labels: dict[str, str] | None =
 
 
 def _render_breakdowns(payload: dict, stacked: bool = False, account_name: str = "") -> str:
-    priority_bd = payload.get("priority_breakdown", {})
-    state_bd    = payload.get("state_breakdown", {})
-    disp_bd     = payload.get("disposition_breakdown", {})
-
-    sections = []
-    if priority_bd:
-        sections.append(("Priority", _render_breakdown(priority_bd, _PRIORITY_LABELS)))
-    if state_bd:
-        sections.append(("State", _render_breakdown(state_bd, _get_state_labels(account_name))))
-    if disp_bd:
-        sections.append(("Disposition", _render_breakdown(disp_bd)))
+    sections = [(title, _render_breakdown(rows)) for title, rows in _breakdown_sections(payload, account_name)]
 
     if not sections:
         return ""
@@ -364,6 +392,24 @@ def _render_duplicate_reasons(reasons: list[dict]) -> str:
     return f'<table style="border-collapse:collapse;margin-top:2px;">{"".join(rows)}</table>'
 
 
+def _ticket_layout(issues: list[dict], duplicate_groups: list[dict] | None) -> list[dict]:
+    """Sorted issues as display entries: {group: None, issues: [issue]} for a ticket on its
+    own, or {group, issues: members} for a possible-duplicate group, which is shown as one
+    block (members in sort order) at the position of its first ticket."""
+    group_of = {n: g for g in duplicate_groups or [] for n in g["tickets"]}
+    entries: list[dict] = []
+    shown: set[int] = set()
+    for issue in issues:
+        group = group_of.get(issue.get("number"))
+        members = [i for i in issues if group and i.get("number") in group["tickets"]]
+        if len(members) < 2:
+            entries.append({"group": None, "issues": [issue]})
+        elif id(group) not in shown:
+            shown.add(id(group))
+            entries.append({"group": group, "issues": members})
+    return entries
+
+
 def _render_tickets(
     issues: list[dict],
     ticket_summaries: dict[int, dict],
@@ -451,35 +497,109 @@ def _render_tickets(
           </td>
         </tr>"""
 
-    # Possible-duplicate groups render together (header row + members, in sort order)
-    # at the position of the group's first ticket.
-    group_of = {n: g for g in duplicate_groups or [] for n in g["tickets"]}
-    listed = {i.get("number") for i in issues}
     rows: list[str] = []
-    shown: set[int] = set()
-    for issue in issues:
-        group = group_of.get(issue.get("number"))
-        members = [i for i in issues if group and i.get("number") in group["tickets"]]
-        if len(members) < 2:
-            rows.append(_row(issue))
+    for entry in _ticket_layout(issues, duplicate_groups):
+        if entry["group"] is None:
+            rows.append(_row(entry["issues"][0]))
             continue
-        if id(group) in shown:
-            continue
-        shown.add(id(group))
-        reasons = _render_duplicate_reasons(group["reasons"])
+        reasons = _render_duplicate_reasons(entry["group"]["reasons"])
         rows.append(f"""
         <tr style="border-top:1px solid #dbeafe;background:#eff6ff;">
           <td colspan="3" style="padding:10px 12px 8px;border-left:3px solid #006ddd;">
-            <div style="font-size:11px;font-weight:700;color:#1e40af;letter-spacing:0.02em;">POSSIBLE DUPLICATES &middot; {len([n for n in group["tickets"] if n in listed])} TICKETS</div>
+            <div style="font-size:11px;font-weight:700;color:#1e40af;letter-spacing:0.02em;">POSSIBLE DUPLICATES &middot; {len(entry["issues"])} TICKETS</div>
             {reasons}
           </td>
         </tr>""")
-        rows.extend(_row(m, grouped=True) for m in members)
+        rows.extend(_row(m, grouped=True) for m in entry["issues"])
 
     return f"""
     <table style="width:100%;border-collapse:collapse;">
       <tbody>{"".join(rows)}</tbody>
     </table>"""
+
+
+# ---------------------------------------------------------------------------
+# Data model for the downloadable PDF
+# ---------------------------------------------------------------------------
+
+def _badge_model(label: str, colors: tuple[str, str, str]) -> dict:
+    bg, color, border = colors
+    return {"label": label, "bg": bg, "color": color, "border": border}
+
+
+def build_report_model(
+    account_name: str,
+    period: str,
+    payload: dict,
+    ticket_summaries: dict[int, dict],
+    account_summary: str | None = None,
+    sort_by: str = "priority",
+    sort_order: str = "asc",
+    sections: set[str] | None = None,
+    member_labels: dict[str, dict] | None = None,
+    show_linked_ids: bool = False,
+    duplicate_groups: list[dict] | None = None,
+) -> dict:
+    """The report as plain data, for the dashboard's client-side PDF (React-PDF). Same
+    content, labels, colours and order as generate_report_html; only sections that are
+    requested and have content are included."""
+    secs = sections if sections is not None else _ALL_SECTIONS
+    period_label = _PERIOD_LABELS.get(period, period)
+    open_issues = payload.get("open_issues", [])
+    state_labels = _get_state_labels(account_name)
+
+    def ticket(issue: dict) -> dict:
+        number = issue.get("number")
+        entry = ticket_summaries.get(int(number), {}) if number else {}
+        priority, state = issue.get("priority", ""), issue.get("state", "")
+        member = (member_labels or {}).get(issue.get("account_id") or "")
+        return {
+            "number": number,
+            "title": issue.get("title", ""),
+            # Customer portal link, as on the HTML report's ticket number (https only)
+            "portal_url": portal_url if (portal_url := issue.get("portal_url") or "").startswith("https://") else None,
+            "disposition": issue.get("disposition") or "",
+            "summary": entry.get("summary", ""),
+            "next_steps": entry.get("next_steps", ""),
+            "requester": issue.get("requester_name") or "",
+            "age": _days_open(issue.get("created_at", "")),
+            "linked_ids": [ei["display_id"] for ei in issue.get("external_issues") or [] if ei.get("display_id")]
+            if show_linked_ids else [],
+            "priority": _badge_model(_PRIORITY_LABELS.get(priority, priority),
+                                     _PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"])),
+            "state": _badge_model(state_labels.get(state, state.replace("_", " ").title()),
+                                  _STATE_COLORS.get(state, _STATE_COLORS["waiting_on_customer"])),
+            "member": {"label": member["label"], "color": member["color_hex"]} if member else None,
+        }
+
+    model: dict = {
+        "account_name": account_name,
+        "period_label": period_label,
+        "generated": datetime.now().strftime("%-d %B %Y"),
+    }
+    if "key_metrics" in secs:
+        top, bottom = _metric_cards(payload, period_label)
+        model["metrics"] = {"top": top, "bottom": bottom}
+    if "ticket_trend" in secs and payload.get("monthly_metrics"):
+        model["trend"] = [
+            {"month": m["month"].split()[0], "raised": m["tickets_raised"], "closed": m["closed_tickets"]}
+            for m in payload["monthly_metrics"]
+        ]
+    if "breakdowns" in secs:
+        model["breakdowns"] = [{"title": t, "rows": rows} for t, rows in _breakdown_sections(payload, account_name)]
+    if "account_summary" in secs and account_summary:
+        model["summary"] = account_summary
+    if "open_issues" in secs:
+        model["open_issue_count"] = len(open_issues)
+        model["tickets"] = [
+            {
+                "group": {"reasons": [{"tickets": r.get("tickets"), "text": r["text"]} for r in e["group"]["reasons"]]}
+                if e["group"] else None,
+                "tickets": [ticket(i) for i in e["issues"]],
+            }
+            for e in _ticket_layout(_sort_issues(open_issues, sort_by, sort_order), duplicate_groups)
+        ]
+    return model
 
 
 # ---------------------------------------------------------------------------

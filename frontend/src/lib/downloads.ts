@@ -1,6 +1,6 @@
 import type { MemberLabel } from "@/lib/accountLabels";
 import type { ExportOptions } from "@/components/ExportOptions";
-import type { AccountData, DuplicateGroup, Issue, TicketSummary } from "./api";
+import { fetchReportData, type AccountData, type DuplicateGroup, type Issue, type TicketSummary } from "./api";
 
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1", high: "Sev 2", medium: "Sev 3", low: "Sev 4", none: "None",
@@ -148,13 +148,29 @@ export function downloadCsv(
   URL.revokeObjectURL(url);
 }
 
-export function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[], model?: string, options?: ExportOptions): void {
+/** Build the report as a real PDF in the browser (React-PDF, loaded on first use) and
+ * download it. The content comes from GET /report-data, the same data as /report. */
+export async function downloadPdf(accountId: string, accountName: string, period: string, sortBy: string, sortOrder: string, sections?: string[], model?: string, options?: ExportOptions): Promise<void> {
   const params = new URLSearchParams({ account_name: accountName, period, sort_by: sortBy, sort_order: sortOrder });
   if (sections) sections.forEach(s => params.append("sections", s));
   if (model) params.append("model", model);
   if (options?.linkedIds) params.append("linked_ids", "true");
   if (options?.duplicates) params.append("duplicates", "true");
-  window.open(`/api/accounts/${accountId}/report?${params}`, "_blank");
+
+  const [report, { renderReportPdf }] = await Promise.all([
+    fetchReportData(accountId, params),
+    import("@/components/reportPdf/SupportReportPdfDocument"),
+  ]);
+  const blob = await renderReportPdf(report, `${window.location.origin}/fonts/inter`);
+
+  // e.g. "Orange - Support Highlights - 25 September 2026.pdf"
+  const filename = `${accountName} - Support Highlights - ${report.generated}.pdf`.replace(/[\\/:*?"<>|]+/g, "-");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function slackReport(

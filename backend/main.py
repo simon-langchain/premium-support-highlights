@@ -61,7 +61,7 @@ import message_activity
 import audit
 import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights, generate_usage_insights
-from report import generate_report_html
+from report import build_report_model, generate_report_html
 from ticket_summarizer import parse_ticket_output
 from llm import AVAILABLE_MODELS, DEFAULT_MODEL_ID
 
@@ -2002,6 +2002,82 @@ async def get_account_report(
         duplicate_groups=await _export_duplicates(account_id, model, linked_ids) if duplicates else None,
     )
     return HTMLResponse(content=html)
+
+
+_BANNER_MAX_BYTES = 2 * 1024 * 1024
+_BANNER_TTL = 3600
+_banner_cache: dict[str, tuple[float, str | None]] = {}  # url -> (fetched_at, data URI)
+
+
+def _banner_data_uri() -> str | None:
+    """REPORT_BANNER_URL as a data URI for the client-side PDF (the browser can't fetch it
+    cross-origin). Only an https PNG/JPEG (what React-PDF can draw) under 2 MB, no
+    redirects; cached for an hour, including failures. None when unset or unusable."""
+    url = (os.environ.get("REPORT_BANNER_URL") or "").strip()
+    if not url.startswith("https://"):
+        return None
+    cached = _banner_cache.get(url)
+    if cached and time.monotonic() - cached[0] < _BANNER_TTL:
+        return cached[1]
+    data_uri = None
+    try:
+        with httpx.stream("GET", url, timeout=5, follow_redirects=False) as resp:
+            content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+            if resp.status_code == 200 and content_type in ("image/png", "image/jpeg"):
+                body = b""
+                for chunk in resp.iter_bytes():
+                    body += chunk
+                    if len(body) > _BANNER_MAX_BYTES:
+                        raise ValueError("banner too large")
+                data_uri = f"data:{content_type};base64,{base64.b64encode(body).decode()}"
+            else:
+                _log.warning("Report banner not usable: HTTP %s, %s", resp.status_code, content_type)
+    except Exception as exc:
+        _log.warning("Report banner fetch failed: %s", exc)
+    _banner_cache[url] = (time.monotonic(), data_uri)
+    return data_uri
+
+
+@app.get("/api/accounts/{account_id}/report-data")
+async def get_account_report_data(
+    account_id: str,
+    account_name: str = Query(...),
+    period: str = Query("6m"),
+    sort_by: str = Query("priority"),
+    sort_order: str = Query("asc"),
+    sections: list[str] | None = Query(default=None),
+    model: str = Query(DEFAULT_MODEL_ID),
+    linked_ids: bool = Query(False),
+    duplicates: bool = Query(False),
+    _email: str = Depends(require_auth),
+):
+    """The /report content as JSON, for the dashboard's downloadable PDF (rendered
+    client-side with React-PDF). Same inputs and data as /report."""
+    if period not in VALID_PERIODS:
+        period = "6m"
+    ticket_model = model or DEFAULT_MODEL_ID
+
+    field_labels, open_issues, period_issues, csat_responses = await _fetch_raw_data(account_id, period)
+    payload = _build_payload(field_labels, open_issues, period_issues, csat_responses, period, account_id)
+    ticket_summaries = await asyncio.to_thread(_read_cached_summaries, open_issues, ticket_model)
+    account_summary = await _get_or_regenerate_account_summary(
+        account_id, account_name, period, payload, open_issues, model=ticket_model
+    )
+    report_model = build_report_model(
+        account_name=account_name,
+        period=period,
+        payload=payload,
+        ticket_summaries=ticket_summaries,
+        account_summary=account_summary,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        sections=set(sections) if sections else None,
+        member_labels=await asyncio.to_thread(_member_labels, account_id),
+        show_linked_ids=linked_ids,
+        duplicate_groups=await _export_duplicates(account_id, model, linked_ids) if duplicates else None,
+    )
+    report_model["banner"] = await asyncio.to_thread(_banner_data_uri)
+    return report_model
 
 
 @app.post("/api/accounts/{account_id}/email-report")
