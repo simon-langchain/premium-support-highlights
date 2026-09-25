@@ -1,0 +1,30 @@
+backend/text_style.py
+  s_7a33f8010fee71::t_ebb7ef55d5cd87 1-11
+CLAUDE.md
+  s_7a33f8010fee71::t_2db7bb7c97cdf4 92,133,298
+backend/summary_agent.py
+  s_7a33f8010fee71::t_ebb7ef55d5cd87 28,72
+backend/duplicates.py
+  s_7a33f8010fee71::t_ebb7ef55d5cd87 29,121-123,142-143,245,249,261-263,265-266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "aebf2163e7fcba8d5ecb915b081e962bef7f3d73",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_7a33f8010fee71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe9cdee5-3393-46b3-9bc8-4921f6e4034c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
