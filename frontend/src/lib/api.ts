@@ -46,12 +46,21 @@ export interface Issue {
   title: string;
   state: string;
   priority: string;
+  /** Set by the customer: urgent | high | medium | low, or "" when unset */
+  business_priority?: string;
   created_at: string;
   tags: string[];
   disposition: string;
   external_issues: ExternalIssue[];
   portal_url: string | null;
 }
+
+/** Customer-set business priority levels (Pylon custom field); mirrors report.BUSINESS_PRIORITY_LABELS */
+export const BUSINESS_PRIORITY_LABELS: Record<string, string> = {
+  urgent: "Urgent", high: "High", medium: "Medium", low: "Low",
+};
+/** Breakdown labels, incl. tickets with no business priority (report.BUSINESS_PRIORITY_BREAKDOWN_LABELS) */
+export const BUSINESS_PRIORITY_BREAKDOWN_LABELS: Record<string, string> = { ...BUSINESS_PRIORITY_LABELS, unset: "Not set" };
 
 export interface MonthlyMetric {
   month: string;
@@ -67,6 +76,9 @@ export interface AccountData {
   sla_compliance_pct: number | null;
   csat: number | null;
   priority_breakdown: Record<string, number>;
+  /** Open tickets by business priority (urgent…low, then "unset"); shown instead of
+   * priority_breakdown while the account shows business priority. Absent on older backends. */
+  business_priority_breakdown?: Record<string, number>;
   state_breakdown: Record<string, number>;
   disposition_breakdown: Record<string, number>;
 }
@@ -172,10 +184,13 @@ export async function deleteAccountGroup(groupId: string): Promise<void> {
 export interface AccountSettings {
   show_linked_ids: boolean;
   flag_duplicates: boolean;
+  show_business_priority: boolean;
 }
 
 /** Mirrors account_settings.DEFAULTS in the backend. */
-export const DEFAULT_ACCOUNT_SETTINGS: AccountSettings = { show_linked_ids: false, flag_duplicates: true };
+export const DEFAULT_ACCOUNT_SETTINGS: AccountSettings = {
+  show_linked_ids: false, flag_duplicates: true, show_business_priority: false,
+};
 
 /** Per-account dashboard settings (shared by everyone viewing that account). */
 export async function fetchAccountSettings(accountId: string): Promise<AccountSettings> {
@@ -350,6 +365,7 @@ export interface Schedule {
   sections: string[] | null;
   show_linked_ids?: boolean;
   show_duplicates?: boolean;
+  show_business_priority?: boolean;
   period: string;
   model: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -380,6 +396,7 @@ export interface CreateScheduleRequest {
   sections?: string[];
   show_linked_ids?: boolean;
   show_duplicates?: boolean;
+  show_business_priority?: boolean;
   period: string;
   model?: string;
   frequency: "weekly" | "monthly" | "quarterly";
@@ -721,6 +738,8 @@ export interface ReportTicket {
   linked_ids: string[];
   priority: ReportBadge;
   state: ReportBadge;
+  /** Only when the export shows business priority and the ticket has one */
+  business_priority: ReportBadge | null;
   member: { label: string; color: string } | null;
 }
 

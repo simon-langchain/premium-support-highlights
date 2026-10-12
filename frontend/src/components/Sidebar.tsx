@@ -227,6 +227,12 @@ export default function Sidebar({
                       checked={accountSettings.flag_duplicates}
                       onChange={(v) => onAccountSettingChange("flag_duplicates", v)}
                     />
+                    <SidebarSwitch
+                      label="Business priority"
+                      title="Show the priority the customer set on each ticket, and sort by it. Remembered for this account."
+                      checked={accountSettings.show_business_priority}
+                      onChange={(v) => onAccountSettingChange("show_business_priority", v)}
+                    />
                   </div>
                 </SidebarField>
               </>

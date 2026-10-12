@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Share2, Send, X, Check, ChevronDown, Search, Mail } from "lucide-react";
-import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
+import ExportOptionsPicker, { useExportOptions, type ExportOptions } from "@/components/ExportOptions";
 import SlackIcon from "./SlackIcon";
 import SlackInviteWarning from "./SlackInviteWarning";
 
@@ -27,6 +27,8 @@ interface ShareButtonProps {
   channelName?: string | null;
   channelId?: string | null;
   availableChannels?: SlackChannel[];
+  /** Pre-tick "Business priority" (the account shows it in the dashboard) */
+  businessPriorityDefault?: boolean;
 }
 
 export default function ShareButton({
@@ -35,11 +37,12 @@ export default function ShareButton({
   channelName,
   channelId,
   availableChannels = [],
+  businessPriorityDefault = false,
 }: ShareButtonProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"slack" | "email">("slack");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
-  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
+  const [exportOptions, setExportOptions] = useExportOptions(businessPriorityDefault);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(channelId ?? null);

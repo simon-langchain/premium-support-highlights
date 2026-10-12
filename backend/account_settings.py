@@ -1,4 +1,5 @@
-"""Per-account dashboard settings (linked Linear/GitHub ticket IDs, duplicate flagging).
+"""Per-account dashboard settings (linked Linear/GitHub ticket IDs, duplicate flagging,
+customer-set business priority).
 
 Keyed by account id — a Pylon account UUID or an account group id — and stored in
 the shared LangGraph Platform Store like account_groups, so a setting turned on for
@@ -13,6 +14,7 @@ _NS = ("psh_account_settings",)
 DEFAULTS = {
     "show_linked_ids": False,  # show linked Linear/GitHub IDs on tickets
     "flag_duplicates": True,   # group possible duplicates in the ticket list (runs the AI pass)
+    "show_business_priority": False,  # show + sort by the customer-set business priority
 }
 
 

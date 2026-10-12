@@ -61,7 +61,14 @@ import message_activity
 import audit
 import cache as cache_mod
 from summary_agent import generate_account_summary, make_summarise_tickets_tool, generate_qbr_insights, generate_usage_insights
-from report import build_report_model, generate_report_html
+from report import (
+    BUSINESS_PRIORITY_BREAKDOWN_LABELS,
+    BUSINESS_PRIORITY_LABELS,
+    SUPPORT_PRIORITY_PREFIX,
+    build_report_model,
+    business_priority_breakdown,
+    generate_report_html,
+)
 from ticket_summarizer import parse_ticket_output
 from llm import AVAILABLE_MODELS, DEFAULT_MODEL_ID
 
@@ -243,6 +250,7 @@ class EmailReportRequest(BaseModel):
     sections: list[str] | None = None  # None = all sections
     show_linked_ids: bool = False  # list linked Linear/GitHub issue IDs on tickets
     show_duplicates: bool = False  # group possible-duplicate tickets
+    show_business_priority: bool = False  # show (and allow sorting by) the customer-set business priority
 
     @field_validator("model", mode="before")
     @classmethod
@@ -257,6 +265,7 @@ class SlackReportRequest(BaseModel):
     sections: list[str] | None = None  # None = all sections
     show_linked_ids: bool = False  # carried into the "Current Open Issues" button
     show_duplicates: bool = False  # ditto: flag possible duplicates in the issues list
+    show_business_priority: bool = False  # ditto: show + sort by business priority
 
 
 class GoogleCallbackBody(BaseModel):
@@ -551,6 +560,7 @@ def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> d
     custom_fields = issue.get("custom_fields") or {}
     tags = []
     disposition = ""
+    business_priority = ""
     if isinstance(custom_fields, dict):
         category = _format_field_value(
             (custom_fields.get("category") or {}).get("value", ""), field_labels, "category"
@@ -560,6 +570,9 @@ def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> d
         tags = _category_path(category, component)
         disp_val = (custom_fields.get("disposition") or {}).get("value", "")
         disposition = _format_field_value(disp_val, field_labels, "disposition")
+        business_priority = (custom_fields.get("business_priority") or {}).get("value") or ""
+        if not isinstance(business_priority, str):  # e.g. a list, if the field ever became multi-select
+            business_priority = ""
     external_issues = [
         {
             "source": ei.get("source", ""),
@@ -592,6 +605,8 @@ def _normalise_issue(issue: dict, field_labels: dict, account_id: str = "") -> d
         "title": issue.get("title", ""),
         "state": issue.get("state", ""),
         "priority": metrics_mod.get_priority(issue),
+        # Set by the customer (Pylon custom field); "" when unset or not a known level
+        "business_priority": business_priority if business_priority in BUSINESS_PRIORITY_LABELS else "",
         "created_at": issue.get("created_at", ""),
         "tags": tags,
         "disposition": disposition,
@@ -682,8 +697,9 @@ def _member_labels(account_id: str) -> dict[str, dict] | None:
 
 # Bump when the payload / normalised-issue shape changes so cached payloads are rebuilt
 # (2: issues gained account_id; 3: tags became a category breadcrumb; 4: breadcrumb casing;
-#  5: external issues gained display_id; 6: issues gained requester_name; 7: breadcrumb plural fix)
-_PAYLOAD_VERSION = 7
+#  5: external issues gained display_id; 6: issues gained requester_name; 7: breadcrumb plural fix;
+#  8: issues gained business_priority; 9: business_priority_breakdown)
+_PAYLOAD_VERSION = 9
 
 
 def _build_payload(
@@ -697,15 +713,18 @@ def _build_payload(
     """Compute the full API payload from raw Pylon data."""
     disposition_bd_raw = metrics_mod.get_disposition_breakdown(open_issues)
     _sla_compliance = metrics_mod.compute_sla_compliance(period_issues)
+    normalised = [_normalise_issue(i, field_labels, account_id) for i in open_issues]
     return {
         "version": _PAYLOAD_VERSION,
-        "open_issues": [_normalise_issue(i, field_labels, account_id) for i in open_issues],
+        "open_issues": normalised,
         "monthly_metrics": metrics_mod.compute_period_metrics(period_issues, period),
         "avg_response_time": metrics_mod.compute_avg_response_time(period_issues),
         "avg_resolution_time": metrics_mod.compute_avg_resolution_time(period_issues),
         "sla_compliance_pct": _sla_compliance,
         "csat": _compute_csat(csat_responses),
         "priority_breakdown": metrics_mod.get_priority_breakdown(open_issues),
+        # Shown instead of priority_breakdown while an account shows business priority
+        "business_priority_breakdown": business_priority_breakdown(normalised),
         "state_breakdown": metrics_mod.get_state_breakdown(open_issues),
         "disposition_breakdown": {
             _format_field_value(slug, field_labels, "disposition"): count
@@ -962,6 +981,7 @@ def get_accounts(tier: str = "Premium", _email: str = Depends(require_auth)):
 class AccountSettingsRequest(BaseModel):
     show_linked_ids: StrictBool | None = None
     flag_duplicates: StrictBool | None = None
+    show_business_priority: StrictBool | None = None
 
 
 async def _require_known_account(account_id: str) -> None:
@@ -971,7 +991,8 @@ async def _require_known_account(account_id: str) -> None:
 
 @app.get("/api/accounts/{account_id}/settings")
 async def get_account_settings(account_id: str, _email: str = Depends(require_auth)):
-    """Per-account dashboard settings: {show_linked_ids, flag_duplicates} (see account_settings)."""
+    """Per-account dashboard settings: {show_linked_ids, flag_duplicates, show_business_priority}
+    (see account_settings)."""
     await _require_known_account(account_id)
     try:
         return await asyncio.to_thread(account_settings.get_settings, account_id)
@@ -1963,6 +1984,7 @@ async def get_account_report(
     model: str = Query(DEFAULT_MODEL_ID),
     linked_ids: bool = Query(False),
     duplicates: bool = Query(False),
+    business_priority: bool = Query(False),
     _email: str = Depends(require_auth),
 ):
     """Return a self-contained HTML report for an account.
@@ -2000,6 +2022,7 @@ async def get_account_report(
         member_labels=await asyncio.to_thread(_member_labels, account_id),
         show_linked_ids=linked_ids,
         duplicate_groups=await _export_duplicates(account_id, model, linked_ids) if duplicates else None,
+        show_business_priority=business_priority,
     )
     return HTMLResponse(content=html)
 
@@ -2049,6 +2072,7 @@ async def get_account_report_data(
     model: str = Query(DEFAULT_MODEL_ID),
     linked_ids: bool = Query(False),
     duplicates: bool = Query(False),
+    business_priority: bool = Query(False),
     _email: str = Depends(require_auth),
 ):
     """The /report content as JSON, for the dashboard's downloadable PDF (rendered
@@ -2075,6 +2099,7 @@ async def get_account_report_data(
         member_labels=await asyncio.to_thread(_member_labels, account_id),
         show_linked_ids=linked_ids,
         duplicate_groups=await _export_duplicates(account_id, model, linked_ids) if duplicates else None,
+        show_business_priority=business_priority,
     )
     report_model["banner"] = await asyncio.to_thread(_banner_data_uri)
     return report_model
@@ -2130,6 +2155,7 @@ async def email_account_report(account_id: str, body: EmailReportRequest, _email
         duplicate_groups=(
             await _export_duplicates(account_id, body.model, body.show_linked_ids) if body.show_duplicates else None
         ),
+        show_business_priority=body.show_business_priority,
     )
 
     subject = f"Support Highlights: {body.account_name}"
@@ -2223,11 +2249,12 @@ def _build_metrics_blocks(
     sections: set[str] | None = None,
     show_linked_ids: bool = False,
     show_duplicates: bool = False,
+    show_business_priority: bool = False,
 ) -> tuple[str, list[dict]]:
     """Compact metrics snapshot with 2-column field grid and action buttons.
 
-    show_linked_ids rides along in the button value so the "Current Open Issues"
-    list posted on click includes linked Linear/GitHub IDs."""
+    The show_* options ride along in the button value so the "Current Open Issues"
+    list posted on click includes linked IDs, duplicates and business priority."""
     secs = sections if sections is not None else ALL_SECTIONS
     period_label = _PERIOD_DISPLAY.get(period, period)
     open_count = len(payload["open_issues"])
@@ -2238,13 +2265,23 @@ def _build_metrics_blocks(
     sla_pct: int | None = payload.get("sla_compliance_pct")
     csat: float | None = payload.get("csat")
 
-    # Priority breakdown as a compact string, e.g. "Sev 1: 2  Sev 2: 5  Sev 3: 3"
-    priority_bd = payload.get("priority_breakdown", {})
-    _p_order = ["urgent", "high", "medium", "low"]
-    priority_parts = [
-        f"{_PRIORITY_EMOJI.get(p, '')} {_PRIORITY_LABELS[p]}: *{priority_bd[p]}*"
-        for p in _p_order if priority_bd.get(p, 0) > 0
-    ]
+    # Priority breakdown as a compact string, e.g. "Sev 1: 2  Sev 2: 5  Sev 3: 3"; business
+    # priority instead (same circles per level, "Not set" last) while that's shown
+    if show_business_priority and payload.get("business_priority_breakdown"):
+        priority_title = "Business Priority"
+        priority_parts = [
+            f"{_PRIORITY_EMOJI.get(p, ':white_circle:')} {label}: *{payload['business_priority_breakdown'][p]}*"
+            for p, label in BUSINESS_PRIORITY_BREAKDOWN_LABELS.items()
+            if payload["business_priority_breakdown"].get(p, 0) > 0
+        ]
+    else:
+        priority_title = "Priority"
+        priority_bd = payload.get("priority_breakdown", {})
+        _p_order = ["urgent", "high", "medium", "low"]
+        priority_parts = [
+            f"{_PRIORITY_EMOJI.get(p, '')} {_PRIORITY_LABELS[p]}: *{priority_bd[p]}*"
+            for p in _p_order if priority_bd.get(p, 0) > 0
+        ]
 
     def _fmt_res(h: float) -> str:
         weeks = int(h // 40)
@@ -2325,7 +2362,7 @@ def _build_metrics_blocks(
         if priority_parts or state_parts:
             breakdown_fields = []
             if priority_parts:
-                breakdown_fields.append(_field("Priority", "\n".join(priority_parts)))
+                breakdown_fields.append(_field(priority_title, "\n".join(priority_parts)))
             if state_parts:
                 breakdown_fields.append(_field("State", "\n".join(state_parts)))
             blocks += [
@@ -2340,6 +2377,7 @@ def _build_metrics_blocks(
         "account_id": account_id, "account_name": account_name, "period": period,
         **({"linked": True} if show_linked_ids else {}),
         **({"dupes": True} if show_duplicates else {}),
+        **({"bizprio": True} if show_business_priority else {}),
     })
     action_buttons = []
     if "account_summary" in secs:
@@ -2456,8 +2494,10 @@ def _build_issues_blocks(
     show_linked_ids: bool = False,
     show_duplicates: bool = False,
     duplicate_groups: list[dict] | None = None,
+    show_business_priority: bool = False,
 ) -> tuple[str, list[dict], list[dict]]:
-    """Open issues breakdown sorted by priority.
+    """Open issues breakdown sorted by priority (by business priority, then priority,
+    when show_business_priority is on).
 
     member_labels: for an account group (see _member_labels — fetch it off the event
     loop), each issue's meta line starts with its member account label. Text only:
@@ -2468,7 +2508,10 @@ def _build_issues_blocks(
     attachments — one legacy attachment per issue, each with a severity colour bar.
     """
     _PRIORITY_ORDER = {"urgent": 0, "high": 1, "medium": 2, "low": 3, "none": 4}
-    sorted_issues = sorted(open_issues, key=lambda i: _PRIORITY_ORDER.get(i.get("priority", "none"), 4))
+    sorted_issues = sorted(open_issues, key=lambda i: (
+        _PRIORITY_ORDER.get(i.get("business_priority") or "", 5) if show_business_priority else 0,
+        _PRIORITY_ORDER.get(i.get("priority", "none"), 4),
+    ))
     # Possible duplicates: keep each group's tickets next to each other (at the first
     # member's position) and note the others on each ticket. Pages are a fixed-size
     # slice of this order, so it must be deterministic across "Show Next" clicks.
@@ -2519,6 +2562,8 @@ def _build_issues_blocks(
         ticket_next_steps = entry.get("next_steps", "")
 
         priority_label = _PRIORITY_LABELS.get(priority, priority.title())
+        if show_business_priority:
+            priority_label = SUPPORT_PRIORITY_PREFIX + priority_label
         state_label = _state_labels(account_name).get(state, state.replace("_", " ").title())
         color = _PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"])
 
@@ -2549,7 +2594,13 @@ def _build_issues_blocks(
             disposition_str = f"  ·  {d_prefix}{disposition}"
         else:
             disposition_str = ""
-        meta = f"{p_emoji} {priority_label}  ·  {s_emoji} {state_label}{disposition_str}"
+        # Customer-set business priority leads (it's the sort order), with the circle for its level
+        business = issue.get("business_priority") or ""
+        business_str = (
+            f"{_PRIORITY_EMOJI[business]} Business: {BUSINESS_PRIORITY_LABELS[business]}  ·  "
+            if show_business_priority and business in BUSINESS_PRIORITY_LABELS else ""
+        )
+        meta = f"{business_str}{p_emoji} {priority_label}  ·  {s_emoji} {state_label}{disposition_str}"
         if member := member_labels.get(issue.get("account_id") or ""):
             meta = f"*{_slack_escape(member['label']).replace('*', '')}*  ·  {meta}"
         if requester := issue.get("requester_name"):
@@ -2577,6 +2628,7 @@ def _build_issues_blocks(
             "offset": next_offset,
             **({"linked": True} if show_linked_ids else {}),
             **({"dupes": True} if show_duplicates else {}),
+            **({"bizprio": True} if show_business_priority else {}),
         })
         attachments.append({
             "fallback": f"Show next {min(remaining, _PAGE_SIZE)} issues",
@@ -2751,6 +2803,7 @@ async def post_slack_report(
         sections=set(body.sections) if body.sections is not None else None,
         show_linked_ids=body.show_linked_ids,
         show_duplicates=body.show_duplicates,
+        show_business_priority=body.show_business_priority,
     )
 
     try:
@@ -2892,6 +2945,18 @@ async def _handle_slack_action(
     attachments: list[dict] | None = None
     placeholder_ts: str | None = None
     try:
+        # Buttons outlive their account: after an ungroup (the grp_ id is gone) or once the
+        # account stops being a current customer, say so rather than post "Open Issues (0)"
+        if await asyncio.to_thread(pylon_client.get_account, account_id) is None:
+            await _deliver_slack_result(
+                slack_token, channel_id, thread_ts, None,
+                "Account no longer available",
+                _warning_blocks(
+                    "This report's account is no longer available in Support Highlights, "
+                    "so this button can't load it. Please share a new report from the dashboard."
+                ),
+            )
+            return
         loading_text = _SLACK_LOADING_TEXT.get(action_id)
         if loading_text:
             placeholder = await asyncio.to_thread(
@@ -2943,6 +3008,7 @@ async def _handle_slack_action(
                     await _export_duplicates(account_id, DEFAULT_MODEL_ID, bool(kwargs.get("show_linked_ids", False)))
                     if kwargs.get("show_duplicates") else None
                 ),
+                show_business_priority=bool(kwargs.get("show_business_priority", False)),
             )
         else:
             return
@@ -3001,6 +3067,7 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks):
         offset = int(value.get("offset", 0))
         show_linked_ids = bool(value.get("linked", False))
         show_duplicates = bool(value.get("dupes", False))
+        show_business_priority = bool(value.get("bizprio", False))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return Response(status_code=200)
 
@@ -3010,6 +3077,7 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks):
         _handle_slack_action,
         action_id, account_id, account_name, period, channel_id, thread_ts,
         offset=offset, show_linked_ids=show_linked_ids, show_duplicates=show_duplicates,
+        show_business_priority=show_business_priority,
     )
 
     return Response(status_code=200)
@@ -3034,6 +3102,7 @@ class ScheduleRequest(BaseModel):
     sections: list[str] | None = None   # None = all sections; filtered to ALL_SECTIONS
     show_linked_ids: bool = False       # list linked Linear/GitHub issue IDs (Slack/email)
     show_duplicates: bool = False       # group possible-duplicate tickets (Slack/email)
+    show_business_priority: bool = False  # show + sort by customer-set business priority (Slack/email)
     period: str = "1m"
     model: str = DEFAULT_MODEL_ID
     frequency: Literal["weekly", "monthly", "quarterly"]
@@ -3219,6 +3288,7 @@ def _format_schedule(cron: dict) -> dict:
         "sections": inp.get("sections"),
         "show_linked_ids": bool(inp.get("show_linked_ids", False)),
         "show_duplicates": bool(inp.get("show_duplicates", False)),
+        "show_business_priority": bool(inp.get("show_business_priority", False)),
         "period": inp.get("period", "1m"),
         "model": inp.get("model", DEFAULT_MODEL_ID),
         "frequency": frequency,
@@ -3359,6 +3429,7 @@ async def create_schedule(body: ScheduleRequest, created_by: str = Depends(requi
         "sections": body.sections,
         "show_linked_ids": body.show_linked_ids,
         "show_duplicates": body.show_duplicates,
+        "show_business_priority": body.show_business_priority,
         "run_condition": run_condition,
         "label": body.label,
         "model": body.model,

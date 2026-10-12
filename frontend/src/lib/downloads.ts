@@ -1,6 +1,6 @@
 import type { MemberLabel } from "@/lib/accountLabels";
 import type { ExportOptions } from "@/components/ExportOptions";
-import { fetchReportData, type AccountData, type DuplicateGroup, type Issue, type TicketSummary } from "./api";
+import { BUSINESS_PRIORITY_BREAKDOWN_LABELS, BUSINESS_PRIORITY_LABELS, fetchReportData, type AccountData, type DuplicateGroup, type Issue, type TicketSummary } from "./api";
 
 const PRIORITY_LABELS: Record<string, string> = {
   urgent: "Sev 1", high: "Sev 2", medium: "Sev 3", low: "Sev 4", none: "None",
@@ -40,7 +40,8 @@ export function downloadCsv(
   sections?: string[],
   /** Account group view: member account per ticket, added as an "Account" column (full name). */
   members?: Map<string, MemberLabel> | null,
-  /** linkedIds adds a "Linked tickets" column; duplicates adds "Possible duplicate of" (needs duplicateGroups). */
+  /** linkedIds adds a "Linked tickets" column; duplicates adds "Possible duplicate of" (needs duplicateGroups);
+   * businessPriority adds "Business priority". */
   options?: ExportOptions,
   duplicateGroups?: DuplicateGroup[],
 ): void {
@@ -89,7 +90,10 @@ export function downloadCsv(
 
   if (secs.has("breakdowns")) {
     const breakdowns: [string, Record<string, number>, Record<string, string> | null][] = [
-      ["PRIORITY BREAKDOWN", data.priority_breakdown, PRIORITY_LABELS],
+      // With business priority shown, its breakdown replaces our Sev one (as in the PDF/email)
+      options?.businessPriority && data.business_priority_breakdown
+        ? ["BUSINESS PRIORITY BREAKDOWN", data.business_priority_breakdown, BUSINESS_PRIORITY_BREAKDOWN_LABELS]
+        : ["PRIORITY BREAKDOWN", data.priority_breakdown, PRIORITY_LABELS],
       ["STATE BREAKDOWN", data.state_breakdown, getStateLabels(accountName)],
       ["DISPOSITION BREAKDOWN", data.disposition_breakdown, null],
     ];
@@ -113,7 +117,8 @@ export function downloadCsv(
     if (options?.duplicates) {
       for (const g of duplicateGroups ?? []) for (const n of g.tickets) dupesOf.set(n, g.tickets.filter((t) => t !== n));
     }
-    rows.push(`Number,${members ? "Account," : ""}Title,Requester,State,Priority,Disposition,Created,Summary,Next steps,${showLinkedIds ? "Linked tickets," : ""}${options?.duplicates ? "Possible duplicate of," : ""}Portal URL`);
+    const showBusinessPriority = !!options?.businessPriority;
+    rows.push(`Number,${members ? "Account," : ""}Title,Requester,State,${showBusinessPriority ? "Support priority,Business priority," : "Priority,"}Disposition,Created,Summary,Next steps,${showLinkedIds ? "Linked tickets," : ""}${options?.duplicates ? "Possible duplicate of," : ""}Portal URL`);
     for (const issue of issues) {
       const state = getStateLabels(accountName)[issue.state] ?? issue.state.replace(/_/g, " ");
       const priority = PRIORITY_LABELS[issue.priority] ?? issue.priority;
@@ -126,6 +131,7 @@ export function downloadCsv(
         cell(issue.requester_name ?? ""),
         cell(state),
         cell(priority),
+        ...(showBusinessPriority ? [cell(BUSINESS_PRIORITY_LABELS[issue.business_priority ?? ""] ?? "")] : []),
         cell(issue.disposition),
         cell(issue.created_at ? issue.created_at.split("T")[0] : ""),
         cell(entry?.summary ?? ""),
@@ -156,6 +162,7 @@ export async function downloadPdf(accountId: string, accountName: string, period
   if (model) params.append("model", model);
   if (options?.linkedIds) params.append("linked_ids", "true");
   if (options?.duplicates) params.append("duplicates", "true");
+  if (options?.businessPriority) params.append("business_priority", "true");
 
   const [report, { renderReportPdf }] = await Promise.all([
     fetchReportData(accountId, params),
@@ -191,6 +198,7 @@ export async function slackReport(
       ...(sections ? { sections } : {}),
       show_linked_ids: !!options?.linkedIds,
       show_duplicates: !!options?.duplicates,
+      show_business_priority: !!options?.businessPriority,
     }),
   });
   if (res.status === 401) {
@@ -227,6 +235,7 @@ export async function emailReport(
       ...(model ? { model } : {}),
       show_linked_ids: !!options?.linkedIds,
       show_duplicates: !!options?.duplicates,
+      show_business_priority: !!options?.businessPriority,
     }),
   });
   if (!res.ok) {

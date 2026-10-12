@@ -17,6 +17,7 @@ import {
   DEFAULT_ACCOUNT_SETTINGS,
   type AccountSettings,
   fetchDuplicates,
+  BUSINESS_PRIORITY_BREAKDOWN_LABELS,
   analyzeDuplicates,
   dismissDuplicates,
   restoreDuplicates,
@@ -121,6 +122,8 @@ const SORT_OPTIONS = [
   { value: "state", label: "State" },
   { value: "created", label: "Created Date" },
 ];
+// Offered (and selected) only while the account shows business priority
+const BUSINESS_SORT_OPTION = { value: "business_priority", label: "Business Priority" };
 
 const PRIORITY_ORDER: Record<string, number> = {
   urgent: 0,
@@ -162,6 +165,13 @@ function sortIssues(issues: Issue[], sortBy: string, sortOrder: "asc" | "desc"):
     }
     if (sortBy === "priority") {
       return dir * ((PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99));
+    }
+    if (sortBy === "business_priority") {
+      // Unset sorts after the levels; ties fall back to our priority (as report._sort_issues)
+      return dir * (
+        ((PRIORITY_ORDER[a.business_priority ?? ""] ?? 98) - (PRIORITY_ORDER[b.business_priority ?? ""] ?? 98))
+        || ((PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99))
+      );
     }
     return 0;
   });
@@ -211,6 +221,11 @@ export default function Home() {
   const [settingsLoadedFor, setSettingsLoadedFor] = useState<string | null>(null);
   const selectedAccountId = selectedAccount?.id;
   const showLinkedIds = accountSettings.show_linked_ids;
+  // Customer-set business priority: shown on tickets, and the default sort while it's on
+  const showBusinessPriority = settingsLoadedFor === selectedAccountId && accountSettings.show_business_priority;
+  useEffect(() => {
+    setSortBy((s) => (showBusinessPriority ? "business_priority" : s === "business_priority" ? "priority" : s));
+  }, [showBusinessPriority]);
   useEffect(() => {
     setAccountSettings(DEFAULT_ACCOUNT_SETTINGS);
     setSettingsLoadedFor(null);
@@ -804,6 +819,7 @@ export default function Home() {
         ticketSummary={ticketSummaries[issue.number]}
         memberAccount={members && issue.account_id ? members.get(issue.account_id) : undefined}
         showLinkedIds={showLinkedIds}
+        showBusinessPriority={showBusinessPriority}
         duplicateCandidates={allTickets.filter((t) => t.number !== issue.number)}
         onMarkDuplicate={accountId && flagDuplicates ? (other) => applyDupes(markDuplicates(accountId, [issue.number, other], dupesModel)) : undefined}
         hiddenDuplicates={hiddenDuplicates}
@@ -1111,8 +1127,10 @@ export default function Home() {
                     channelName={slackChannelName}
                     channelId={slackChannelId}
                     availableChannels={slackAvailableChannels}
+                    businessPriorityDefault={showBusinessPriority}
                   />
                   <DownloadMenu
+                    businessPriorityDefault={showBusinessPriority}
                     onDownloadPdf={(sections, options) => downloadPdf(selectedAccount.id, selectedAccount.name, period, sortBy, sortOrder, sections, selectedModel, options)}
                     onDownloadCsv={async (sections, options) => {
                       // CSV is built client-side: use the groups on screen, else the latest saved
@@ -1128,7 +1146,11 @@ export default function Home() {
                           return;
                         }
                       }
-                      downloadCsv(selectedAccount.name, period, accountData, filteredIssues, ticketSummaries, sections, members, options, groups);
+                      // Like PDF/email: no business-priority order unless the export shows it
+                      const csvIssues = !options.businessPriority && sortBy === "business_priority"
+                        ? sortIssues(filteredIssues, "priority", sortOrder)
+                        : filteredIssues;
+                      downloadCsv(selectedAccount.name, period, accountData, csvIssues, ticketSummaries, sections, members, options, groups);
                     }}
                   />
                 </div>
@@ -1187,23 +1209,29 @@ export default function Home() {
 
                 {/* Breakdown row */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-                  {(["priority_breakdown", "state_breakdown", "disposition_breakdown"] as const).map((key) => (
+                  {(["priority_breakdown", "state_breakdown", "disposition_breakdown"] as const).map((key) => {
+                    // With business priority shown, the priority card counts business priority instead
+                    const business = key === "priority_breakdown" && showBusinessPriority && !!accountData.business_priority_breakdown;
+                    const breakdown = business ? accountData.business_priority_breakdown! : accountData[key];
+                    return (
                     <div
                       key={key}
                       className="rounded-lg px-4 py-4"
                       style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
                     >
                       <h3 className="text-xs uppercase tracking-wider font-medium mb-3" style={{ color: "var(--text-muted)" }}>
-                        {{ priority_breakdown: "Priority Breakdown", state_breakdown: "State Breakdown", disposition_breakdown: "Disposition Breakdown" }[key]}
+                        {business ? "Business Priority Breakdown" : { priority_breakdown: "Priority Breakdown", state_breakdown: "State Breakdown", disposition_breakdown: "Disposition Breakdown" }[key]}
                       </h3>
-                      {Object.keys(accountData[key]).length === 0 ? (
+                      {Object.keys(breakdown).length === 0 ? (
                         <p className="text-sm" style={{ color: "var(--text-caption)" }}>No data</p>
                       ) : (
                         <div className="space-y-1.5">
-                          {Object.entries(accountData[key]).map(([label, count]) => (
+                          {Object.entries(breakdown).map(([label, count]) => (
                             <div key={label} className="flex items-center justify-between">
                               <span className="text-sm" style={{ color: "var(--text-primary)" }}>
-                                {key === "state_breakdown"
+                                {business
+                                  ? (BUSINESS_PRIORITY_BREAKDOWN_LABELS[label] ?? label)
+                                  : key === "state_breakdown"
                                   ? (getStateLabels(selectedAccount?.name)[label] ?? label.replace(/_/g, " "))
                                   : key === "priority_breakdown"
                                     ? (PRIORITY_LABELS[label] ?? label.replace(/_/g, " "))
@@ -1217,7 +1245,8 @@ export default function Home() {
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* AI Summary */}
@@ -1268,7 +1297,7 @@ export default function Home() {
                         }}
                         className="text-sm rounded-l px-2 py-1.5 focus:outline-none cursor-pointer"
                       >
-                        {SORT_OPTIONS.map((opt) => (
+                        {(showBusinessPriority ? [BUSINESS_SORT_OPTION, ...SORT_OPTIONS] : SORT_OPTIONS).map((opt) => (
                           <option key={opt.value} value={opt.value}>Sort: {opt.label}</option>
                         ))}
                       </select>
@@ -1421,6 +1450,7 @@ export default function Home() {
           channelId={slackChannelId}
           availableChannels={slackAvailableChannels}
           openToNewQbr={scheduleOpenToNewQbr}
+          businessPriorityDefault={showBusinessPriority}
           onClose={() => { setScheduleOpen(false); setScheduleOpenToNewQbr(false); }}
         />
       )}

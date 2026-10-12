@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Copy, Loader2 } from "lucide-react";
-import type { Issue, ExternalIssue, TicketSummary } from "@/lib/api";
+import { BUSINESS_PRIORITY_LABELS, type Issue, type ExternalIssue, type TicketSummary } from "@/lib/api";
 import type { MemberLabel } from "@/lib/accountLabels";
 
 // SVG paths sourced from simpleicons.org (24×24 viewBox)
@@ -30,6 +30,8 @@ interface TicketCardProps {
   memberAccount?: MemberLabel;
   /** Show linked Linear/GitHub IDs next to their icons (per-account sidebar setting). */
   showLinkedIds?: boolean;
+  /** Show the customer-set business priority (per-account sidebar setting). */
+  showBusinessPriority?: boolean;
   /** Other open tickets this one can be marked as a duplicate of */
   duplicateCandidates?: { number: number; title: string }[];
   onMarkDuplicate?: (other: number) => Promise<void>;
@@ -217,6 +219,7 @@ export default function TicketCard({
   ticketSummary,
   memberAccount,
   showLinkedIds = false,
+  showBusinessPriority = false,
   duplicateCandidates,
   onMarkDuplicate,
   hiddenDuplicates,
@@ -226,6 +229,12 @@ export default function TicketCard({
   const stateBadge = STATE_BADGE[issue.state] ?? STATE_BADGE.waiting_on_customer;
   const stateLabel = getStateLabels(accountName)[issue.state] ?? issue.state;
   const priorityBadge = issue.priority ? PRIORITY_BADGE[issue.priority] : null;
+  // Customer-set business priority: same colours as the Sev badge for the matching level;
+  // the "Business:" label tells them apart
+  const businessLevel = issue.business_priority ?? "";
+  const businessBadge = showBusinessPriority && BUSINESS_PRIORITY_LABELS[businessLevel]
+    ? PRIORITY_BADGE[businessLevel] ?? null
+    : null;
 
   return (
     <div
@@ -308,10 +317,18 @@ export default function TicketCard({
 
       <div className="flex flex-wrap items-center gap-1.5">
         {memberAccount && <MemberAccountPill member={memberAccount} />}
-        <Badge vars={stateBadge} label={stateLabel} />
+        {/* With business priority shown it leads: Business, Support (our Sev), then state,
+            as in exports and Slack */}
+        {businessBadge && <Badge vars={businessBadge} label={`Business: ${BUSINESS_PRIORITY_LABELS[businessLevel]}`} />}
+        {!showBusinessPriority && <Badge vars={stateBadge} label={stateLabel} />}
         {priorityBadge && issue.priority !== "none" && (
-          <Badge vars={priorityBadge} label={PRIORITY_LABELS[issue.priority] ?? issue.priority} />
+          <Badge
+            vars={priorityBadge}
+            // While business priority is shown, say whose rating each badge is
+            label={`${showBusinessPriority ? "Support: " : ""}${PRIORITY_LABELS[issue.priority] ?? issue.priority}`}
+          />
         )}
+        {showBusinessPriority && <Badge vars={stateBadge} label={stateLabel} />}
         {issue.disposition && (
           <span
             style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)", border: "1px solid var(--border-hover)" }}

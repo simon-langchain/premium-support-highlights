@@ -93,6 +93,7 @@ class ReportState(TypedDict):
     sections: Optional[list[str]]        # None = all sections
     show_linked_ids: Optional[bool]      # list linked Linear/GitHub IDs; absent on older schedules = off
     show_duplicates: Optional[bool]      # group possible-duplicate tickets; absent = off
+    show_business_priority: Optional[bool]  # show + sort by customer-set business priority; absent = off
     model: Optional[str]                 # model ID for cache lookups
     run_condition: Optional[dict]        # e.g. {"type": "nth_weekday_of_month", "n": 1, "weekday": 0}
     label: str
@@ -188,6 +189,7 @@ async def send_report(state: ReportState) -> dict:
     sections = state.get("sections")
     show_linked_ids = bool(state.get("show_linked_ids", False))
     show_duplicates = bool(state.get("show_duplicates", False))
+    show_business_priority = bool(state.get("show_business_priority", False))
     run_condition = state.get("run_condition")
 
     if not _should_run(run_condition):
@@ -236,6 +238,7 @@ async def send_report(state: ReportState) -> dict:
             account_id, account_name, payload, period, sections=sections_set,
             show_linked_ids=show_linked_ids,
             show_duplicates=show_duplicates,
+            show_business_priority=show_business_priority,
         )
         try:
             await asyncio.to_thread(
@@ -264,7 +267,7 @@ async def send_report(state: ReportState) -> dict:
             payload=payload,
             ticket_summaries=ticket_summaries,
             account_summary=account_summary,
-            sort_by="priority",
+            sort_by="business_priority" if show_business_priority else "priority",
             sort_order="asc",
             logo_url=os.environ.get("REPORT_LOGO_URL") or None,
             is_email=True,
@@ -275,6 +278,7 @@ async def send_report(state: ReportState) -> dict:
             duplicate_groups=(
                 await _export_duplicates(account_id, ticket_model, show_linked_ids) if show_duplicates else None
             ),
+            show_business_priority=show_business_priority,
         )
 
         def _send():
