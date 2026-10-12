@@ -9,7 +9,7 @@ dependencies = [
     "python-dotenv",
     "pydantic",
     "beautifulsoup4",
-    "langsmith>=0.2.0",
+    "langsmith>=0.10.15",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "markdown>=3.6",
