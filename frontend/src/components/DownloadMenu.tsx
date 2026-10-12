@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Download, FileText, Sheet, Check, Loader2 } from "lucide-react";
-import ExportOptionsPicker, { DEFAULT_EXPORT_OPTIONS, type ExportOptions } from "@/components/ExportOptions";
+import ExportOptionsPicker, { useExportOptions, type ExportOptions } from "@/components/ExportOptions";
 
 const SECTIONS = [
   { id: "key_metrics", label: "Key Metrics" },
@@ -17,13 +17,15 @@ const ALL_SECTION_IDS = SECTIONS.map(s => s.id);
 interface DownloadMenuProps {
   onDownloadPdf: (sections: string[], options: ExportOptions) => Promise<void>;
   onDownloadCsv: (sections: string[], options: ExportOptions) => void;
+  /** Pre-tick "Business priority" (the account shows it in the dashboard) */
+  businessPriorityDefault?: boolean;
 }
 
-export default function DownloadMenu({ onDownloadPdf, onDownloadCsv }: DownloadMenuProps) {
+export default function DownloadMenu({ onDownloadPdf, onDownloadCsv, businessPriorityDefault = false }: DownloadMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"pdf" | "csv">("pdf");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
-  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
+  const [exportOptions, setExportOptions] = useExportOptions(businessPriorityDefault);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);

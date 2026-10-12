@@ -53,6 +53,7 @@ function TicketRow({ ticket, leftWidth, grouped }: { ticket: ReportTicket; leftW
         {ticket.requester && <Text style={styles.raisedBy}>Raised by {ticket.requester}</Text>}
       </View>
       <View style={styles.ticketRight}>
+        {ticket.business_priority && <Badge badge={ticket.business_priority} />}
         <Badge badge={ticket.priority} />
         <Badge badge={ticket.state} />
         <Text style={styles.age}>{ticket.age}</Text>

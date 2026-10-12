@@ -91,14 +91,47 @@ def _badge(label: str, bg: str, color: str, border: str) -> str:
     )
 
 
-def _priority_badge(priority: str) -> str:
-    label = _PRIORITY_LABELS.get(priority, priority)
+# Prefix on our Sev badge while business priority is shown, so each badge says whose rating it is
+SUPPORT_PRIORITY_PREFIX = "Support: "
+
+
+def _priority_badge(priority: str, prefix: str = "") -> str:
+    label = prefix + _PRIORITY_LABELS.get(priority, priority)
     return _badge(label, *_PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"]))
 
 
 def _state_badge(state: str, account_name: str = "") -> str:
     label = _get_state_labels(account_name).get(state, state.replace("_", " ").title())
     return _badge(label, *_STATE_COLORS.get(state, _STATE_COLORS["waiting_on_customer"]))
+
+
+# Customer-set business priority (Pylon custom field): same colours as the Sev badge for
+# the matching level (Urgent = Sev 1 red …); the "Business:" label tells them apart
+BUSINESS_PRIORITY_LABELS: dict[str, str] = {"urgent": "Urgent", "high": "High", "medium": "Medium", "low": "Low"}
+
+
+# Breakdown key (and label) for open tickets with no business priority set
+BUSINESS_PRIORITY_UNSET = "unset"
+BUSINESS_PRIORITY_BREAKDOWN_LABELS = {**BUSINESS_PRIORITY_LABELS, BUSINESS_PRIORITY_UNSET: "Not set"}
+
+
+def business_priority_breakdown(issues: list[dict]) -> dict[str, int]:
+    """Count normalised issues by business priority, Urgent → Low, then "unset"."""
+    counts: dict[str, int] = {}
+    for issue in issues:
+        level = issue.get("business_priority") or BUSINESS_PRIORITY_UNSET
+        counts[level] = counts.get(level, 0) + 1
+    return {k: counts[k] for k in BUSINESS_PRIORITY_BREAKDOWN_LABELS if k in counts}
+
+
+def _business_priority_colors(level: str) -> tuple[str, str, str]:
+    return _PRIORITY_COLORS.get(level, _PRIORITY_COLORS["none"])
+
+
+def _business_priority_badge(level: str) -> str:
+    if level not in BUSINESS_PRIORITY_LABELS:
+        return ""
+    return _badge(f"Business: {BUSINESS_PRIORITY_LABELS[level]}", *_business_priority_colors(level))
 
 
 def _fmt_resolution(hours: float) -> str:
@@ -265,10 +298,17 @@ def _breakdown_rows(breakdown: dict[str, int], labels: dict[str, str] | None = N
     ]
 
 
-def _breakdown_sections(payload: dict, account_name: str = "") -> list[tuple[str, list[dict]]]:
-    """(title, rows) for each non-empty breakdown."""
+def _breakdown_sections(
+    payload: dict, account_name: str = "", show_business_priority: bool = False,
+) -> list[tuple[str, list[dict]]]:
+    """(title, rows) for each non-empty breakdown. With business priority shown, the
+    priority breakdown counts business priority instead of our Sev."""
     sections = []
-    if payload.get("priority_breakdown"):
+    if show_business_priority and payload.get("business_priority_breakdown"):
+        sections.append(("Business Priority", _breakdown_rows(
+            payload["business_priority_breakdown"], BUSINESS_PRIORITY_BREAKDOWN_LABELS,
+        )))
+    elif payload.get("priority_breakdown"):
         sections.append(("Priority", _breakdown_rows(payload["priority_breakdown"], _PRIORITY_LABELS)))
     if payload.get("state_breakdown"):
         sections.append(("State", _breakdown_rows(payload["state_breakdown"], _get_state_labels(account_name))))
@@ -299,8 +339,13 @@ def _render_breakdown(rows_data: list[dict]) -> str:
     </table>"""
 
 
-def _render_breakdowns(payload: dict, stacked: bool = False, account_name: str = "") -> str:
-    sections = [(title, _render_breakdown(rows)) for title, rows in _breakdown_sections(payload, account_name)]
+def _render_breakdowns(
+    payload: dict, stacked: bool = False, account_name: str = "", show_business_priority: bool = False,
+) -> str:
+    sections = [
+        (title, _render_breakdown(rows))
+        for title, rows in _breakdown_sections(payload, account_name, show_business_priority)
+    ]
 
     if not sections:
         return ""
@@ -348,12 +393,24 @@ _STATE_ORDER = {"waiting_on_you": 0, "new": 1, "on_hold": 2, "waiting_on_custome
 
 def _sort_issues(issues: list[dict], sort_by: str, sort_order: str = "asc") -> list[dict]:
     reverse = sort_order == "desc"
+    if sort_by == "business_priority":
+        # Unset business priority sorts after the levels; ties fall back to our priority
+        return sorted(issues, key=lambda i: (
+            _PRIORITY_ORDER.get(i.get("business_priority") or "", 98),
+            _PRIORITY_ORDER.get(i.get("priority", ""), 99),
+        ), reverse=reverse)
     if sort_by == "state":
         return sorted(issues, key=lambda i: _STATE_ORDER.get(i.get("state", ""), 99), reverse=reverse)
     if sort_by == "created":
         return sorted(issues, key=lambda i: i.get("created_at", ""), reverse=reverse)
     # default: priority
     return sorted(issues, key=lambda i: _PRIORITY_ORDER.get(i.get("priority", ""), 99), reverse=reverse)
+
+
+def export_sort(sort_by: str, show_business_priority: bool) -> str:
+    """The sort an export uses: never business priority when the export doesn't show it,
+    so the order is always explained by what's on the page."""
+    return "priority" if sort_by == "business_priority" and not show_business_priority else sort_by
 
 
 def _render_linked_ids(external_issues: list[dict]) -> str:
@@ -419,6 +476,7 @@ def _render_tickets(
     member_labels: dict[str, dict] | None = None,
     show_linked_ids: bool = False,
     duplicate_groups: list[dict] | None = None,
+    show_business_priority: bool = False,
 ) -> str:
     if not issues:
         return '<p style="color:#9ca3af;font-size:13px;">No open issues.</p>'
@@ -472,6 +530,8 @@ def _render_tickets(
         disp_html = (
             f'<span style="font-size:11px;color:#9ca3af;margin-left:8px;white-space:nowrap;">{_e(disp)}</span>'
         ) if disp else ""
+        business_badge = _business_priority_badge(issue.get("business_priority") or "") if show_business_priority else ""
+        business_html = f'<div style="margin-bottom:4px;">{business_badge}</div>' if business_badge else ""
 
         # Tickets in a possible-duplicate group: tinted, with a blue left edge
         row_style = "border-top:1px solid #e0ecfb;background:#f8fbff;" if grouped else "border-top:1px solid #f3f4f6;"
@@ -491,7 +551,7 @@ def _render_tickets(
             {requester_html}
           </td>
           <td style="padding:12px;vertical-align:top;white-space:nowrap;text-align:right;">
-            <div style="margin-bottom:4px;">{_priority_badge(priority)}</div>
+            {business_html}<div style="margin-bottom:4px;">{_priority_badge(priority, SUPPORT_PRIORITY_PREFIX if show_business_priority else "")}</div>
             <div style="margin-bottom:4px;">{_state_badge(state, account_name)}</div>
             <div style="font-size:11px;color:#9ca3af;">{_e(age)}</div>
           </td>
@@ -539,6 +599,7 @@ def build_report_model(
     member_labels: dict[str, dict] | None = None,
     show_linked_ids: bool = False,
     duplicate_groups: list[dict] | None = None,
+    show_business_priority: bool = False,
 ) -> dict:
     """The report as plain data, for the dashboard's client-side PDF (React-PDF). Same
     content, labels, colours and order as generate_report_html; only sections that are
@@ -565,10 +626,12 @@ def build_report_model(
             "age": _days_open(issue.get("created_at", "")),
             "linked_ids": [ei["display_id"] for ei in issue.get("external_issues") or [] if ei.get("display_id")]
             if show_linked_ids else [],
-            "priority": _badge_model(_PRIORITY_LABELS.get(priority, priority),
+            "priority": _badge_model((SUPPORT_PRIORITY_PREFIX if show_business_priority else "") + _PRIORITY_LABELS.get(priority, priority),
                                      _PRIORITY_COLORS.get(priority, _PRIORITY_COLORS["none"])),
             "state": _badge_model(state_labels.get(state, state.replace("_", " ").title()),
                                   _STATE_COLORS.get(state, _STATE_COLORS["waiting_on_customer"])),
+            "business_priority": _badge_model(f"Business: {BUSINESS_PRIORITY_LABELS[bp]}", _business_priority_colors(bp))
+            if show_business_priority and (bp := issue.get("business_priority") or "") in BUSINESS_PRIORITY_LABELS else None,
             "member": {"label": member["label"], "color": member["color_hex"]} if member else None,
         }
 
@@ -586,7 +649,10 @@ def build_report_model(
             for m in payload["monthly_metrics"]
         ]
     if "breakdowns" in secs:
-        model["breakdowns"] = [{"title": t, "rows": rows} for t, rows in _breakdown_sections(payload, account_name)]
+        model["breakdowns"] = [
+            {"title": t, "rows": rows}
+            for t, rows in _breakdown_sections(payload, account_name, show_business_priority)
+        ]
     if "account_summary" in secs and account_summary:
         model["summary"] = account_summary
     if "open_issues" in secs:
@@ -597,7 +663,9 @@ def build_report_model(
                 if e["group"] else None,
                 "tickets": [ticket(i) for i in e["issues"]],
             }
-            for e in _ticket_layout(_sort_issues(open_issues, sort_by, sort_order), duplicate_groups)
+            for e in _ticket_layout(
+                _sort_issues(open_issues, export_sort(sort_by, show_business_priority), sort_order), duplicate_groups,
+            )
         ]
     return model
 
@@ -634,8 +702,11 @@ def generate_report_html(
     member_labels: dict[str, dict] | None = None,
     show_linked_ids: bool = False,
     duplicate_groups: list[dict] | None = None,
+    show_business_priority: bool = False,
 ) -> str:
     """show_linked_ids: list each ticket's linked Linear/GitHub issue IDs (off by default).
+    show_business_priority: show the customer-set business priority on each ticket; a
+    "business_priority" sort falls back to "priority" when it's off (see export_sort).
     duplicate_groups: possible-duplicate groups [{tickets, reasons: [{tickets, text}]}]
     (customer-facing wording, see main._export_duplicate_groups); shown together.
     member_labels: for an account group, member account id -> {label, full_name,
@@ -664,7 +735,7 @@ def generate_report_html(
     if "breakdowns" in secs:
         sections_html += f"""
     {_section_heading("Breakdowns")}
-    {_render_breakdowns(payload, stacked=is_email, account_name=account_name)}
+    {_render_breakdowns(payload, stacked=is_email, account_name=account_name, show_business_priority=show_business_priority)}
 """
     if "account_summary" in secs and account_summary:
         sections_html += f"""
@@ -674,7 +745,7 @@ def generate_report_html(
     if "open_issues" in secs:
         sections_html += f"""
     {_section_heading(f"Open Issues ({len(open_issues)})")}
-    {_render_tickets(open_issues, ticket_summaries, sort_by, sort_order, account_name, member_labels, show_linked_ids, duplicate_groups)}
+    {_render_tickets(open_issues, ticket_summaries, export_sort(sort_by, show_business_priority), sort_order, account_name, member_labels, show_linked_ids, duplicate_groups, show_business_priority)}
 """
 
     # Inner report content — shared by both email and browser/PDF versions

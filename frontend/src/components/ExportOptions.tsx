@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, Copy, Link2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Copy, Flag, Link2 } from "lucide-react";
 
 /** Opt-in extras for exports, shares and scheduled reports — all off by default. */
 export interface ExportOptions {
@@ -8,13 +9,26 @@ export interface ExportOptions {
   linkedIds: boolean;
   /** Group possible-duplicate tickets together */
   duplicates: boolean;
+  /** Show the customer-set business priority (and sort by it when that's the chosen sort) */
+  businessPriority: boolean;
 }
 
-export const DEFAULT_EXPORT_OPTIONS: ExportOptions = { linkedIds: false, duplicates: false };
+export const DEFAULT_EXPORT_OPTIONS: ExportOptions = { linkedIds: false, duplicates: false, businessPriority: false };
+
+/** Export options state whose business priority starts ticked when the account shows it
+ * in the dashboard (sidebar switch), and follows that switch while the menu is mounted. */
+export function useExportOptions(businessPriorityDefault: boolean) {
+  const [options, setOptions] = useState<ExportOptions>({ ...DEFAULT_EXPORT_OPTIONS, businessPriority: businessPriorityDefault });
+  useEffect(() => {
+    setOptions((o) => ({ ...o, businessPriority: businessPriorityDefault }));
+  }, [businessPriorityDefault]);
+  return [options, setOptions] as const;
+}
 
 const OPTIONS: { key: keyof ExportOptions; label: string; icon: typeof Link2 }[] = [
   { key: "linkedIds", label: "Linked ticket IDs", icon: Link2 },
   { key: "duplicates", label: "Possible duplicates", icon: Copy },
+  { key: "businessPriority", label: "Business priority", icon: Flag },
 ];
 
 /** The "Options" heading + checkboxes, shared by Download, Share and Schedule (below "Sections"). */

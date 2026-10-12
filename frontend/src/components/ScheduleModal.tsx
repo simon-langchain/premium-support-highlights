@@ -443,6 +443,8 @@ interface ScheduleModalProps {
   availableChannels: { id: string; name: string }[];
   onClose: () => void;
   openToNewQbr?: boolean;
+  /** Pre-tick "Business priority" for new schedules (the account shows it in the dashboard) */
+  businessPriorityDefault?: boolean;
 }
 
 export default function ScheduleModal({
@@ -454,6 +456,7 @@ export default function ScheduleModal({
   availableChannels,
   onClose,
   openToNewQbr = false,
+  businessPriorityDefault = false,
 }: ScheduleModalProps) {
   // Channels safe for internal-only notifications (excludes customer-facing channels)
   const EXTERNAL_PREFIXES = ["customer-", "eval-", "external-", "ext-", "partner-"];
@@ -489,7 +492,7 @@ export default function ScheduleModal({
   const [hourLocal, setHourLocal] = useState(9);
   const [timezone, setTimezone] = useState("UTC");
   const [selectedSections, setSelectedSections] = useState<Set<string>>(new Set(ALL_SECTION_IDS));
-  const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
+  const [exportOptions, setExportOptions] = useState<ExportOptions>({ ...DEFAULT_EXPORT_OPTIONS, businessPriority: businessPriorityDefault });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [channelWarning, setChannelWarning] = useState<string | null>(null);
@@ -544,7 +547,7 @@ export default function ScheduleModal({
     setHourLocal(9);
     setTimezone("UTC");
     setSelectedSections(new Set(ALL_SECTION_IDS));
-    setExportOptions(DEFAULT_EXPORT_OPTIONS);
+    setExportOptions({ ...DEFAULT_EXPORT_OPTIONS, businessPriority: businessPriorityDefault });
     setCreateError(null);
     setView("form");
   }
@@ -567,7 +570,7 @@ export default function ScheduleModal({
     setHourLocal(s.hour_local ?? s.hour_utc ?? 9);
     setTimezone(s.timezone ?? "UTC");
     setSelectedSections(new Set(s.sections ?? ALL_SECTION_IDS));
-    setExportOptions({ linkedIds: !!s.show_linked_ids, duplicates: !!s.show_duplicates });
+    setExportOptions({ linkedIds: !!s.show_linked_ids, duplicates: !!s.show_duplicates, businessPriority: !!s.show_business_priority });
     setCreateError(null);
     setView("form");
   }
@@ -629,6 +632,7 @@ export default function ScheduleModal({
         sections: mode !== "qbr" ? [...selectedSections] : undefined,
         show_linked_ids: mode !== "qbr" ? exportOptions.linkedIds : false,
         show_duplicates: mode !== "qbr" ? exportOptions.duplicates : false,
+        show_business_priority: mode !== "qbr" ? exportOptions.businessPriority : false,
         period,
         model,
         frequency,
