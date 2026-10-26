@@ -36,7 +36,7 @@ SUMMARY_SYSTEM_PROMPT = """You are writing the summary section of a support high
 
 First call the summarise_tickets tool to get the current state of every open ticket. Then write exactly 2 short paragraphs of 3-4 sentences each, 150 words at most in total:
 
-1. How things are going: ticket volume and closures over the period, and the overall trend. The most recent month always shows fewer closures because tickets take time to resolve, so don't treat that as a problem or explain it at length.
+1. How things are going: ticket volume and closures over the period, and the overall trend. The most recent months always have more tickets still open because tickets take time to resolve, so don't treat that as a problem or explain it at length.
 2. What's open: the main themes, and what we're working on or waiting on. Only name individual tickets that matter most, such as a Sev 1 or Sev 2 bug that has been open a long time. Treat open feature requests as a normal, positive part of the roadmap conversation.
 
 Priority levels:
@@ -54,7 +54,7 @@ Tone:
 Style:
 - Plain, friendly English. Short sentences, one idea each. No jargon, filler or corporate phrasing.
 - Speak to the customer as "you" and "your team". You raise tickets; we (LangChain) respond to and close them, so closures and response times are ours ("we closed", "our first response time").
-- Give a few key numbers, not every number. Round where it reads better ("about three quarters").
+- Give a few key numbers, not every number. Only use numbers that appear in the data, rounded where it reads better ("about three quarters" for 76%). Never work out your own percentages, averages, ranges or totals.
 - Summarise themes instead of listing tickets. Mention at most 3 ticket numbers in total.
 - Never use em dashes or en dashes. Write separate sentences instead, and "to" for ranges.
 - Bold at most 3 key facts with **bold**. No headers, bullet points, dividers or sign-offs.
@@ -182,15 +182,32 @@ def _format_ticket(issue: dict) -> str:
 
 
 def _format_metrics(monthly_metrics: list[dict]) -> str:
-    """Format monthly metrics as a compact text table for the agent."""
+    """Format monthly metrics as a compact text table for the agent.
+
+    Totals and the closed percentage are worked out here, not left to the model: it gets
+    the sums wrong (it once reported 92% closed for a table that adds up to 87%).
+    """
     if not monthly_metrics:
         return "No monthly metrics available."
-    lines = ["Month          | Raised (by customer) | Closed (by LangChain)"]
-    lines.append("-" * 60)
+    raised = sum(row["tickets_raised"] for row in monthly_metrics)
+    closed = sum(row.get("closed_tickets", 0) for row in monthly_metrics)
+    totals = f"Totals: {raised} raised, {closed} closed"
+    if raised:
+        pct = round(closed / raised * 100)
+        if pct == 100 and closed < raised:
+            pct = 99  # never round up to "all closed" while tickets are still open
+        totals += f" ({pct}%)"
+    totals += f", {raised - closed} still open"
+    lines = [
+        totals,
+        "Each row counts the tickets raised in that period: how many have been closed since and how many are still open.",
+        "",
+        "Month          | Raised | Closed since | Still open",
+        "-" * 52,
+    ]
     for row in monthly_metrics:
-        lines.append(
-            f"{row['month']:<14} | {row['tickets_raised']:>6} | {row.get('closed_tickets', 0):>6}"
-        )
+        r, c = row["tickets_raised"], row.get("closed_tickets", 0)
+        lines.append(f"{row['month']:<14} | {r:>6} | {c:>12} | {r - c:>10}")
     return "\n".join(lines)
 
 
