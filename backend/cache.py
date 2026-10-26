@@ -10,7 +10,7 @@ from pathlib import Path
 
 SUMMARY_MAX_AGE_SECONDS = 86400  # 24 hours
 # Bump when summary_agent.SUMMARY_SYSTEM_PROMPT changes so cached account summaries regenerate.
-ACCOUNT_SUMMARY_VERSION = 2
+ACCOUNT_SUMMARY_VERSION = 3
 
 CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_FILE = CACHE_DIR / "analysis_cache.json"
