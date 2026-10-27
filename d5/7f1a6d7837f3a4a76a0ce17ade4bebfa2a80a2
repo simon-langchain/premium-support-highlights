@@ -1,0 +1,12 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d57f1a6d7837f3a4a76a0ce17ade4bebfa2a80a2",
+  "prompts": {},
+  "humans": {
+    "h_2a88ab6d6001a1": {
+      "author": "simon-langchain <simon@langchain.dev>"
+    }
+  }
+}
